@@ -1,0 +1,26 @@
+{
+  "name": "local-sensitive-store-desktop",
+  "private": true,
+  "version": "0.2.15",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "npm run build:frontend",
+    "build:frontend": "node scripts/build-frontend.mjs",
+    "build:frontend:raw": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "dev:desktop": "npm run tauri dev",
+    "build:installer": "powershell -ExecutionPolicy Bypass -File scripts/build-installer.ps1 && npm run release:collect:desktop",
+    "release:collect:desktop": "node ../tools/desktop-release/collect-installers.mjs --only=local-sensitive-store-desktop"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "typescript": "~5.6.2",
+    "vite": "6.0.3"
+  }
+}

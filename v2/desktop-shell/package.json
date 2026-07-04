@@ -1,0 +1,88 @@
+{
+  "name": "desktop-shell",
+  "version": "0.1.6",
+  "author": "onlineclass",
+  "private": true,
+  "description": "Unified Electron desktop launcher for OnlineClass modules",
+  "main": "src/main.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron .",
+    "icon:generate": "python scripts/generate_icon.py",
+    "build:local-sensitive-helper": "npm --prefix ../local-sensitive-store-desktop run build:installer",
+    "build:installer": "npm run build:local-sensitive-helper && set CSC_IDENTITY_AUTO_DISCOVERY=false&& electron-builder --win nsis zip --x64 && npm run release:collect && npm run release:collect:desktop",
+    "build:msi": "powershell -ExecutionPolicy Bypass -File scripts/build-msi.ps1",
+    "release:collect": "node scripts/collect-artifacts.mjs",
+    "release:collect:open": "node scripts/collect-artifacts.mjs --open",
+    "release:collect:desktop": "node ../tools/desktop-release/collect-installers.mjs --only=desktop-shell"
+  },
+  "dependencies": {
+    "electron-log": "^5.2.4",
+    "electron-updater": "^6.3.9"
+  },
+  "devDependencies": {
+    "electron": "^34.3.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.onlineclass.desktop-shell",
+    "productName": "OnlineClass Desktop Shell",
+    "files": [
+      "src/**/*",
+      "modules.json",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "build/shortcut-icons",
+        "to": "shortcut-icons",
+        "filter": [
+          "*.ico",
+          "*.png"
+        ]
+      },
+      {
+        "from": "../local-sensitive-store-desktop/src-tauri/target/release/local-sensitive-store-desktop.exe",
+        "to": "local-sensitive-store/local-sensitive-store-desktop.exe"
+      }
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "asar": true,
+    "win": {
+      "signAndEditExecutable": false,
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "shortcutName": "온라인 학급 운영 프로그램",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "include": "build/installer.nsh"
+    },
+    "publish": [
+      {
+        "provider": "generic",
+        "url": "https://classaimate.netlify.app/desktop-updates/"
+      }
+    ]
+  }
+}

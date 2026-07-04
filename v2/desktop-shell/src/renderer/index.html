@@ -1,0 +1,84 @@
+﻿<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OnlineClass Desktop Launcher</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero card">
+        <div>
+          <h1>OnlineClass Desktop Launcher</h1>
+          <p>교사대시보드/연간시간표/자리배치를 하나의 설치형에서 실행합니다.</p>
+        </div>
+        <div class="meta">
+          <span id="appVersion">v0.0.0</span>
+          <span id="updateStatus">업데이트 상태: idle</span>
+        </div>
+      </header>
+
+      <section class="card">
+        <h2>접속 설정</h2>
+
+        <label class="field">
+          <span>Base URL</span>
+          <input id="baseUrl" type="url" placeholder="https://classaimate.netlify.app/" />
+          <small>로컬 개발 시 예시: http://localhost:5000/v2/</small>
+        </label>
+
+        <div class="grid2">
+          <label class="field">
+            <span>tenantId (선택)</span>
+            <input id="tenantId" type="text" placeholder="비우면 로그인 후 자동 학급 선택" />
+          </label>
+
+          <label class="field">
+            <span>인증 모드</span>
+            <select id="authMode">
+              <option value="redirect">redirect (권장)</option>
+              <option value="auto">auto</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="grid2">
+          <label class="field">
+            <span>시작 모듈</span>
+            <select id="startModule"></select>
+          </label>
+
+          <label class="toggle">
+            <input id="openExternalLinks" type="checkbox" checked />
+            <span>외부 사이트만 기본 브라우저로 열기</span>
+          </label>
+        </div>
+
+        <label class="field">
+          <span>단축키</span>
+          <small>Ctrl+휠 확대/축소 · Ctrl+0 기본 배율</small>
+        </label>
+
+        <div class="actions">
+          <button id="btnSave" class="btn secondary" type="button">설정 저장</button>
+          <button id="btnOpenStart" class="btn primary" type="button">시작 모듈 열기</button>
+          <button id="btnRecover" class="btn ghost" type="button">복구 실행</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>모듈 목록</h2>
+        <div id="moduleList" class="module-list"></div>
+      </section>
+
+      <section class="card">
+        <h2>진단</h2>
+        <pre id="healthBox" class="diagnostics"></pre>
+        <pre id="logBox" class="logs" aria-live="polite"></pre>
+      </section>
+    </main>
+
+    <script src="./renderer.js"></script>
+  </body>
+</html>

@@ -1,0 +1,97 @@
+name: Local Sensitive Store Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: "Private onlineClass source commit SHA that was synced into this builder repo."
+        required: true
+      release_tag:
+        description: "GitHub Release tag. Empty uses local-sensitive-store-v{package.version}."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows-installer:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: v2/local-sensitive-store-desktop
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: v2/local-sensitive-store-desktop/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Validate synced source commit
+        shell: pwsh
+        working-directory: .
+        env:
+          SOURCE_COMMIT_INPUT: ${{ inputs.source_commit }}
+        run: |
+          $source = Get-Content "builder-source.json" -Raw | ConvertFrom-Json
+          if ($source.sourceDirty -ne $false) { throw "builder-source.json reports sourceDirty=true." }
+          if ($source.sourceCommit -ne $env:SOURCE_COMMIT_INPUT) {
+            throw "source_commit mismatch. input=$($env:SOURCE_COMMIT_INPUT) builder-source=$($source.sourceCommit)"
+          }
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Windows installer
+        run: npx tauri build --bundles nsis
+
+      - name: Publish installer release and manifest
+        shell: pwsh
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILDER_REPO: ${{ github.repository }}
+          RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
+        run: |
+          $repoRoot = (Resolve-Path .).Path
+          $source = Get-Content "builder-source.json" -Raw | ConvertFrom-Json
+          $packageJson = Get-Content "v2/local-sensitive-store-desktop/package.json" -Raw | ConvertFrom-Json
+          $releaseTag = $env:RELEASE_TAG_INPUT
+          if (-not $releaseTag) { $releaseTag = "local-sensitive-store-v$($packageJson.version)" }
+          $asset = Get-ChildItem -Path "v2/local-sensitive-store-desktop/src-tauri/target/release/bundle/nsis" -Filter "*.exe" -Recurse | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $asset) { throw "NSIS installer not found." }
+          $fileName = "OnlineClass-Local-Sensitive-Store-Setup.exe"
+          $stagedAsset = Join-Path $env:RUNNER_TEMP $fileName
+          Copy-Item $asset.FullName $stagedAsset -Force
+          $hash = (Get-FileHash -Algorithm SHA256 $stagedAsset).Hash.ToLowerInvariant()
+          $builderCommit = (git -C $repoRoot rev-parse HEAD).Trim()
+          $downloadUrl = "https://github.com/$($env:BUILDER_REPO)/releases/download/$releaseTag/$fileName"
+          $manifest = [ordered]@{
+            name = "OnlineClass Local Sensitive Store"
+            version = [string]$packageJson.version
+            platform = "windows"
+            fileName = $fileName
+            downloadUrl = $downloadUrl
+            status = "available"
+            available = $true
+            sha256 = $hash
+            releasedAt = (Get-Date).ToUniversalTime().ToString("o")
+            sourceRepo = [string]$source.sourceRepo
+            sourceCommit = [string]$source.sourceCommit
+            builderRepo = [string]$env:BUILDER_REPO
+            builderCommit = $builderCommit
+            releaseTag = $releaseTag
+          }
+          $manifestPath = Join-Path $env:RUNNER_TEMP "local-sensitive-store-latest.json"
+          $manifest | ConvertTo-Json -Depth 8 | Set-Content -Path $manifestPath -Encoding UTF8
+          gh release view $releaseTag *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $releaseTag --target $builderCommit --title "OnlineClass Local Sensitive Store $($packageJson.version)" --notes "Windows local DB helper synced from onlineClass $($source.sourceCommit)."
+          }
+          gh release upload $releaseTag $stagedAsset $manifestPath --clobber

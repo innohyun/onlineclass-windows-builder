@@ -1,0 +1,101 @@
+name: Desktop Shell Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: "Private onlineClass source commit SHA that was synced into this builder repo."
+        required: true
+      release_tag:
+        description: "GitHub Release tag. Empty uses desktop-shell-v{package.version}."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows-installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: |
+            v2/desktop-shell/package-lock.json
+            v2/local-sensitive-store-desktop/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Validate synced source commit
+        shell: pwsh
+        env:
+          SOURCE_COMMIT_INPUT: ${{ inputs.source_commit }}
+        run: |
+          $source = Get-Content "builder-source.json" -Raw | ConvertFrom-Json
+          if ($source.sourceDirty -ne $false) { throw "builder-source.json reports sourceDirty=true." }
+          if ($source.sourceCommit -ne $env:SOURCE_COMMIT_INPUT) {
+            throw "source_commit mismatch. input=$($env:SOURCE_COMMIT_INPUT) builder-source=$($source.sourceCommit)"
+          }
+
+      - name: Install local store dependencies
+        working-directory: v2/local-sensitive-store-desktop
+        run: npm ci
+
+      - name: Install desktop shell dependencies
+        working-directory: v2/desktop-shell
+        run: npm ci
+
+      - name: Build unified Windows installer
+        working-directory: v2/desktop-shell
+        run: npm run build:installer
+
+      - name: Publish installer release and manifest
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILDER_REPO: ${{ github.repository }}
+          RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
+        run: |
+          $repoRoot = (Resolve-Path .).Path
+          $source = Get-Content "builder-source.json" -Raw | ConvertFrom-Json
+          $packageJson = Get-Content "v2/desktop-shell/package.json" -Raw | ConvertFrom-Json
+          $releaseTag = $env:RELEASE_TAG_INPUT
+          if (-not $releaseTag) { $releaseTag = "desktop-shell-v$($packageJson.version)" }
+          $asset = Get-ChildItem -Path "v2/desktop-shell/dist" -Filter "*Setup*.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $asset) { throw "Desktop Shell NSIS installer not found." }
+          $fileName = "OnlineClass-Desktop-Shell-Setup.exe"
+          $stagedAsset = Join-Path $env:RUNNER_TEMP $fileName
+          Copy-Item $asset.FullName $stagedAsset -Force
+          $hash = (Get-FileHash -Algorithm SHA256 $stagedAsset).Hash.ToLowerInvariant()
+          $builderCommit = (git -C $repoRoot rev-parse HEAD).Trim()
+          $downloadUrl = "https://github.com/$($env:BUILDER_REPO)/releases/download/$releaseTag/$fileName"
+          $manifest = [ordered]@{
+            name = "OnlineClass Desktop Shell"
+            version = [string]$packageJson.version
+            platform = "windows"
+            fileName = $fileName
+            downloadUrl = $downloadUrl
+            status = "available"
+            available = $true
+            includesLocalSensitiveStore = $true
+            sha256 = $hash
+            releasedAt = (Get-Date).ToUniversalTime().ToString("o")
+            sourceRepo = [string]$source.sourceRepo
+            sourceCommit = [string]$source.sourceCommit
+            builderRepo = [string]$env:BUILDER_REPO
+            builderCommit = $builderCommit
+            releaseTag = $releaseTag
+          }
+          $manifestPath = Join-Path $env:RUNNER_TEMP "desktop-shell-latest.json"
+          $manifest | ConvertTo-Json -Depth 8 | Set-Content -Path $manifestPath -Encoding UTF8
+          gh release view $releaseTag *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $releaseTag --target $builderCommit --title "OnlineClass Desktop Shell $($packageJson.version)" --notes "Unified Windows installer synced from onlineClass $($source.sourceCommit)."
+          }
+          gh release upload $releaseTag $stagedAsset $manifestPath --clobber

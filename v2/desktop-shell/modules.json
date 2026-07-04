@@ -1,0 +1,34 @@
+{
+  "modules": [
+    {
+      "id": "teacher-dashboard",
+      "label": "교사 대시보드",
+      "path": "teacher-dashboard/index.html",
+      "requiresTenant": false
+    },
+    {
+      "id": "team-hub",
+      "label": "팀허브",
+      "path": "team-hub/index.html",
+      "requiresTenant": true
+    },
+    {
+      "id": "yearbook-index",
+      "label": "연간시간표",
+      "path": "yearbook/index.html",
+      "requiresTenant": true
+    },
+    {
+      "id": "yearbook-lesson-plan",
+      "label": "수업계획",
+      "path": "yearbook/lesson-plan.html",
+      "requiresTenant": true
+    },
+    {
+      "id": "seat-admin",
+      "label": "자리배치 관리",
+      "path": "seat/admin.html",
+      "requiresTenant": true
+    }
+  ]
+}

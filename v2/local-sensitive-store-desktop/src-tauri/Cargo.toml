@@ -1,0 +1,31 @@
+[package]
+name = "local-sensitive-store-desktop"
+version = "0.2.15"
+description = "OnlineClass local sensitive data store"
+authors = ["onlineclass"]
+edition = "2021"
+
+[lib]
+name = "local_sensitive_store_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+tiny_http = "0.12"
+url = "2"
+rand = "0.8"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+keyring = "3"
+ureq = { version = "2", features = ["json"] }
+base64 = "0.22"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Security_Cryptography", "Win32_System_Memory"] }
+winreg = "0.52"
