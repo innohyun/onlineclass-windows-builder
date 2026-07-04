@@ -1569,58 +1569,73 @@ impl SqliteStore {
             .unwrap_or(0)
             .max(student_record_drafts.1.unwrap_or(0));
         let import_run_updated_at_ms = import_runs.1.unwrap_or(0);
-        Ok(json!({
-            "count": observation.0,
-            "observationCount": observation.0,
-            "firstDate": observation.1.unwrap_or_default(),
-            "lastDate": observation.2.unwrap_or_default(),
-            "updatedAtMs": observation_updated_at_ms,
-            "observationUpdatedAtMs": observation_updated_at_ms,
-            "studentPrivateDetailCount": student_private.0,
-            "studentPrivateDetailUpdatedAtMs": student_private_updated_at_ms,
-            "mathDailyAttemptCount": math_attempts.0,
-            "mathDailyProfileCount": math_profiles.0,
-            "mathDailyReviewSessionCount": math_reviews.0,
-            "mathDailyAssignmentResultCount": math_assignment_results.0,
-            "mathDailyFirstDate": math_attempts.1.unwrap_or_default(),
-            "mathDailyLastDate": math_attempts.2.unwrap_or_default(),
-            "mathDailyCacheAction": math_cache.0.unwrap_or_default(),
-            "mathDailyCacheDateFrom": math_cache.1.unwrap_or_default(),
-            "mathDailyCacheDateTo": math_cache.2.unwrap_or_default(),
-            "mathDailyCacheDateKey": math_cache.3.unwrap_or_default(),
-            "mathDailyCacheCurriculum": math_cache.4.unwrap_or_default(),
-            "mathDailyUpdatedAtMs": math_daily_updated_at_ms,
-            "boardSnapshotCount": snapshots.0,
-            "boardSnapshotUpdatedAtMs": snapshots.1.unwrap_or(0),
-            "boardSnapshotArchivedAtMs": board_snapshot_archived_at_ms,
-            "boardMediaCount": media.0,
-            "boardMediaSizeBytes": media.1,
-            "boardMediaArchivedAtMs": board_media_archived_at_ms,
-            "boardArchivedAtMs": board_snapshot_archived_at_ms.max(board_media_archived_at_ms),
-            "attendanceRecordCount": attendance_records.0,
-            "attendanceNaisCheckCount": attendance_nais_checks.0,
-            "attendanceDocumentRequestCount": attendance_document_requests.0,
-            "attendanceFirstDate": attendance_records.1.unwrap_or_default(),
-            "attendanceLastDate": attendance_records.2.unwrap_or_default(),
-            "attendanceUpdatedAtMs": attendance_updated_at_ms,
-            "evalAssignmentCount": eval_assignments.0,
-            "evalResultCount": eval_results.0,
-            "evalsUpdatedAtMs": evals_updated_at_ms,
-            "studentRecordDraftSetCount": student_record_draft_sets.0,
-            "studentRecordDraftCount": student_record_drafts.0,
-            "studentRecordDraftUpdatedAtMs": student_record_draft_updated_at_ms,
-            "importRunCount": import_runs.0,
-            "importRunUpdatedAtMs": import_run_updated_at_ms,
-            "latestLocalWriteAtMs": observation_updated_at_ms
-                .max(student_private_updated_at_ms)
-                .max(math_daily_updated_at_ms)
-                .max(board_snapshot_archived_at_ms)
-                .max(board_media_archived_at_ms)
-                .max(attendance_updated_at_ms)
-                .max(evals_updated_at_ms)
-                .max(student_record_draft_updated_at_ms)
-                .max(import_run_updated_at_ms)
-        }))
+        let latest_local_write_at_ms = observation_updated_at_ms
+            .max(student_private_updated_at_ms)
+            .max(math_daily_updated_at_ms)
+            .max(board_snapshot_archived_at_ms)
+            .max(board_media_archived_at_ms)
+            .max(attendance_updated_at_ms)
+            .max(evals_updated_at_ms)
+            .max(student_record_draft_updated_at_ms)
+            .max(import_run_updated_at_ms);
+        let mut stats = Map::new();
+        macro_rules! put_stat {
+            ($key:literal, $value:expr) => {
+                stats.insert($key.to_string(), json!($value));
+            };
+        }
+        put_stat!("count", observation.0);
+        put_stat!("observationCount", observation.0);
+        put_stat!("firstDate", observation.1.unwrap_or_default());
+        put_stat!("lastDate", observation.2.unwrap_or_default());
+        put_stat!("updatedAtMs", observation_updated_at_ms);
+        put_stat!("observationUpdatedAtMs", observation_updated_at_ms);
+        put_stat!("studentPrivateDetailCount", student_private.0);
+        put_stat!("studentPrivateDetailUpdatedAtMs", student_private_updated_at_ms);
+        put_stat!("mathDailyAttemptCount", math_attempts.0);
+        put_stat!("mathDailyProfileCount", math_profiles.0);
+        put_stat!("mathDailyReviewSessionCount", math_reviews.0);
+        put_stat!("mathDailyAssignmentResultCount", math_assignment_results.0);
+        put_stat!("mathDailyFirstDate", math_attempts.1.unwrap_or_default());
+        put_stat!("mathDailyLastDate", math_attempts.2.unwrap_or_default());
+        put_stat!("mathDailyCacheAction", math_cache.0.unwrap_or_default());
+        put_stat!("mathDailyCacheDateFrom", math_cache.1.unwrap_or_default());
+        put_stat!("mathDailyCacheDateTo", math_cache.2.unwrap_or_default());
+        put_stat!("mathDailyCacheDateKey", math_cache.3.unwrap_or_default());
+        put_stat!("mathDailyCacheCurriculum", math_cache.4.unwrap_or_default());
+        put_stat!("mathDailyUpdatedAtMs", math_daily_updated_at_ms);
+        put_stat!("boardSnapshotCount", snapshots.0);
+        put_stat!("boardSnapshotUpdatedAtMs", snapshots.1.unwrap_or(0));
+        put_stat!("boardSnapshotArchivedAtMs", board_snapshot_archived_at_ms);
+        put_stat!("boardMediaCount", media.0);
+        put_stat!("boardMediaSizeBytes", media.1);
+        put_stat!("boardMediaArchivedAtMs", board_media_archived_at_ms);
+        put_stat!(
+            "boardArchivedAtMs",
+            board_snapshot_archived_at_ms.max(board_media_archived_at_ms)
+        );
+        put_stat!("attendanceRecordCount", attendance_records.0);
+        put_stat!("attendanceNaisCheckCount", attendance_nais_checks.0);
+        put_stat!(
+            "attendanceDocumentRequestCount",
+            attendance_document_requests.0
+        );
+        put_stat!("attendanceFirstDate", attendance_records.1.unwrap_or_default());
+        put_stat!("attendanceLastDate", attendance_records.2.unwrap_or_default());
+        put_stat!("attendanceUpdatedAtMs", attendance_updated_at_ms);
+        put_stat!("evalAssignmentCount", eval_assignments.0);
+        put_stat!("evalResultCount", eval_results.0);
+        put_stat!("evalsUpdatedAtMs", evals_updated_at_ms);
+        put_stat!("studentRecordDraftSetCount", student_record_draft_sets.0);
+        put_stat!("studentRecordDraftCount", student_record_drafts.0);
+        put_stat!(
+            "studentRecordDraftUpdatedAtMs",
+            student_record_draft_updated_at_ms
+        );
+        put_stat!("importRunCount", import_runs.0);
+        put_stat!("importRunUpdatedAtMs", import_run_updated_at_ms);
+        put_stat!("latestLocalWriteAtMs", latest_local_write_at_ms);
+        Ok(Value::Object(stats))
     }
 
     pub(crate) fn record_cloud_sync_run(&self, mut input: Value) -> Result<Value, String> {
