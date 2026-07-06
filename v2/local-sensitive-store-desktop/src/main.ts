@@ -11,6 +11,9 @@ type ServiceStatus = {
   ok: boolean;
   service: string;
   version: string;
+  pcName?: string;
+  os?: string;
+  arch?: string;
   host: string;
   port: number;
   endpoint: string;
@@ -46,6 +49,17 @@ type CloudSyncStatus = {
   reconnectMessage?: string;
 };
 
+type BackupSource = {
+  service?: string;
+  serviceVersion?: string;
+  appVersion?: string;
+  pcName?: string;
+  os?: string;
+  arch?: string;
+  createdAtMs?: number;
+  dbPath?: string;
+};
+
 type BackupStatus = {
   ok: boolean;
   configured: boolean;
@@ -58,6 +72,7 @@ type BackupStatus = {
     backupId?: string;
     createdAtMs?: number;
     manifestPath?: string;
+    source?: BackupSource;
     counts?: Record<string, number>;
     media?: {
       copied?: number;
@@ -88,6 +103,7 @@ type BackupItem = {
   createdAtMs?: number;
   manifestPath?: string;
   dbPath?: string;
+  source?: BackupSource;
   counts?: Record<string, number>;
   media?: {
     records?: unknown[];
@@ -105,6 +121,7 @@ type BackupPreview = {
   backupId?: string;
   manifestPath?: string;
   createdAtMs?: number;
+  source?: BackupSource;
   counts?: Record<string, number>;
   media?: {
     records?: unknown[];
@@ -112,6 +129,7 @@ type BackupPreview = {
     skipped?: number;
     missing?: number;
     failed?: number;
+    bytes?: number;
   };
   error?: string;
 };
@@ -200,6 +218,14 @@ function numberText(value?: number) {
 
 function numeric(value?: number) {
   return Number(value || 0) || 0;
+}
+
+function byteText(value?: number) {
+  const bytes = Math.max(0, Number(value || 0) || 0);
+  if (bytes < 1024) return `${numberText(bytes)} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
 }
 
 function actionButtons(action: ActionName) {
@@ -356,8 +382,14 @@ function backupMathDailyCount(counts?: Record<string, number>) {
     "mathDailyAttemptCount",
     "mathDailyProfileCount",
     "mathDailyReviewSessionCount",
+    "mathDailyAssignmentCount",
     "mathDailyAssignmentResultCount",
+    "mathDailyCacheRunCount",
   ].reduce((sum, key) => sum + (Number(counts?.[key] || 0) || 0), 0);
+}
+
+function backupBoardSnapshotCount(counts?: Record<string, number>) {
+  return countFrom(counts, ["board_post_snapshots", "boardSnapshotCount"]);
 }
 
 function backupBoardMediaCount(counts?: Record<string, number>, media?: BackupItem["media"] | BackupPreview["media"]) {
@@ -367,14 +399,123 @@ function backupBoardMediaCount(counts?: Record<string, number>, media?: BackupIt
   return records;
 }
 
+function backupBoardTotalCount(counts?: Record<string, number>, media?: BackupItem["media"] | BackupPreview["media"]) {
+  return backupBoardSnapshotCount(counts) + backupBoardMediaCount(counts, media);
+}
+
+function backupAttendanceCount(counts?: Record<string, number>) {
+  return [
+    "attendance_records",
+    "attendance_nais_checks",
+    "attendance_document_requests",
+    "attendanceRecordCount",
+    "attendanceNaisCheckCount",
+    "attendanceDocumentRequestCount",
+  ].reduce((sum, key) => sum + (Number(counts?.[key] || 0) || 0), 0);
+}
+
+function backupEvalCount(counts?: Record<string, number>) {
+  return [
+    "eval_assignments",
+    "eval_results",
+    "evalAssignmentCount",
+    "evalResultCount",
+  ].reduce((sum, key) => sum + (Number(counts?.[key] || 0) || 0), 0);
+}
+
+function backupStudentRecordCount(counts?: Record<string, number>) {
+  return [
+    "student_record_draft_sets",
+    "student_record_drafts",
+    "studentRecordDraftSetCount",
+    "studentRecordDraftCount",
+  ].reduce((sum, key) => sum + (Number(counts?.[key] || 0) || 0), 0);
+}
+
+function backupHistoryCount(counts?: Record<string, number>) {
+  return [
+    "local_import_runs",
+    "cloud_sync_runs",
+    "importRunCount",
+    "cloudSyncRunCount",
+  ].reduce((sum, key) => sum + (Number(counts?.[key] || 0) || 0), 0);
+}
+
 function backupShortId(backup: BackupItem) {
   return String(backup.backupId || "").slice(-8) || "-";
+}
+
+function backupSourcePcName(source?: BackupSource) {
+  return String(source?.pcName || "").trim() || "PC 정보 없음";
+}
+
+function backupSourceRelation(source?: BackupSource) {
+  const sourcePc = String(source?.pcName || "").trim().toLowerCase();
+  const currentPc = String(serviceSnapshot?.pcName || "").trim().toLowerCase();
+  if (!sourcePc) return "PC 정보 없음";
+  if (currentPc && sourcePc === currentPc) return "이 PC";
+  return "다른 PC";
+}
+
+function backupEnvironmentText(source?: BackupSource) {
+  const parts: string[] = [];
+  const appVersion = String(source?.appVersion || "").trim();
+  const serviceVersion = String(source?.serviceVersion || "").trim();
+  const os = String(source?.os || "").trim();
+  const arch = String(source?.arch || "").trim();
+  if (appVersion) parts.push(`앱 v${appVersion}`);
+  if (serviceVersion) parts.push(`서비스 ${serviceVersion}`);
+  if (os || arch) parts.push([os, arch].filter(Boolean).join(" "));
+  return parts.join(" · ") || "환경 정보 없음";
+}
+
+function backupSourceSummary(source?: BackupSource) {
+  return `${backupSourceRelation(source)} · ${backupSourcePcName(source)} · ${backupEnvironmentText(source)}`;
 }
 
 function backupRowSummary(backup: BackupItem) {
   const counts = backup.counts || {};
   const media = backup.media || {};
-  return `관찰 ${numberText(backupObservationCount(counts))}건 · 학생 비공개 ${numberText(backupPrivateDetailCount(counts))}건 · 보드 미디어 ${numberText(backupBoardMediaCount(counts, media))}개`;
+  const parts = [
+    `관찰 ${numberText(backupObservationCount(counts))}`,
+    `학생 ${numberText(backupPrivateDetailCount(counts))}`,
+    `수학 ${numberText(backupMathDailyCount(counts))}`,
+    `게시판 ${numberText(backupBoardTotalCount(counts, media))}`,
+    `출결 ${numberText(backupAttendanceCount(counts))}`,
+    `평가 ${numberText(backupEvalCount(counts))}`,
+    `학생부 ${numberText(backupStudentRecordCount(counts))}`,
+    `이력 ${numberText(backupHistoryCount(counts))}`,
+  ];
+  return parts.join(" · ");
+}
+
+function backupPreviewDetails(counts: Record<string, number> | undefined, media?: BackupItem["media"] | BackupPreview["media"]) {
+  return [
+    ["관찰기록", countFrom(counts, ["lesson_observations", "observationCount"]), "건"],
+    ["학생 비공개", countFrom(counts, ["student_private_details", "studentPrivateDetailCount"]), "건"],
+    ["매일수학 시도", countFrom(counts, ["math_daily_attempts", "mathDailyAttemptCount"]), "건"],
+    ["매일수학 학생 프로필", countFrom(counts, ["math_daily_student_profiles", "mathDailyProfileCount"]), "건"],
+    ["매일수학 보충 세션", countFrom(counts, ["math_daily_review_sessions", "mathDailyReviewSessionCount"]), "건"],
+    ["매일수학 과제", countFrom(counts, ["math_daily_assignments", "mathDailyAssignmentCount"]), "건"],
+    ["매일수학 과제 결과", countFrom(counts, ["math_daily_assignment_results", "mathDailyAssignmentResultCount"]), "건"],
+    ["매일수학 캐시 이력", countFrom(counts, ["math_daily_cache_runs", "mathDailyCacheRunCount"]), "건"],
+    ["게시글 스냅샷", countFrom(counts, ["board_post_snapshots", "boardSnapshotCount"]), "건"],
+    ["보드 미디어", backupBoardMediaCount(counts, media), "개"],
+    ["출결 기록", countFrom(counts, ["attendance_records", "attendanceRecordCount"]), "건"],
+    ["출결 NEIS 확인", countFrom(counts, ["attendance_nais_checks", "attendanceNaisCheckCount"]), "건"],
+    ["출결 증빙 요청", countFrom(counts, ["attendance_document_requests", "attendanceDocumentRequestCount"]), "건"],
+    ["평가 운영", countFrom(counts, ["eval_assignments", "evalAssignmentCount"]), "건"],
+    ["평가 결과", countFrom(counts, ["eval_results", "evalResultCount"]), "건"],
+    ["학생부 초안 세트", countFrom(counts, ["student_record_draft_sets", "studentRecordDraftSetCount"]), "건"],
+    ["학생부 초안", countFrom(counts, ["student_record_drafts", "studentRecordDraftCount"]), "건"],
+    ["Firestore 가져오기 이력", countFrom(counts, ["local_import_runs", "importRunCount"]), "건"],
+    ["임시 기록 수거 이력", countFrom(counts, ["cloud_sync_runs", "cloudSyncRunCount"]), "건"],
+    ["첨부 복사", numeric(media?.copied), "개"],
+    ["첨부 유지", numeric(media?.skipped), "개"],
+    ["첨부 누락", numeric(media?.missing), "개"],
+    ["첨부 실패", numeric(media?.failed), "개"],
+    ["첨부 용량", byteText(media?.bytes), ""],
+  ] as Array<[string, number | string, string]>;
 }
 
 function normalizeBackupList(items: unknown): BackupItem[] {
@@ -834,20 +975,24 @@ function renderBackupRestorePanel() {
       "backupRestoreStatus",
       backupRestoreMessage
         || (backupPreview?.ok
-          ? "미리보기를 확인한 뒤 선택 백업 복원을 실행할 수 있습니다."
+          ? `${backupSourceSummary(backupPreview.source || selected?.source)} 백업입니다. 미리보기를 확인한 뒤 선택 백업 복원을 실행할 수 있습니다.`
           : "복원할 백업을 선택하면 미리보기를 불러옵니다."),
     );
-    listEl.innerHTML = backupList.map((backup) => {
+    listEl.innerHTML = backupList.map((backup, index) => {
       const isSelected = backup.manifestPath === selectedBackupManifestPath;
       const failed = numeric(backup.media?.failed);
       return `
         <button class="backup-list-row${isSelected ? " is-selected" : ""}" type="button" data-backup-manifest="${escapeHtml(backup.manifestPath)}">
           <span class="backup-list-row__radio" aria-hidden="true"></span>
-          <span>
-            <strong>${escapeHtml(formatDateTime(backup.createdAtMs))}</strong>
-            <span>${escapeHtml(backupRowSummary(backup))}</span>
+          <span class="backup-list-row__main">
+            <strong class="backup-list-row__time">
+              <span>${escapeHtml(formatDateTime(backup.createdAtMs))}</span>
+              ${index === 0 ? `<span class="backup-list-row__badge">최신</span>` : ""}
+            </strong>
+            <span class="backup-list-row__meta">${escapeHtml(backupSourceSummary(backup.source))}</span>
+            <span class="backup-list-row__counts">${escapeHtml(backupRowSummary(backup))}</span>
           </span>
-          <span>${failed ? "첨부 확인" : `#${escapeHtml(backupShortId(backup))}`}</span>
+          <span class="backup-list-row__tail">${failed ? "첨부 확인" : `#${escapeHtml(backupShortId(backup))}`}</span>
         </button>
       `;
     }).join("");
@@ -855,10 +1000,33 @@ function renderBackupRestorePanel() {
 
   const counts = backupPreview?.counts || selected?.counts || {};
   const media = backupPreview?.media || selected?.media || {};
+  const source = backupPreview?.source || selected?.source;
   setText("backupPreviewObservations", backupList.length ? numberText(backupObservationCount(counts)) : "-");
   setText("backupPreviewPrivateDetails", backupList.length ? numberText(backupPrivateDetailCount(counts)) : "-");
   setText("backupPreviewMathDaily", backupList.length ? numberText(backupMathDailyCount(counts)) : "-");
   setText("backupPreviewBoardMedia", backupList.length ? numberText(backupBoardMediaCount(counts, media)) : "-");
+  const detailsEl = byId<HTMLElement>("backupPreviewDetails");
+  if (!backupList.length) {
+    detailsEl.innerHTML = `<p class="restore-preview-empty">복원할 백업을 선택하면 PC 정보와 상세 건수가 표시됩니다.</p>`;
+  } else {
+    const rows = backupPreviewDetails(counts, media).map(([label, value, unit]) => {
+      const displayValue = typeof value === "number" ? numberText(value) : value;
+      return `
+        <div class="restore-preview-detail-row">
+          <span>${escapeHtml(label)}</span>
+          <strong>${escapeHtml(displayValue)}${unit ? `<small>${escapeHtml(unit)}</small>` : ""}</strong>
+        </div>
+      `;
+    }).join("");
+    detailsEl.innerHTML = `
+      <div class="restore-preview-source">
+        <strong>${escapeHtml(backupSourcePcName(source))}</strong>
+        <span>${escapeHtml(backupSourceRelation(source))}</span>
+        <span>${escapeHtml(backupEnvironmentText(source))}</span>
+      </div>
+      <div class="restore-preview-detail-list">${rows}</div>
+    `;
+  }
   refreshActionStates();
 }
 
@@ -1021,7 +1189,8 @@ async function restoreSelectedBackup() {
     return;
   }
   const selected = backupList.find((backup) => backup.manifestPath === manifestPath);
-  const ok = window.confirm(`${formatDateTime(selected?.createdAtMs)} 백업을 이 PC의 로컬 DB에 병합 복원합니다. 현재 PC의 더 최신 기록은 유지됩니다. 계속할까요?`);
+  const sourceText = backupSourceSummary(backupPreview?.source || selected?.source);
+  const ok = window.confirm(`${formatDateTime(selected?.createdAtMs)} · ${sourceText} 백업을 이 PC의 로컬 DB에 병합 복원합니다. 현재 PC의 더 최신 기록은 유지됩니다. 계속할까요?`);
   if (!ok) return;
   setActionBusy("restore-backup", true);
   setBackupRestoreMessage("선택한 백업을 로컬 DB에 병합 복원하는 중입니다.", "neutral");

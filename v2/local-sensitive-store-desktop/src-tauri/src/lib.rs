@@ -23,7 +23,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-const SERVICE_VERSION: &str = "2026-07-04.3-student-record-local-first";
+pub(crate) const SERVICE_VERSION: &str = "2026-07-04.3-student-record-local-first";
 const DB_FILE_NAME: &str = "onlineclass-sensitive.sqlite";
 const KEY_FILE_NAME: &str = "pairing-key.txt";
 const BROWSER_LINK_FILE_NAME: &str = "browser-link-tokens.json";
@@ -84,6 +84,9 @@ struct ServiceStatus {
     ok: bool,
     service: String,
     version: String,
+    pc_name: String,
+    os: String,
+    arch: String,
     host: String,
     port: u16,
     endpoint: String,
@@ -100,6 +103,9 @@ impl ServiceStatus {
             ok: false,
             service: SERVICE_NAME.to_string(),
             version: SERVICE_VERSION.to_string(),
+            pc_name: local_pc_name(),
+            os: local_os_name(),
+            arch: local_arch(),
             host: HOST.to_string(),
             port: 0,
             endpoint: String::new(),
@@ -171,6 +177,21 @@ fn normalize(value: impl ToString, max_len: usize) -> String {
         text = text.chars().take(max_len).collect();
     }
     text
+}
+
+pub(crate) fn local_pc_name() -> String {
+    env::var("COMPUTERNAME")
+        .or_else(|_| env::var("HOSTNAME"))
+        .map(|value| normalize(value, 120))
+        .unwrap_or_default()
+}
+
+pub(crate) fn local_os_name() -> String {
+    env::consts::OS.to_string()
+}
+
+pub(crate) fn local_arch() -> String {
+    env::consts::ARCH.to_string()
 }
 
 fn now_ms() -> i64 {
@@ -1079,6 +1100,9 @@ impl SqliteStore {
             "ok": true,
             "service": SERVICE_NAME,
             "version": SERVICE_VERSION,
+            "pcName": local_pc_name(),
+            "os": local_os_name(),
+            "arch": local_arch(),
             "dbPath": self.db_path.to_string_lossy(),
             "routes": LOCAL_SENSITIVE_STORE_ROUTES,
             "features": LOCAL_SENSITIVE_STORE_FEATURES
@@ -1467,6 +1491,13 @@ impl SqliteStore {
                 |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?)),
             )
             .map_err(|e| format!("db_stats_math_reviews_failed:{e}"))?;
+        let math_assignments = conn
+            .query_row(
+                "SELECT COUNT(*), MAX(updated_at_ms) FROM math_daily_assignments WHERE tenant_id = ?1",
+                params![&safe_tenant],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?)),
+            )
+            .map_err(|e| format!("db_stats_math_assignments_failed:{e}"))?;
         let math_assignment_results = conn
             .query_row(
                 "SELECT COUNT(*), MAX(updated_at_ms) FROM math_daily_assignment_results WHERE tenant_id = ?1",
@@ -1474,6 +1505,13 @@ impl SqliteStore {
                 |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?)),
             )
             .map_err(|e| format!("db_stats_math_assignment_results_failed:{e}"))?;
+        let math_cache_runs = conn
+            .query_row(
+                "SELECT COUNT(*), MAX(updated_at_ms) FROM math_daily_cache_runs WHERE tenant_id = ?1",
+                params![&safe_tenant],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?)),
+            )
+            .map_err(|e| format!("db_stats_math_cache_runs_failed:{e}"))?;
         let math_cache = conn
             .query_row(
                 "SELECT action, date_from, date_to, date_key, curriculum, updated_at_ms FROM math_daily_cache_runs WHERE tenant_id = ?1 ORDER BY updated_at_ms DESC LIMIT 1",
@@ -1544,6 +1582,13 @@ impl SqliteStore {
                 |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?)),
             )
             .map_err(|e| format!("db_stats_import_runs_failed:{e}"))?;
+        let cloud_sync_runs = conn
+            .query_row(
+                "SELECT COUNT(*), MAX(finished_at_ms) FROM cloud_sync_runs WHERE tenant_id = ?1",
+                params![&safe_tenant],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?)),
+            )
+            .map_err(|e| format!("db_stats_cloud_sync_runs_failed:{e}"))?;
         let observation_updated_at_ms = observation.3.unwrap_or(0);
         let student_private_updated_at_ms = student_private.1.unwrap_or(0);
         let math_daily_updated_at_ms = math_attempts
@@ -1551,7 +1596,9 @@ impl SqliteStore {
             .unwrap_or(0)
             .max(math_profiles.1.unwrap_or(0))
             .max(math_reviews.1.unwrap_or(0))
+            .max(math_assignments.1.unwrap_or(0))
             .max(math_assignment_results.1.unwrap_or(0))
+            .max(math_cache_runs.1.unwrap_or(0))
             .max(math_cache.5.unwrap_or(0));
         let board_snapshot_archived_at_ms = snapshots.2.unwrap_or(0);
         let board_media_archived_at_ms = media.2.unwrap_or(0);
@@ -1569,6 +1616,7 @@ impl SqliteStore {
             .unwrap_or(0)
             .max(student_record_drafts.1.unwrap_or(0));
         let import_run_updated_at_ms = import_runs.1.unwrap_or(0);
+        let cloud_sync_run_updated_at_ms = cloud_sync_runs.1.unwrap_or(0);
         let latest_local_write_at_ms = observation_updated_at_ms
             .max(student_private_updated_at_ms)
             .max(math_daily_updated_at_ms)
@@ -1577,7 +1625,8 @@ impl SqliteStore {
             .max(attendance_updated_at_ms)
             .max(evals_updated_at_ms)
             .max(student_record_draft_updated_at_ms)
-            .max(import_run_updated_at_ms);
+            .max(import_run_updated_at_ms)
+            .max(cloud_sync_run_updated_at_ms);
         let mut stats = Map::new();
         macro_rules! put_stat {
             ($key:literal, $value:expr) => {
@@ -1595,7 +1644,9 @@ impl SqliteStore {
         put_stat!("mathDailyAttemptCount", math_attempts.0);
         put_stat!("mathDailyProfileCount", math_profiles.0);
         put_stat!("mathDailyReviewSessionCount", math_reviews.0);
+        put_stat!("mathDailyAssignmentCount", math_assignments.0);
         put_stat!("mathDailyAssignmentResultCount", math_assignment_results.0);
+        put_stat!("mathDailyCacheRunCount", math_cache_runs.0);
         put_stat!("mathDailyFirstDate", math_attempts.1.unwrap_or_default());
         put_stat!("mathDailyLastDate", math_attempts.2.unwrap_or_default());
         put_stat!("mathDailyCacheAction", math_cache.0.unwrap_or_default());
@@ -1634,6 +1685,8 @@ impl SqliteStore {
         );
         put_stat!("importRunCount", import_runs.0);
         put_stat!("importRunUpdatedAtMs", import_run_updated_at_ms);
+        put_stat!("cloudSyncRunCount", cloud_sync_runs.0);
+        put_stat!("cloudSyncRunUpdatedAtMs", cloud_sync_run_updated_at_ms);
         put_stat!("latestLocalWriteAtMs", latest_local_write_at_ms);
         Ok(Value::Object(stats))
     }
@@ -4013,6 +4066,9 @@ fn start_service() -> Result<(ServiceStatus, Arc<SqliteStore>, Arc<cloud_sync::C
         ok: true,
         service: SERVICE_NAME.to_string(),
         version: SERVICE_VERSION.to_string(),
+        pc_name: local_pc_name(),
+        os: local_os_name(),
+        arch: local_arch(),
         host: HOST.to_string(),
         port,
         endpoint,

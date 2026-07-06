@@ -1,4 +1,4 @@
-use crate::{normalize, normalize_json_text, normalize_tenant_id, SqliteStore};
+use crate::{local_arch, local_os_name, local_pc_name, normalize, normalize_json_text, normalize_tenant_id, SqliteStore, SERVICE_VERSION};
 use chrono::Utc;
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
@@ -500,6 +500,19 @@ fn read_manifest(path: &Path) -> Result<Value, String> {
     serde_json::from_str::<Value>(&raw).map_err(|e| format!("backup_manifest_decode_failed:{e}"))
 }
 
+fn backup_source(store: &SqliteStore, created_at_ms: i64) -> Value {
+    json!({
+        "service": "onlineclass-local-sensitive-store",
+        "serviceVersion": SERVICE_VERSION,
+        "appVersion": env!("CARGO_PKG_VERSION"),
+        "pcName": local_pc_name(),
+        "os": local_os_name(),
+        "arch": local_arch(),
+        "createdAtMs": created_at_ms,
+        "dbPath": store.db_path.to_string_lossy()
+    })
+}
+
 fn latest_manifest_path(store: &SqliteStore, tenant_id: &str) -> Result<PathBuf, String> {
     let list = list_backups(store, tenant_id.to_string(), 1)?;
     list.get("backups")
@@ -640,6 +653,7 @@ pub(crate) fn list_backups(store: &SqliteStore, tenant_id: String, limit: i64) -
                 "createdAtMs": manifest.get("createdAtMs").and_then(|value| value.as_i64()).unwrap_or(0),
                 "manifestPath": path.to_string_lossy(),
                 "dbPath": manifest.get("db").and_then(|db| db.get("absolutePath")).and_then(|value| value.as_str()).unwrap_or(""),
+                "source": manifest.get("source").cloned().unwrap_or_else(|| json!({})),
                 "counts": manifest.get("counts").cloned().unwrap_or_else(|| json!({})),
                 "media": manifest.get("media").cloned().unwrap_or_else(|| json!({}))
             }));
@@ -739,6 +753,7 @@ fn backup_manifest_summary(path: &Path, fallback_tenant_id: &str) -> Option<Valu
         "createdAtMs": manifest.get("createdAtMs").and_then(|value| value.as_i64()).unwrap_or(0),
         "manifestPath": path.to_string_lossy(),
         "dbPath": db_path,
+        "source": manifest.get("source").cloned().unwrap_or_else(|| json!({})),
         "counts": manifest.get("counts").cloned().unwrap_or_else(|| json!({})),
         "media": manifest.get("media").cloned().unwrap_or_else(|| json!({}))
     }))
@@ -945,10 +960,7 @@ pub(crate) fn run_now(store: &SqliteStore, tenant_id: String) -> Result<Value, S
         "tenantId": tenant_id,
         "backupId": backup_id,
         "createdAtMs": created_at_ms,
-        "source": {
-            "service": "onlineclass-local-sensitive-store",
-            "dbPath": store.db_path.to_string_lossy()
-        },
+        "source": backup_source(store, created_at_ms),
         "db": {
             "relativePath": db_relative_path.to_string_lossy().replace('\\', "/"),
             "absolutePath": db_path.to_string_lossy()
@@ -959,7 +971,9 @@ pub(crate) fn run_now(store: &SqliteStore, tenant_id: String) -> Result<Value, S
             "mathDailyAttemptCount": stats.get("mathDailyAttemptCount").and_then(|value| value.as_i64()).unwrap_or(0),
             "mathDailyProfileCount": stats.get("mathDailyProfileCount").and_then(|value| value.as_i64()).unwrap_or(0),
             "mathDailyReviewSessionCount": stats.get("mathDailyReviewSessionCount").and_then(|value| value.as_i64()).unwrap_or(0),
+            "mathDailyAssignmentCount": stats.get("mathDailyAssignmentCount").and_then(|value| value.as_i64()).unwrap_or(0),
             "mathDailyAssignmentResultCount": stats.get("mathDailyAssignmentResultCount").and_then(|value| value.as_i64()).unwrap_or(0),
+            "mathDailyCacheRunCount": stats.get("mathDailyCacheRunCount").and_then(|value| value.as_i64()).unwrap_or(0),
             "boardSnapshotCount": stats.get("boardSnapshotCount").and_then(|value| value.as_i64()).unwrap_or(0),
             "boardMediaCount": stats.get("boardMediaCount").and_then(|value| value.as_i64()).unwrap_or(0),
             "attendanceRecordCount": stats.get("attendanceRecordCount").and_then(|value| value.as_i64()).unwrap_or(0),
@@ -969,7 +983,8 @@ pub(crate) fn run_now(store: &SqliteStore, tenant_id: String) -> Result<Value, S
             "evalResultCount": stats.get("evalResultCount").and_then(|value| value.as_i64()).unwrap_or(0),
             "studentRecordDraftSetCount": stats.get("studentRecordDraftSetCount").and_then(|value| value.as_i64()).unwrap_or(0),
             "studentRecordDraftCount": stats.get("studentRecordDraftCount").and_then(|value| value.as_i64()).unwrap_or(0),
-            "importRunCount": stats.get("importRunCount").and_then(|value| value.as_i64()).unwrap_or(0)
+            "importRunCount": stats.get("importRunCount").and_then(|value| value.as_i64()).unwrap_or(0),
+            "cloudSyncRunCount": stats.get("cloudSyncRunCount").and_then(|value| value.as_i64()).unwrap_or(0)
         },
         "media": {
             "mode": "separate_folder_mirror",
@@ -992,6 +1007,7 @@ pub(crate) fn run_now(store: &SqliteStore, tenant_id: String) -> Result<Value, S
         "manifestPath": manifest_path.to_string_lossy(),
         "dbPath": db_path.to_string_lossy(),
         "createdAtMs": created_at_ms,
+        "source": manifest.get("source").cloned().unwrap_or_else(|| json!({})),
         "counts": manifest.get("counts").cloned().unwrap_or_else(|| json!({})),
         "media": manifest.get("media").cloned().unwrap_or_else(|| json!({}))
     });
@@ -1052,6 +1068,7 @@ pub(crate) fn restore_preview(store: &SqliteStore, body: Value) -> Result<Value,
         "backupId": manifest.get("backupId").and_then(|value| value.as_str()).unwrap_or(""),
         "manifestPath": manifest_path.to_string_lossy(),
         "createdAtMs": manifest.get("createdAtMs").and_then(|value| value.as_i64()).unwrap_or(0),
+        "source": manifest.get("source").cloned().unwrap_or_else(|| json!({})),
         "counts": counts,
         "media": manifest.get("media").cloned().unwrap_or_else(|| json!({}))
     }))
