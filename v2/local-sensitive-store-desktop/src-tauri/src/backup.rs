@@ -126,6 +126,20 @@ const BACKUP_TABLES: &[BackupTable] = &[
         optional: true,
     },
     BackupTable {
+        name: "counseling_records",
+        columns: &["tenant_id", "request_id", "student_code", "status", "created_at_ms", "updated_at_ms", "payload_json"],
+        key_columns: &["tenant_id", "request_id"],
+        timestamp_column: "updated_at_ms",
+        optional: true,
+    },
+    BackupTable {
+        name: "counseling_teacher_notes",
+        columns: &["tenant_id", "request_id", "payload_json", "updated_at_ms"],
+        key_columns: &["tenant_id", "request_id"],
+        timestamp_column: "updated_at_ms",
+        optional: true,
+    },
+    BackupTable {
         name: "eval_assignments",
         columns: &["tenant_id", "assignment_id", "shared_plan_id", "scheduled_date", "payload_json", "updated_at_ms"],
         key_columns: &["tenant_id", "assignment_id"],
@@ -314,6 +328,24 @@ fn backup_schema_sql(prefix: &str) -> String {
           payload_json TEXT NOT NULL,
           updated_at_ms INTEGER NOT NULL,
           PRIMARY KEY (tenant_id, request_id)
+        );
+        CREATE TABLE IF NOT EXISTS {prefix}counseling_records (
+          tenant_id TEXT NOT NULL,
+          request_id TEXT NOT NULL,
+          student_code TEXT NOT NULL,
+          status TEXT NOT NULL,
+          created_at_ms INTEGER NOT NULL,
+          updated_at_ms INTEGER NOT NULL,
+          payload_json TEXT NOT NULL,
+          PRIMARY KEY (tenant_id, request_id)
+        );
+        CREATE TABLE IF NOT EXISTS {prefix}counseling_teacher_notes (
+          tenant_id TEXT NOT NULL,
+          request_id TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          updated_at_ms INTEGER NOT NULL,
+          PRIMARY KEY (tenant_id, request_id),
+          FOREIGN KEY (tenant_id, request_id) REFERENCES counseling_records (tenant_id, request_id) ON DELETE CASCADE
         );
         CREATE TABLE IF NOT EXISTS {prefix}eval_assignments (
           tenant_id TEXT NOT NULL,
@@ -979,6 +1011,8 @@ pub(crate) fn run_now(store: &SqliteStore, tenant_id: String) -> Result<Value, S
             "attendanceRecordCount": stats.get("attendanceRecordCount").and_then(|value| value.as_i64()).unwrap_or(0),
             "attendanceNaisCheckCount": stats.get("attendanceNaisCheckCount").and_then(|value| value.as_i64()).unwrap_or(0),
             "attendanceDocumentRequestCount": stats.get("attendanceDocumentRequestCount").and_then(|value| value.as_i64()).unwrap_or(0),
+            "counselingRecordCount": stats.get("counselingRecordCount").and_then(|value| value.as_i64()).unwrap_or(0),
+            "counselingTeacherNoteCount": stats.get("counselingTeacherNoteCount").and_then(|value| value.as_i64()).unwrap_or(0),
             "evalAssignmentCount": stats.get("evalAssignmentCount").and_then(|value| value.as_i64()).unwrap_or(0),
             "evalResultCount": stats.get("evalResultCount").and_then(|value| value.as_i64()).unwrap_or(0),
             "studentRecordDraftSetCount": stats.get("studentRecordDraftSetCount").and_then(|value| value.as_i64()).unwrap_or(0),

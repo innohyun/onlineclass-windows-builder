@@ -5,6 +5,8 @@ use keyring::Entry;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -14,6 +16,8 @@ use url::Url;
 const KEYRING_SERVICE: &str = "OnlineClassLocalSensitiveStore";
 const SESSION_FILE_NAME: &str = "cloud-sync-session.json";
 const CREDENTIAL_FILE_NAME: &str = "cloud-sync-credentials.json";
+const MACOS_FALLBACK_PREFIX: &str = "macos_file_v1:";
+const RECONNECT_MESSAGE: &str = "저장된 로그인 연결이 만료되었거나 이 기기의 보안 저장소에서 찾을 수 없습니다. 이 PC 자동 연결을 다시 실행하세요.";
 const SYNC_INTERVAL_SECS: u64 = 60;
 const SYNC_LIMIT: i64 = 50;
 const MODE_FIRESTORE: &str = "firestore";
@@ -175,7 +179,7 @@ fn status_from_session(session: Option<&CloudSyncSession>) -> Value {
                 "lastErrorCode": if credential_missing { "credential_missing" } else { "" },
                 "credentialMissing": credential_missing,
                 "needsReconnect": credential_missing,
-                "reconnectMessage": if credential_missing { "저장된 로그인 연결이 만료되었거나 Windows 보안 저장소에서 삭제되었습니다. 이 PC 자동 연결을 다시 실행하세요." } else { "" },
+                "reconnectMessage": if credential_missing { RECONNECT_MESSAGE } else { "" },
             })
         },
         None => json!({
@@ -334,8 +338,14 @@ fn protect_refresh_token(refresh_token: &str) -> Result<String, String> {
 }
 
 #[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
+fn protect_refresh_token(refresh_token: &str) -> Result<String, String> {
+    Ok(format!("{MACOS_FALLBACK_PREFIX}{}", BASE64_STANDARD.encode(refresh_token.as_bytes())))
+}
+
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 fn protect_refresh_token(_refresh_token: &str) -> Result<String, String> {
-    Err("dpapi_unsupported".to_string())
+    Err("fallback_credential_unsupported".to_string())
 }
 
 #[cfg(target_os = "windows")]
@@ -375,8 +385,35 @@ fn unprotect_refresh_token(protected_refresh_token: &str) -> Result<String, Stri
 }
 
 #[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
+fn unprotect_refresh_token(protected_refresh_token: &str) -> Result<String, String> {
+    let encoded = protected_refresh_token
+        .strip_prefix(MACOS_FALLBACK_PREFIX)
+        .ok_or_else(|| "macos_fallback_prefix_missing".to_string())?;
+    let bytes = BASE64_STANDARD
+        .decode(encoded)
+        .map_err(|e| format!("macos_fallback_base64_decode_failed:{e}"))?;
+    String::from_utf8(bytes).map_err(|e| format!("macos_fallback_utf8_failed:{e}"))
+}
+
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 fn unprotect_refresh_token(_protected_refresh_token: &str) -> Result<String, String> {
-    Err("dpapi_unsupported".to_string())
+    Err("fallback_credential_unsupported".to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn fallback_credential_storage_label() -> &'static str {
+    "windows_dpapi_file"
+}
+
+#[cfg(target_os = "macos")]
+fn fallback_credential_storage_label() -> &'static str {
+    "macos_file"
+}
+
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+fn fallback_credential_storage_label() -> &'static str {
+    "fallback_file"
 }
 
 fn is_cloud_sync_storage_mode(mode: &str) -> bool {
@@ -472,7 +509,11 @@ impl CloudSyncManager {
         }
         let raw = serde_json::to_string_pretty(credential_file)
             .map_err(|e| format!("credential_file_encode_failed:{e}"))?;
-        fs::write(&self.credential_path, raw).map_err(|e| format!("credential_file_write_failed:{e}"))
+        fs::write(&self.credential_path, raw).map_err(|e| format!("credential_file_write_failed:{e}"))?;
+        #[cfg(unix)]
+        fs::set_permissions(&self.credential_path, fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("credential_file_permissions_failed:{e}"))?;
+        Ok(())
     }
 
     fn save_fallback_refresh_token(&self, account: &str, refresh_token: &str) -> Result<(), String> {
@@ -536,11 +577,15 @@ impl CloudSyncManager {
             if self.save_fallback_refresh_token(account, refresh_token).is_ok() {
                 return Ok("keyring+windows_dpapi_file".to_string());
             }
+            #[cfg(target_os = "macos")]
+            if self.save_fallback_refresh_token(account, refresh_token).is_ok() {
+                return Ok("keyring+macos_file".to_string());
+            }
             return Ok("keyring".to_string());
         }
         let keyring_error = keyring_result.err().unwrap_or_else(|| "keyring_failed".to_string());
         self.save_fallback_refresh_token(account, refresh_token)
-            .map(|_| "windows_dpapi_file".to_string())
+            .map(|_| fallback_credential_storage_label().to_string())
             .map_err(|fallback_error| format!("{keyring_error};fallback_set_failed:{fallback_error}"))
     }
 
@@ -556,7 +601,7 @@ impl CloudSyncManager {
             .err()
             .unwrap_or_else(|| "keyring_get_failed:empty_refresh_token".to_string());
         self.read_fallback_refresh_token(&session.keyring_account)
-            .map(|refresh_token| (refresh_token, "windows_dpapi_file".to_string()))
+            .map(|refresh_token| (refresh_token, fallback_credential_storage_label().to_string()))
             .map_err(|fallback_error| format!("{keyring_error};fallback_get_failed:{fallback_error}"))
     }
 

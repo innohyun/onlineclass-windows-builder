@@ -260,6 +260,12 @@ function setActionBusy(action: ActionName, busy: boolean) {
   refreshActionStates();
 }
 
+function waitForPaint() {
+  return new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  });
+}
+
 async function copyText(value: string) {
   const trimmed = String(value || "").trim();
   if (!trimmed || trimmed === "-") return false;
@@ -344,6 +350,13 @@ function isCredentialMissing(status?: CloudSyncStatus | null) {
 function reconnectMessage(status?: CloudSyncStatus | null) {
   return status?.reconnectMessage
     || "브라우저 로그인 정보가 만료되어 자동 수거가 멈춰 있습니다. 아래 다시 연결하기를 누르면 교사 설정 화면으로 이동합니다.";
+}
+
+function credentialStorageLabel(value?: string) {
+  const storage = String(value || "");
+  if (storage.includes("windows_dpapi_file")) return "자동 연결(암호화 보관)";
+  if (storage.includes("macos_file")) return "자동 연결(로컬 보조 보관)";
+  return "자동 연결";
 }
 
 function latestSyncTime(status?: CloudSyncStatus | null) {
@@ -776,7 +789,7 @@ function renderConnectionStatus(status?: CloudSyncStatus | null) {
   setBadge("connectionBadge", "정상", "ok");
   setText("connectionTitle", "정상 작동 중입니다.");
   setText("connectionMetaText", "이 PC에서 민감기록을 저장하고, 임시 기록을 자동 수거합니다.");
-  setText("connectionModeText", status.credentialStorage === "windows_dpapi_file" ? "자동 연결(암호화 보관)" : "자동 연결");
+  setText("connectionModeText", credentialStorageLabel(status.credentialStorage));
   setText("connectionAccountText", accountLabel(status));
   setText("connectionCheckText", formatDateTime(latestSyncTime(status)));
 }
@@ -1100,6 +1113,8 @@ function applyBackupDiscovery(discovery: BackupDiscovery, selectedFolder: string
 
 async function chooseBackupFolder() {
   setActionBusy("choose-backup-folder", true);
+  setText("backupStatus", "백업 폴더 선택 창을 여는 중입니다.");
+  await waitForPaint();
   try {
     const selected = await open({
       directory: true,
@@ -1107,6 +1122,8 @@ async function chooseBackupFolder() {
       title: "OnlineClass 로컬 백업을 저장할 클라우드 동기화 폴더 선택",
     });
     if (!selected || Array.isArray(selected)) return;
+    setText("backupStatus", "선택한 폴더에서 기존 백업과 학급 정보를 확인하는 중입니다. 클라우드 동기화 폴더는 시간이 걸릴 수 있습니다.");
+    await waitForPaint();
     const discovery = await invoke<BackupDiscovery>("discover_backup_tenants", { folderPath: selected });
     const folderPath = applyBackupDiscovery(discovery || { ok: false }, selected);
     const tenantId = currentBackupTenantId();
@@ -1115,9 +1132,16 @@ async function chooseBackupFolder() {
       renderBackupRestorePanel();
       return;
     }
+    setText("backupStatus", "백업 폴더 설정을 저장하는 중입니다.");
+    await waitForPaint();
     const status = await invoke<BackupStatus>("set_backup_folder", { tenantId, folderPath });
+    setText("backupStatus", "백업 목록을 새로 불러오는 중입니다.");
+    await waitForPaint();
     await loadBackupList(tenantId).catch(() => undefined);
     renderBackupStatus(status);
+    if (status?.ok) {
+      setText("backupStatus", "백업 폴더 설정을 완료했습니다. 필요하면 지금 백업을 눌러 새 백업을 만들 수 있습니다.");
+    }
     if (selectedBackupManifestPath) {
       void loadBackupPreview(selectedBackupManifestPath);
     }

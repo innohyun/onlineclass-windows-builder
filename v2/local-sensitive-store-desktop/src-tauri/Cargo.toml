@@ -1,6 +1,6 @@
 [package]
 name = "local-sensitive-store-desktop"
-version = "0.2.17"
+version = "0.2.19"
 description = "OnlineClass local sensitive data store"
 authors = ["onlineclass"]
 edition = "2021"
@@ -25,6 +25,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 keyring = "3"
 ureq = { version = "2", features = ["json"] }
 base64 = "0.22"
+sha2 = "0.10"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Security_Cryptography", "Win32_System_Memory"] }
