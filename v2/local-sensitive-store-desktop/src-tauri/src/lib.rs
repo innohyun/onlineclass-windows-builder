@@ -24,7 +24,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-07-21.1-counseling-local-authority";
+pub(crate) const SERVICE_VERSION: &str = "2026-08-01.1-student-sensitive-core-boundary";
 const DB_FILE_NAME: &str = "onlineclass-sensitive.sqlite";
 const KEY_FILE_NAME: &str = "pairing-key.txt";
 const BROWSER_LINK_FILE_NAME: &str = "browser-link-tokens.json";
@@ -40,6 +40,7 @@ const LOCAL_SENSITIVE_STORE_ROUTES: &[&str] = &[
     "/v1/observations/import",
     "/v1/student-private-details",
     "/v1/student-private-details/import",
+    "/v1/student-private-photos",
     "/v1/math-daily/cache",
     "/v1/math-daily/cache-status",
     "/v1/math-daily/import",
@@ -1046,6 +1047,21 @@ fn normalize_student_private_detail(input: Value) -> Result<NormalizedStudentPri
         .to_rfc3339();
 
     let student_name = normalize_json_text(obj.get("studentName").or_else(|| obj.get("name")), 160);
+    let gender = match normalize_json_text(obj.get("gender"), 1).as_str() {
+        "M" => "M",
+        "F" => "F",
+        _ => "A",
+    };
+    let birth_date = normalize_json_text(obj.get("birthDate"), 10);
+    let birth_date = if birth_date.len() == 10
+        && birth_date.as_bytes()[4] == b'-'
+        && birth_date.as_bytes()[7] == b'-'
+        && birth_date.chars().enumerate().all(|(index, ch)| index == 4 || index == 7 || ch.is_ascii_digit())
+    {
+        birth_date
+    } else {
+        String::new()
+    };
     let siblings_note = normalize_json_text(obj.get("siblingsNote"), 1000);
     let special_note = normalize_json_text(obj.get("specialNote"), 1000);
     let guardian1 = normalize_guardian(obj.get("guardian1"));
@@ -1078,6 +1094,8 @@ fn normalize_student_private_detail(input: Value) -> Result<NormalizedStudentPri
     set_obj(&mut obj, "tenantId", tenant_id.clone());
     set_obj(&mut obj, "studentCode", student_code.clone());
     set_obj(&mut obj, "studentName", student_name);
+    set_obj(&mut obj, "gender", gender);
+    obj.insert("birthDate".to_string(), if birth_date.is_empty() { Value::Null } else { Value::String(birth_date) });
     obj.insert("guardian1".to_string(), guardian1);
     obj.insert("guardian2".to_string(), guardian2);
     obj.insert(
@@ -1330,6 +1348,18 @@ impl SqliteStore {
             );
             CREATE INDEX IF NOT EXISTS idx_student_private_details_tenant_updated
               ON student_private_details (tenant_id, updated_at_ms);
+            CREATE TABLE IF NOT EXISTS student_private_photos (
+              tenant_id TEXT NOT NULL,
+              student_code TEXT NOT NULL,
+              content_type TEXT NOT NULL,
+              content_base64 TEXT NOT NULL,
+              sha256 TEXT NOT NULL,
+              byte_size INTEGER NOT NULL,
+              updated_at_ms INTEGER NOT NULL,
+              PRIMARY KEY (tenant_id, student_code)
+            );
+            CREATE INDEX IF NOT EXISTS idx_student_private_photos_tenant_updated
+              ON student_private_photos (tenant_id, updated_at_ms);
             CREATE TABLE IF NOT EXISTS student_private_detail_conflicts (
               tenant_id TEXT NOT NULL,
               student_code TEXT NOT NULL,
@@ -1811,6 +1841,78 @@ impl SqliteStore {
         Ok(out)
     }
 
+    fn upsert_student_private_photo(&self, input: Value) -> Result<Value, String> {
+        let tenant_id = normalize_tenant_id(input.get("tenantId"));
+        let student_code = normalize_student_code(input.get("studentCode"));
+        let content_type = normalize_json_text(input.get("contentType"), 40);
+        let content_base64 = normalize_json_text(input.get("contentBase64"), 1_500_000);
+        let sha256 = normalize_json_text(input.get("sha256"), 64).to_ascii_lowercase();
+        if tenant_id.is_empty() { return Err("tenant_id_required".to_string()); }
+        if student_code.is_empty() { return Err("student_code_required".to_string()); }
+        if !matches!(content_type.as_str(), "image/webp" | "image/jpeg" | "image/png") {
+            return Err("student_photo_content_type_invalid".to_string());
+        }
+        if content_base64.is_empty() || content_base64.len() > 1_500_000 {
+            return Err("student_photo_content_invalid".to_string());
+        }
+        if sha256.len() != 64 || !sha256.chars().all(|ch| ch.is_ascii_hexdigit()) {
+            return Err("student_photo_sha256_invalid".to_string());
+        }
+        let byte_size = input.get("byteSize").and_then(|value| value.as_i64()).unwrap_or(0);
+        if !(1..=1_048_576).contains(&byte_size) { return Err("student_photo_size_invalid".to_string()); }
+        let content = BASE64_STANDARD
+            .decode(content_base64.as_bytes())
+            .map_err(|_| "student_photo_content_invalid".to_string())?;
+        if content.len() as i64 != byte_size {
+            return Err("student_photo_size_invalid".to_string());
+        }
+        if format!("{:x}", Sha256::digest(&content)) != sha256 {
+            return Err("student_photo_sha256_invalid".to_string());
+        }
+        let updated_at_ms = Utc::now().timestamp_millis();
+        let conn = self.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
+        conn.execute(
+            "INSERT INTO student_private_photos
+             (tenant_id, student_code, content_type, content_base64, sha256, byte_size, updated_at_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(tenant_id, student_code) DO UPDATE SET
+               content_type=excluded.content_type, content_base64=excluded.content_base64,
+               sha256=excluded.sha256, byte_size=excluded.byte_size, updated_at_ms=excluded.updated_at_ms",
+            params![tenant_id, student_code, content_type, content_base64, sha256, byte_size, updated_at_ms],
+        ).map_err(|error| format!("db_student_private_photo_upsert_failed:{error}"))?;
+        Ok(json!({ "tenantId": tenant_id, "studentCode": student_code, "contentType": content_type,
+            "contentBase64": content_base64, "sha256": sha256, "byteSize": byte_size, "updatedAtMs": updated_at_ms }))
+    }
+
+    fn get_student_private_photo(&self, tenant_id: String, student_code: String) -> Result<Option<Value>, String> {
+        let safe_tenant = normalize_tenant_id(Some(&Value::String(tenant_id)));
+        let safe_student = normalize_student_code(Some(&Value::String(student_code)));
+        if safe_tenant.is_empty() || safe_student.is_empty() { return Err("student_photo_scope_required".to_string()); }
+        let conn = self.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
+        match conn.query_row(
+            "SELECT content_type, content_base64, sha256, byte_size, updated_at_ms
+             FROM student_private_photos WHERE tenant_id=?1 AND student_code=?2",
+            params![safe_tenant, safe_student],
+            |row| Ok(json!({ "tenantId": safe_tenant, "studentCode": safe_student,
+                "contentType": row.get::<_, String>(0)?, "contentBase64": row.get::<_, String>(1)?,
+                "sha256": row.get::<_, String>(2)?, "byteSize": row.get::<_, i64>(3)?,
+                "updatedAtMs": row.get::<_, i64>(4)? })),
+        ) {
+            Ok(value) => Ok(Some(value)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(error) => Err(format!("db_student_private_photo_query_failed:{error}")),
+        }
+    }
+
+    fn delete_student_private_photo(&self, tenant_id: String, student_code: String) -> Result<bool, String> {
+        let safe_tenant = normalize_tenant_id(Some(&Value::String(tenant_id)));
+        let safe_student = normalize_student_code(Some(&Value::String(student_code)));
+        if safe_tenant.is_empty() || safe_student.is_empty() { return Err("student_photo_scope_required".to_string()); }
+        let conn = self.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
+        Ok(conn.execute("DELETE FROM student_private_photos WHERE tenant_id=?1 AND student_code=?2", params![safe_tenant, safe_student])
+            .map_err(|error| format!("db_student_private_photo_delete_failed:{error}"))? == 1)
+    }
+
     fn import_observations(&self, tenant_id: String, records: Vec<Value>) -> Result<Vec<Value>, String> {
         let safe_tenant = normalize_tenant_id(Some(&Value::String(tenant_id)));
         if safe_tenant.is_empty() {
@@ -1933,6 +2035,13 @@ impl SqliteStore {
                 ))
             })
             .map_err(|e| format!("db_stats_student_private_failed:{e}"))?;
+        let student_private_photos = conn
+            .query_row(
+                "SELECT COUNT(*), MAX(updated_at_ms) FROM student_private_photos WHERE tenant_id = ?1",
+                params![&safe_tenant],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?)),
+            )
+            .map_err(|e| format!("db_stats_student_private_photos_failed:{e}"))?;
         let mut snapshot_stmt = conn
             .prepare(
                 "SELECT COUNT(*), MAX(updated_at_ms), MAX(archived_at_ms) \
@@ -2097,7 +2206,7 @@ impl SqliteStore {
             )
             .map_err(|e| format!("db_stats_cloud_sync_runs_failed:{e}"))?;
         let observation_updated_at_ms = observation.3.unwrap_or(0);
-        let student_private_updated_at_ms = student_private.1.unwrap_or(0);
+        let student_private_updated_at_ms = student_private.1.unwrap_or(0).max(student_private_photos.1.unwrap_or(0));
         let math_daily_updated_at_ms = math_attempts
             .3
             .unwrap_or(0)
@@ -2152,6 +2261,7 @@ impl SqliteStore {
         put_stat!("updatedAtMs", observation_updated_at_ms);
         put_stat!("observationUpdatedAtMs", observation_updated_at_ms);
         put_stat!("studentPrivateDetailCount", student_private.0);
+        put_stat!("studentPrivatePhotoCount", student_private_photos.0);
         put_stat!("studentPrivateDetailUpdatedAtMs", student_private_updated_at_ms);
         put_stat!("mathDailyAttemptCount", math_attempts.0);
         put_stat!("mathDailyProfileCount", math_profiles.0);
@@ -3981,6 +4091,7 @@ impl SqliteStore {
         let sections = json!([
             { "key": "observations", "label": "수업 관찰", "count": stats.get("observationCount").and_then(|value| value.as_i64()).unwrap_or(0), "updatedAtMs": stats.get("observationUpdatedAtMs").and_then(|value| value.as_i64()).unwrap_or(0), "route": "/v1/observations" },
             { "key": "student-private-details", "label": "학생 민감정보", "count": stats.get("studentPrivateDetailCount").and_then(|value| value.as_i64()).unwrap_or(0), "updatedAtMs": stats.get("studentPrivateDetailUpdatedAtMs").and_then(|value| value.as_i64()).unwrap_or(0), "route": "/v1/student-private-details" },
+            { "key": "student-private-photos", "label": "학생 비공개 사진", "count": stats.get("studentPrivatePhotoCount").and_then(|value| value.as_i64()).unwrap_or(0), "updatedAtMs": stats.get("studentPrivateDetailUpdatedAtMs").and_then(|value| value.as_i64()).unwrap_or(0), "route": "/v1/student-private-photos" },
             { "key": "math-daily-attempts", "label": "매일수학 시도", "count": stats.get("mathDailyAttemptCount").and_then(|value| value.as_i64()).unwrap_or(0), "updatedAtMs": stats.get("mathDailyUpdatedAtMs").and_then(|value| value.as_i64()).unwrap_or(0), "route": "/v1/math-daily/attempts" },
             { "key": "board-post-snapshots", "label": "게시판 스냅샷", "count": stats.get("boardSnapshotCount").and_then(|value| value.as_i64()).unwrap_or(0), "updatedAtMs": stats.get("boardSnapshotUpdatedAtMs").and_then(|value| value.as_i64()).unwrap_or(0), "route": "/v1/board-post-snapshots" },
             { "key": "board-media", "label": "게시판 첨부파일", "count": stats.get("boardMediaCount").and_then(|value| value.as_i64()).unwrap_or(0), "updatedAtMs": stats.get("boardMediaArchivedAtMs").and_then(|value| value.as_i64()).unwrap_or(0), "route": "/v1/board-media" },
@@ -4034,6 +4145,7 @@ fn allowed_origin(request: &Request) -> String {
                     | "classaimate.netlify.app"
                     | "classaimate-v3.pages.dev"
                     | "v3.classaimate.com"
+                    | "test.classaimate.com"
             ) {
                 return origin;
             }
@@ -4084,7 +4196,7 @@ fn json_response(status: u16, payload: Value, origin: &str) -> Response<std::io:
             "Access-Control-Allow-Headers",
             "Content-Type, Authorization, X-OnlineClass-Local-Store-Key, X-OnlineClass-Local-Browser-Token",
         ),
-        ("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS"),
+        ("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS"),
     ] {
         if let Ok(header) = Header::from_bytes(name.as_bytes(), value.as_bytes()) {
             response.add_header(header);
@@ -4256,6 +4368,26 @@ fn handle_request(
                 200,
                 json!({ "ok": true, "imported": saved.len(), "records": saved }),
             ));
+        }
+
+        if path.starts_with("/v1/student-private-photos/") {
+            let student_code = path.trim_start_matches("/v1/student-private-photos/").to_string();
+            if request.method() == &Method::Get {
+                let record = store.get_student_private_photo(query(&url, "tenantId"), student_code)?;
+                return Ok((200, json!({ "ok": true, "record": record })));
+            }
+            if request.method() == &Method::Put {
+                let mut body = read_body(&mut request)?;
+                if let Value::Object(ref mut obj) = body {
+                    obj.insert("studentCode".to_string(), Value::String(student_code));
+                }
+                let record = store.upsert_student_private_photo(body)?;
+                return Ok((200, json!({ "ok": true, "record": record })));
+            }
+            if request.method() == &Method::Delete {
+                let deleted = store.delete_student_private_photo(query(&url, "tenantId"), student_code)?;
+                return Ok((200, json!({ "ok": true, "deleted": deleted })));
+            }
         }
 
         if request.method() == &Method::Get && path == "/v1/math-daily/cache" {
@@ -4807,6 +4939,9 @@ fn handle_request(
                 | "counseling_content_required" | "counseling_reply_content_required"
                 | "counseling_source_hash_mismatch" | "counseling_duplicate_request_id"
                 | "counseling_duplicate_teacher_note_id"
+                | "student_photo_scope_required" | "student_photo_content_type_invalid"
+                | "student_photo_content_invalid" | "student_photo_sha256_invalid"
+                | "student_photo_size_invalid"
                 | "backup_root_required" | "backup_root_inside_local_store"
                 | "backup_manifest_required" | "backup_manifest_outside_configured_root" | "backup_db_required" => 400,
                 "media_not_found" | "media_file_missing" | "counseling_record_not_found"
@@ -5236,14 +5371,79 @@ mod counseling_tests {
     use super::*;
 
     fn test_store() -> (SqliteStore, PathBuf) {
+        let suffix: String = rand::thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(8)
+            .map(char::from)
+            .collect();
         let root = env::temp_dir().join(format!(
-            "onlineclass-counseling-rust-{}-{}",
+            "onlineclass-counseling-rust-{}-{}-{}",
             std::process::id(),
-            now_ms()
+            now_ms(),
+            suffix
         ));
         fs::create_dir_all(&root).expect("create counseling test directory");
         let store = SqliteStore::open(root.join("store.sqlite")).expect("open counseling test store");
         (store, root)
+    }
+
+    #[test]
+    fn student_private_profile_and_photo_round_trip() {
+        let (store, root) = test_store();
+        let detail = store
+            .upsert_student_private_detail(json!({
+                "tenantId": "tenant-a",
+                "studentCode": "s01",
+                "studentName": "학생 1",
+                "gender": "F",
+                "birthDate": "2018-03-04"
+            }))
+            .expect("save student private detail");
+        assert_eq!(detail["studentCode"], "S01");
+        assert_eq!(detail["gender"], "F");
+        assert_eq!(detail["birthDate"], "2018-03-04");
+
+        let saved_photo = store
+            .upsert_student_private_photo(json!({
+                "tenantId": "tenant-a",
+                "studentCode": "s01",
+                "contentType": "image/webp",
+                "contentBase64": "cGhvdG8=",
+                "sha256": "55c64d0fcd6f9d5f7c828093857e3fdfda68478bb4e9bd24d481ef391c7804e8",
+                "byteSize": 5
+            }))
+            .expect("save student private photo");
+        assert_eq!(saved_photo["studentCode"], "S01");
+        assert_eq!(saved_photo["byteSize"], 5);
+        let loaded_photo = store
+            .get_student_private_photo("tenant-a".to_string(), "s01".to_string())
+            .expect("load student private photo")
+            .expect("student private photo exists");
+        assert_eq!(loaded_photo["contentBase64"], "cGhvdG8=");
+        assert_eq!(store.stats("tenant-a".to_string()).unwrap()["studentPrivatePhotoCount"], 1);
+
+        assert_eq!(
+            store
+                .upsert_student_private_photo(json!({
+                    "tenantId": "tenant-a",
+                    "studentCode": "s02",
+                    "contentType": "image/webp",
+                    "contentBase64": "cGhvdG8=",
+                    "sha256": "0".repeat(64),
+                    "byteSize": 5
+                }))
+                .unwrap_err(),
+            "student_photo_sha256_invalid"
+        );
+        assert!(store
+            .delete_student_private_photo("tenant-a".to_string(), "s01".to_string())
+            .expect("delete student private photo"));
+        assert!(store
+            .get_student_private_photo("tenant-a".to_string(), "s01".to_string())
+            .expect("reload deleted photo")
+            .is_none());
+        drop(store);
+        fs::remove_dir_all(root).expect("remove student private test directory");
     }
 
     #[test]

@@ -1,6 +1,6 @@
 [package]
 name = "local-sensitive-store-desktop"
-version = "0.2.19"
+version = "0.2.20"
 description = "OnlineClass local sensitive data store"
 authors = ["onlineclass"]
 edition = "2021"

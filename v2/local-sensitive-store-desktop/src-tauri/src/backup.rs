@@ -36,6 +36,13 @@ const BACKUP_TABLES: &[BackupTable] = &[
         optional: false,
     },
     BackupTable {
+        name: "student_private_photos",
+        columns: &["tenant_id", "student_code", "content_type", "content_base64", "sha256", "byte_size", "updated_at_ms"],
+        key_columns: &["tenant_id", "student_code"],
+        timestamp_column: "updated_at_ms",
+        optional: true,
+    },
+    BackupTable {
         name: "math_daily_attempts",
         columns: &["tenant_id", "attempt_id", "date_key", "student_code", "curriculum", "payload_json", "updated_at_ms"],
         key_columns: &["tenant_id", "attempt_id"],
@@ -216,6 +223,16 @@ fn backup_schema_sql(prefix: &str) -> String {
           tenant_id TEXT NOT NULL,
           student_code TEXT NOT NULL,
           payload_json TEXT NOT NULL,
+          updated_at_ms INTEGER NOT NULL,
+          PRIMARY KEY (tenant_id, student_code)
+        );
+        CREATE TABLE IF NOT EXISTS {prefix}student_private_photos (
+          tenant_id TEXT NOT NULL,
+          student_code TEXT NOT NULL,
+          content_type TEXT NOT NULL,
+          content_base64 TEXT NOT NULL,
+          sha256 TEXT NOT NULL,
+          byte_size INTEGER NOT NULL,
           updated_at_ms INTEGER NOT NULL,
           PRIMARY KEY (tenant_id, student_code)
         );
@@ -1000,6 +1017,7 @@ pub(crate) fn run_now(store: &SqliteStore, tenant_id: String) -> Result<Value, S
         "counts": {
             "observationCount": stats.get("observationCount").and_then(|value| value.as_i64()).unwrap_or(0),
             "studentPrivateDetailCount": stats.get("studentPrivateDetailCount").and_then(|value| value.as_i64()).unwrap_or(0),
+            "studentPrivatePhotoCount": stats.get("studentPrivatePhotoCount").and_then(|value| value.as_i64()).unwrap_or(0),
             "mathDailyAttemptCount": stats.get("mathDailyAttemptCount").and_then(|value| value.as_i64()).unwrap_or(0),
             "mathDailyProfileCount": stats.get("mathDailyProfileCount").and_then(|value| value.as_i64()).unwrap_or(0),
             "mathDailyReviewSessionCount": stats.get("mathDailyReviewSessionCount").and_then(|value| value.as_i64()).unwrap_or(0),

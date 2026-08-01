@@ -4,7 +4,7 @@ import "./styles.css";
 
 declare const __APP_VERSION__: string;
 
-const TEACHER_SETTINGS_URL = "https://classaimate.pages.dev/teacher-dashboard/tenant-settings";
+const TEACHER_SETTINGS_URL = "https://classaimate.pages.dev/connect/local-db";
 const APP_VERSION = String(__APP_VERSION__ || "").trim() || "0.0.0";
 
 type ServiceStatus = {
@@ -316,8 +316,6 @@ function buildTeacherSettingsUrl(tenantId = "") {
   const url = new URL(TEACHER_SETTINGS_URL);
   const safeTenantId = tenantId.trim();
   if (safeTenantId) url.searchParams.set("tenantId", safeTenantId);
-  url.searchParams.set("tab", "sensitive");
-  url.searchParams.set("connectLocal", "1");
   url.searchParams.set("source", "local-sensitive-store");
   return url.toString();
 }
