@@ -2,11 +2,11 @@ use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::{DateTime, Utc};
 mod backup;
 mod cloud_sync;
+mod shared_archive;
 use rand::{distributions::Alphanumeric, Rng};
 use rusqlite::{params, params_from_iter, Connection, ToSql};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
-use sha2::{Digest, Sha256};
 use std::env;
 use std::fs;
 use std::io::Read;
@@ -24,7 +24,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-08-01.1-student-sensitive-core-boundary";
+pub(crate) const SERVICE_VERSION: &str = "2026-07-04.3-student-record-local-first";
 const DB_FILE_NAME: &str = "onlineclass-sensitive.sqlite";
 const KEY_FILE_NAME: &str = "pairing-key.txt";
 const BROWSER_LINK_FILE_NAME: &str = "browser-link-tokens.json";
@@ -40,7 +40,6 @@ const LOCAL_SENSITIVE_STORE_ROUTES: &[&str] = &[
     "/v1/observations/import",
     "/v1/student-private-details",
     "/v1/student-private-details/import",
-    "/v1/student-private-photos",
     "/v1/math-daily/cache",
     "/v1/math-daily/cache-status",
     "/v1/math-daily/import",
@@ -57,10 +56,6 @@ const LOCAL_SENSITIVE_STORE_ROUTES: &[&str] = &[
     "/v1/attendance-nais-checks/import",
     "/v1/attendance-document-requests",
     "/v1/attendance-document-requests/import",
-    "/v1/counseling-records",
-    "/v1/counseling-teacher-notes",
-    "/v1/counseling-import",
-    "/v1/counseling-compare",
     "/v1/eval-assignments",
     "/v1/eval-assignments/import",
     "/v1/eval-results",
@@ -82,7 +77,7 @@ const LOCAL_SENSITIVE_STORE_ROUTES: &[&str] = &[
     "/v1/backups/restore-preview",
     "/v1/backups/restore",
 ];
-const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 2] = ["non_lesson_observations", "counseling_local_authority"];
+const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 1] = ["non_lesson_observations"];
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -175,13 +170,6 @@ struct NormalizedStudentPrivateDetail {
     student_code: String,
     payload: Value,
     updated_at_ms: i64,
-}
-
-struct PreparedCounselingSnapshot {
-    tenant_id: String,
-    records: Vec<Value>,
-    teacher_notes: Vec<Value>,
-    source_snapshot_sha256: String,
 }
 
 fn normalize(value: impl ToString, max_len: usize) -> String {
@@ -390,465 +378,6 @@ fn set_updated_payload_fields(obj: &mut Map<String, Value>, updated_at_ms: i64) 
     obj.insert("updatedAtIso".to_string(), Value::String(updated_at_iso));
 }
 
-const COUNSELING_STATUSES: [&str; 4] = ["unread", "read", "replied", "resolved"];
-
-fn normalize_counseling_record(input: Value) -> Result<Value, String> {
-    let mut obj = input
-        .as_object()
-        .cloned()
-        .ok_or_else(|| "invalid_record".to_string())?;
-    let tenant_id = normalize_tenant_id(obj.get("tenantId"));
-    let request_id = normalize_local_record_id(
-        obj.get("requestId").or_else(|| obj.get("id")).or_else(|| obj.get("docId")),
-        String::new(),
-        "counseling_request_id_required",
-    )?;
-    let student_code = normalize_student_code(obj.get("studentCode").or_else(|| obj.get("code")));
-    let status = {
-        let value = normalize_json_text(obj.get("status"), 40).to_lowercase();
-        if value.is_empty() { "unread".to_string() } else { value }
-    };
-    if tenant_id.is_empty() {
-        return Err("tenant_id_required".to_string());
-    }
-    if student_code.is_empty() {
-        return Err("student_code_required".to_string());
-    }
-    if !COUNSELING_STATUSES.contains(&status.as_str()) {
-        return Err("counseling_status_invalid".to_string());
-    }
-    let content = normalize_json_text(obj.get("content").or_else(|| obj.get("message")), 20_000);
-    if content.is_empty() {
-        return Err("counseling_content_required".to_string());
-    }
-    let updated_at_ms = timestamp_like(obj.get("updatedAtMs"))
-        .max(timestamp_like(obj.get("updatedAt")))
-        .max(timestamp_like(obj.get("timestamp")));
-    let updated_at_ms = if updated_at_ms > 0 { updated_at_ms } else { now_ms() };
-    let created_at_ms = timestamp_like(obj.get("createdAtMs"))
-        .max(timestamp_like(obj.get("createdAt")))
-        .max(timestamp_like(obj.get("timestamp")));
-    let created_at_ms = if created_at_ms > 0 { created_at_ms } else { updated_at_ms };
-    let replies = obj
-        .get("replies")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default()
-        .into_iter()
-        .take(200)
-        .map(|reply| {
-            let mut reply_obj = reply
-                .as_object()
-                .cloned()
-                .ok_or_else(|| "invalid_record".to_string())?;
-            let reply_content = normalize_json_text(
-                reply_obj.get("content").or_else(|| reply_obj.get("message")),
-                20_000,
-            );
-            if reply_content.is_empty() {
-                return Err("counseling_reply_content_required".to_string());
-            }
-            let author_role = {
-                let value = normalize_json_text(
-                    reply_obj.get("authorRole").or_else(|| reply_obj.get("role")),
-                    40,
-                );
-                if value.is_empty() { "teacher".to_string() } else { value }
-            };
-            let reply_at_ms = timestamp_like(reply_obj.get("createdAtMs"))
-                .max(timestamp_like(reply_obj.get("createdAt")))
-                .max(timestamp_like(reply_obj.get("timestamp")));
-            set_obj(&mut reply_obj, "content", reply_content);
-            set_obj(&mut reply_obj, "authorRole", author_role);
-            set_obj(
-                &mut reply_obj,
-                "createdAtMs",
-                if reply_at_ms > 0 { reply_at_ms } else { updated_at_ms },
-            );
-            Ok(Value::Object(reply_obj))
-        })
-        .collect::<Result<Vec<_>, String>>()?;
-
-    set_obj(&mut obj, "id", request_id.clone());
-    set_obj(&mut obj, "docId", request_id.clone());
-    set_obj(&mut obj, "requestId", request_id);
-    set_obj(&mut obj, "tenantId", tenant_id);
-    set_obj(&mut obj, "studentCode", student_code);
-    let student_name = normalize_json_text(
-        obj.get("studentName")
-            .or_else(|| obj.get("displayName"))
-            .or_else(|| obj.get("name")),
-        160,
-    );
-    set_obj(&mut obj, "studentName", student_name);
-    let counseling_type = {
-        let value = normalize_json_text(obj.get("type").or_else(|| obj.get("category")), 80);
-        if value.is_empty() { "general".to_string() } else { value }
-    };
-    set_obj(&mut obj, "type", counseling_type);
-    set_obj(&mut obj, "content", content);
-    set_obj(&mut obj, "status", status);
-    set_obj(&mut obj, "replies", Value::Array(replies));
-    set_obj(&mut obj, "createdAtMs", created_at_ms);
-    set_obj(&mut obj, "updatedAtMs", updated_at_ms);
-    Ok(Value::Object(obj))
-}
-
-fn normalize_counseling_teacher_note(input: Value) -> Result<Value, String> {
-    let mut obj = input
-        .as_object()
-        .cloned()
-        .ok_or_else(|| "invalid_record".to_string())?;
-    let tenant_id = normalize_tenant_id(obj.get("tenantId"));
-    let request_id = normalize_local_record_id(
-        obj.get("requestId")
-            .or_else(|| obj.get("counselingId"))
-            .or_else(|| obj.get("id"))
-            .or_else(|| obj.get("docId")),
-        String::new(),
-        "counseling_request_id_required",
-    )?;
-    if tenant_id.is_empty() {
-        return Err("tenant_id_required".to_string());
-    }
-    let updated_at_ms = timestamp_like(obj.get("updatedAtMs"))
-        .max(timestamp_like(obj.get("updatedAt")))
-        .max(timestamp_like(obj.get("timestamp")));
-    let updated_at_ms = if updated_at_ms > 0 { updated_at_ms } else { now_ms() };
-    let tags = obj
-        .get("teacherNoteTags")
-        .or_else(|| obj.get("tags"))
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|value| {
-            let tag = normalize_json_text(Some(&value), 60);
-            if tag.is_empty() { None } else { Some(Value::String(tag)) }
-        })
-        .take(20)
-        .collect::<Vec<_>>();
-    let teacher_note = normalize_json_text(
-        obj.get("teacherNote").or_else(|| obj.get("memo")),
-        30_000,
-    );
-    set_obj(&mut obj, "id", request_id.clone());
-    set_obj(&mut obj, "docId", request_id.clone());
-    set_obj(&mut obj, "requestId", request_id.clone());
-    set_obj(&mut obj, "counselingId", request_id);
-    set_obj(&mut obj, "tenantId", tenant_id);
-    set_obj(&mut obj, "teacherNote", teacher_note);
-    set_obj(&mut obj, "teacherNoteTags", Value::Array(tags));
-    set_obj(&mut obj, "updatedAtMs", updated_at_ms);
-    Ok(Value::Object(obj))
-}
-
-fn canonicalize_json(value: &Value) -> Value {
-    match value {
-        Value::Array(values) => Value::Array(values.iter().map(canonicalize_json).collect()),
-        Value::Object(obj) => {
-            let mut keys = obj.keys().collect::<Vec<_>>();
-            keys.sort();
-            let mut out = Map::new();
-            for key in keys {
-                out.insert(key.clone(), canonicalize_json(&obj[key]));
-            }
-            Value::Object(out)
-        }
-        _ => value.clone(),
-    }
-}
-
-fn sha256_json(value: &Value) -> Result<String, String> {
-    let encoded = serde_json::to_vec(&canonicalize_json(value))
-        .map_err(|error| format!("counseling_hash_encode_failed:{error}"))?;
-    Ok(format!("{:x}", Sha256::digest(encoded)))
-}
-
-fn prepare_counseling_snapshot(input: &Value) -> Result<PreparedCounselingSnapshot, String> {
-    let tenant_id = normalize_tenant_id(input.get("tenantId"));
-    if tenant_id.is_empty() {
-        return Err("tenant_id_required".to_string());
-    }
-    let mut records = input
-        .get("records")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|mut record| {
-            if let Value::Object(ref mut obj) = record {
-                set_obj(obj, "tenantId", tenant_id.clone());
-            }
-            normalize_counseling_record(record)
-        })
-        .collect::<Result<Vec<_>, String>>()?;
-    records.sort_by(|left, right| {
-        normalize_json_text(left.get("requestId"), 260)
-            .cmp(&normalize_json_text(right.get("requestId"), 260))
-    });
-    let mut teacher_notes = input
-        .get("teacherNotes")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|mut note| {
-            if let Value::Object(ref mut obj) = note {
-                set_obj(obj, "tenantId", tenant_id.clone());
-            }
-            normalize_counseling_teacher_note(note)
-        })
-        .collect::<Result<Vec<_>, String>>()?;
-    teacher_notes.sort_by(|left, right| {
-        normalize_json_text(left.get("requestId"), 260)
-            .cmp(&normalize_json_text(right.get("requestId"), 260))
-    });
-    let mut record_ids = std::collections::HashSet::new();
-    for record in &records {
-        let request_id = normalize_json_text(record.get("requestId"), 260);
-        if !record_ids.insert(request_id) {
-            return Err("counseling_duplicate_request_id".to_string());
-        }
-    }
-    let mut note_ids = std::collections::HashSet::new();
-    for note in &teacher_notes {
-        let request_id = normalize_json_text(note.get("requestId"), 260);
-        if !note_ids.insert(request_id.clone()) {
-            return Err("counseling_duplicate_teacher_note_id".to_string());
-        }
-        if !record_ids.contains(&request_id) {
-            return Err("counseling_record_not_found".to_string());
-        }
-    }
-    let source_snapshot_sha256 = sha256_json(&json!({
-        "records": records,
-        "teacherNotes": teacher_notes
-    }))?;
-    Ok(PreparedCounselingSnapshot {
-        tenant_id,
-        records,
-        teacher_notes,
-        source_snapshot_sha256,
-    })
-}
-
-fn write_counseling_record(conn: &Connection, record: &Value) -> Result<(), String> {
-    let tenant_id = normalize_tenant_id(record.get("tenantId"));
-    let request_id = normalize_id_segment(record.get("requestId"), 260);
-    let student_code = normalize_student_code(record.get("studentCode"));
-    let status = normalize_json_text(record.get("status"), 40).to_lowercase();
-    let created_at_ms = timestamp_like(record.get("createdAtMs"));
-    let updated_at_ms = timestamp_like(record.get("updatedAtMs"));
-    let payload_json = payload_json(record, "counseling_record_encode_failed")?;
-    conn.execute(
-        "INSERT INTO counseling_records
-         (tenant_id, request_id, student_code, status, created_at_ms, updated_at_ms, payload_json)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-         ON CONFLICT(tenant_id, request_id) DO UPDATE SET
-           student_code = excluded.student_code,
-           status = excluded.status,
-           created_at_ms = excluded.created_at_ms,
-           updated_at_ms = excluded.updated_at_ms,
-           payload_json = excluded.payload_json
-         WHERE excluded.updated_at_ms >= counseling_records.updated_at_ms",
-        params![
-            tenant_id,
-            request_id,
-            student_code,
-            status,
-            created_at_ms,
-            updated_at_ms,
-            payload_json
-        ],
-    )
-    .map_err(|error| format!("db_counseling_record_upsert_failed:{error}"))?;
-    Ok(())
-}
-
-fn write_counseling_teacher_note(conn: &Connection, note: &Value) -> Result<(), String> {
-    let tenant_id = normalize_tenant_id(note.get("tenantId"));
-    let request_id = normalize_id_segment(note.get("requestId"), 260);
-    let record_exists = conn
-        .query_row(
-            "SELECT 1 FROM counseling_records WHERE tenant_id = ?1 AND request_id = ?2",
-            params![&tenant_id, &request_id],
-            |_| Ok(()),
-        )
-        .is_ok();
-    if !record_exists {
-        return Err("counseling_record_not_found".to_string());
-    }
-    let updated_at_ms = timestamp_like(note.get("updatedAtMs"));
-    let payload_json = payload_json(note, "counseling_teacher_note_encode_failed")?;
-    conn.execute(
-        "INSERT INTO counseling_teacher_notes
-         (tenant_id, request_id, payload_json, updated_at_ms)
-         VALUES (?1, ?2, ?3, ?4)
-         ON CONFLICT(tenant_id, request_id) DO UPDATE SET
-           payload_json = excluded.payload_json,
-           updated_at_ms = excluded.updated_at_ms
-         WHERE excluded.updated_at_ms >= counseling_teacher_notes.updated_at_ms",
-        params![tenant_id, request_id, payload_json, updated_at_ms],
-    )
-    .map_err(|error| format!("db_counseling_teacher_note_upsert_failed:{error}"))?;
-    Ok(())
-}
-
-fn query_counseling_records(
-    conn: &Connection,
-    tenant_id: &str,
-    status: &str,
-    student_code: &str,
-    request_id: &str,
-    limit: i64,
-) -> Result<Vec<Value>, String> {
-    let mut where_parts = vec!["tenant_id = ?".to_string()];
-    let mut params_vec: Vec<Box<dyn ToSql>> = vec![Box::new(tenant_id.to_string())];
-    if !status.is_empty() {
-        where_parts.push("status = ?".to_string());
-        params_vec.push(Box::new(status.to_string()));
-    }
-    if !student_code.is_empty() {
-        where_parts.push("student_code = ?".to_string());
-        params_vec.push(Box::new(student_code.to_string()));
-    }
-    if !request_id.is_empty() {
-        where_parts.push("request_id = ?".to_string());
-        params_vec.push(Box::new(request_id.to_string()));
-    }
-    let sql = format!(
-        "SELECT payload_json FROM counseling_records WHERE {} ORDER BY updated_at_ms DESC, request_id ASC LIMIT {}",
-        where_parts.join(" AND "),
-        limit.clamp(1, 10_000)
-    );
-    let mut stmt = conn
-        .prepare(&sql)
-        .map_err(|error| format!("db_counseling_records_prepare_failed:{error}"))?;
-    let params_ref = params_vec
-        .iter()
-        .map(|value| value.as_ref() as &dyn ToSql)
-        .collect::<Vec<_>>();
-    let rows = stmt
-        .query_map(params_from_iter(params_ref), |row| {
-            let payload: String = row.get(0)?;
-            Ok(serde_json::from_str(&payload).unwrap_or_else(|_| json!({})))
-        })
-        .map_err(|error| format!("db_counseling_records_query_failed:{error}"))?;
-    rows.map(|row| row.map_err(|error| format!("db_counseling_records_row_failed:{error}")))
-        .collect()
-}
-
-fn query_counseling_teacher_notes(
-    conn: &Connection,
-    tenant_id: &str,
-    request_id: &str,
-    limit: i64,
-) -> Result<Vec<Value>, String> {
-    let mut where_parts = vec!["tenant_id = ?".to_string()];
-    let mut params_vec: Vec<Box<dyn ToSql>> = vec![Box::new(tenant_id.to_string())];
-    if !request_id.is_empty() {
-        where_parts.push("request_id = ?".to_string());
-        params_vec.push(Box::new(request_id.to_string()));
-    }
-    let sql = format!(
-        "SELECT payload_json FROM counseling_teacher_notes WHERE {} ORDER BY updated_at_ms DESC, request_id ASC LIMIT {}",
-        where_parts.join(" AND "),
-        limit.clamp(1, 10_000)
-    );
-    let mut stmt = conn
-        .prepare(&sql)
-        .map_err(|error| format!("db_counseling_teacher_notes_prepare_failed:{error}"))?;
-    let params_ref = params_vec
-        .iter()
-        .map(|value| value.as_ref() as &dyn ToSql)
-        .collect::<Vec<_>>();
-    let rows = stmt
-        .query_map(params_from_iter(params_ref), |row| {
-            let payload: String = row.get(0)?;
-            Ok(serde_json::from_str(&payload).unwrap_or_else(|_| json!({})))
-        })
-        .map_err(|error| format!("db_counseling_teacher_notes_query_failed:{error}"))?;
-    rows.map(|row| row.map_err(|error| format!("db_counseling_teacher_notes_row_failed:{error}")))
-        .collect()
-}
-
-fn compare_prepared_counseling_snapshot(
-    conn: &Connection,
-    source: &PreparedCounselingSnapshot,
-) -> Result<Value, String> {
-    let mut local_records = query_counseling_records(
-        conn,
-        &source.tenant_id,
-        "",
-        "",
-        "",
-        10_000,
-    )?;
-    local_records.sort_by(|left, right| {
-        normalize_json_text(left.get("requestId"), 260)
-            .cmp(&normalize_json_text(right.get("requestId"), 260))
-    });
-    let mut local_teacher_notes =
-        query_counseling_teacher_notes(conn, &source.tenant_id, "", 10_000)?;
-    local_teacher_notes.sort_by(|left, right| {
-        normalize_json_text(left.get("requestId"), 260)
-            .cmp(&normalize_json_text(right.get("requestId"), 260))
-    });
-    let source_record_ids = source
-        .records
-        .iter()
-        .map(|value| normalize_json_text(value.get("requestId"), 260))
-        .collect::<Vec<_>>();
-    let local_record_ids = local_records
-        .iter()
-        .map(|value| normalize_json_text(value.get("requestId"), 260))
-        .collect::<Vec<_>>();
-    let source_note_ids = source
-        .teacher_notes
-        .iter()
-        .map(|value| normalize_json_text(value.get("requestId"), 260))
-        .collect::<Vec<_>>();
-    let local_note_ids = local_teacher_notes
-        .iter()
-        .map(|value| normalize_json_text(value.get("requestId"), 260))
-        .collect::<Vec<_>>();
-    let source_records_value = Value::Array(source.records.clone());
-    let local_records_value = Value::Array(local_records.clone());
-    let source_notes_value = Value::Array(source.teacher_notes.clone());
-    let local_notes_value = Value::Array(local_teacher_notes.clone());
-    let records_match = canonicalize_json(&source_records_value) == canonicalize_json(&local_records_value)
-        && source_record_ids == local_record_ids;
-    let notes_match = canonicalize_json(&source_notes_value) == canonicalize_json(&local_notes_value)
-        && source_note_ids == local_note_ids;
-    Ok(json!({
-        "ok": true,
-        "tenantId": source.tenant_id,
-        "sourceSnapshotSha256": source.source_snapshot_sha256,
-        "counts": {
-            "sourceRecords": source.records.len(),
-            "localRecords": local_records.len(),
-            "sourceTeacherNotes": source.teacher_notes.len(),
-            "localTeacherNotes": local_teacher_notes.len()
-        },
-        "records": {
-            "sourceCount": source.records.len(),
-            "localCount": local_records.len(),
-            "sourceSha256": sha256_json(&source_records_value)?,
-            "localSha256": sha256_json(&local_records_value)?,
-            "matches": records_match
-        },
-        "teacherNotes": {
-            "sourceCount": source.teacher_notes.len(),
-            "localCount": local_teacher_notes.len(),
-            "sourceSha256": sha256_json(&source_notes_value)?,
-            "localSha256": sha256_json(&local_notes_value)?,
-            "matches": notes_match
-        },
-        "matches": records_match && notes_match
-    }))
-}
-
 fn normalize_observation(input: Value) -> Result<NormalizedObservation, String> {
     let mut obj = input
         .as_object()
@@ -1047,21 +576,6 @@ fn normalize_student_private_detail(input: Value) -> Result<NormalizedStudentPri
         .to_rfc3339();
 
     let student_name = normalize_json_text(obj.get("studentName").or_else(|| obj.get("name")), 160);
-    let gender = match normalize_json_text(obj.get("gender"), 1).as_str() {
-        "M" => "M",
-        "F" => "F",
-        _ => "A",
-    };
-    let birth_date = normalize_json_text(obj.get("birthDate"), 10);
-    let birth_date = if birth_date.len() == 10
-        && birth_date.as_bytes()[4] == b'-'
-        && birth_date.as_bytes()[7] == b'-'
-        && birth_date.chars().enumerate().all(|(index, ch)| index == 4 || index == 7 || ch.is_ascii_digit())
-    {
-        birth_date
-    } else {
-        String::new()
-    };
     let siblings_note = normalize_json_text(obj.get("siblingsNote"), 1000);
     let special_note = normalize_json_text(obj.get("specialNote"), 1000);
     let guardian1 = normalize_guardian(obj.get("guardian1"));
@@ -1094,8 +608,6 @@ fn normalize_student_private_detail(input: Value) -> Result<NormalizedStudentPri
     set_obj(&mut obj, "tenantId", tenant_id.clone());
     set_obj(&mut obj, "studentCode", student_code.clone());
     set_obj(&mut obj, "studentName", student_name);
-    set_obj(&mut obj, "gender", gender);
-    obj.insert("birthDate".to_string(), if birth_date.is_empty() { Value::Null } else { Value::String(birth_date) });
     obj.insert("guardian1".to_string(), guardian1);
     obj.insert("guardian2".to_string(), guardian2);
     obj.insert(
@@ -1348,18 +860,6 @@ impl SqliteStore {
             );
             CREATE INDEX IF NOT EXISTS idx_student_private_details_tenant_updated
               ON student_private_details (tenant_id, updated_at_ms);
-            CREATE TABLE IF NOT EXISTS student_private_photos (
-              tenant_id TEXT NOT NULL,
-              student_code TEXT NOT NULL,
-              content_type TEXT NOT NULL,
-              content_base64 TEXT NOT NULL,
-              sha256 TEXT NOT NULL,
-              byte_size INTEGER NOT NULL,
-              updated_at_ms INTEGER NOT NULL,
-              PRIMARY KEY (tenant_id, student_code)
-            );
-            CREATE INDEX IF NOT EXISTS idx_student_private_photos_tenant_updated
-              ON student_private_photos (tenant_id, updated_at_ms);
             CREATE TABLE IF NOT EXISTS student_private_detail_conflicts (
               tenant_id TEXT NOT NULL,
               student_code TEXT NOT NULL,
@@ -1560,28 +1060,6 @@ impl SqliteStore {
               ON student_record_drafts (tenant_id, draft_set_id, class_no, student_code);
             CREATE INDEX IF NOT EXISTS idx_student_record_drafts_tenant_student
               ON student_record_drafts (tenant_id, student_code, updated_at_ms DESC);
-            CREATE TABLE IF NOT EXISTS counseling_records (
-              tenant_id TEXT NOT NULL,
-              request_id TEXT NOT NULL,
-              student_code TEXT NOT NULL,
-              status TEXT NOT NULL,
-              created_at_ms INTEGER NOT NULL,
-              updated_at_ms INTEGER NOT NULL,
-              payload_json TEXT NOT NULL,
-              PRIMARY KEY (tenant_id, request_id)
-            );
-            CREATE INDEX IF NOT EXISTS idx_counseling_records_tenant_status_updated
-              ON counseling_records (tenant_id, status, updated_at_ms DESC, request_id);
-            CREATE INDEX IF NOT EXISTS idx_counseling_records_tenant_student_updated
-              ON counseling_records (tenant_id, student_code, updated_at_ms DESC, request_id);
-            CREATE TABLE IF NOT EXISTS counseling_teacher_notes (
-              tenant_id TEXT NOT NULL,
-              request_id TEXT NOT NULL,
-              payload_json TEXT NOT NULL,
-              updated_at_ms INTEGER NOT NULL,
-              PRIMARY KEY (tenant_id, request_id),
-              FOREIGN KEY (tenant_id, request_id) REFERENCES counseling_records (tenant_id, request_id) ON DELETE CASCADE
-            );
             CREATE TABLE IF NOT EXISTS local_import_runs (
               tenant_id TEXT NOT NULL,
               run_id TEXT NOT NULL,
@@ -1841,78 +1319,6 @@ impl SqliteStore {
         Ok(out)
     }
 
-    fn upsert_student_private_photo(&self, input: Value) -> Result<Value, String> {
-        let tenant_id = normalize_tenant_id(input.get("tenantId"));
-        let student_code = normalize_student_code(input.get("studentCode"));
-        let content_type = normalize_json_text(input.get("contentType"), 40);
-        let content_base64 = normalize_json_text(input.get("contentBase64"), 1_500_000);
-        let sha256 = normalize_json_text(input.get("sha256"), 64).to_ascii_lowercase();
-        if tenant_id.is_empty() { return Err("tenant_id_required".to_string()); }
-        if student_code.is_empty() { return Err("student_code_required".to_string()); }
-        if !matches!(content_type.as_str(), "image/webp" | "image/jpeg" | "image/png") {
-            return Err("student_photo_content_type_invalid".to_string());
-        }
-        if content_base64.is_empty() || content_base64.len() > 1_500_000 {
-            return Err("student_photo_content_invalid".to_string());
-        }
-        if sha256.len() != 64 || !sha256.chars().all(|ch| ch.is_ascii_hexdigit()) {
-            return Err("student_photo_sha256_invalid".to_string());
-        }
-        let byte_size = input.get("byteSize").and_then(|value| value.as_i64()).unwrap_or(0);
-        if !(1..=1_048_576).contains(&byte_size) { return Err("student_photo_size_invalid".to_string()); }
-        let content = BASE64_STANDARD
-            .decode(content_base64.as_bytes())
-            .map_err(|_| "student_photo_content_invalid".to_string())?;
-        if content.len() as i64 != byte_size {
-            return Err("student_photo_size_invalid".to_string());
-        }
-        if format!("{:x}", Sha256::digest(&content)) != sha256 {
-            return Err("student_photo_sha256_invalid".to_string());
-        }
-        let updated_at_ms = Utc::now().timestamp_millis();
-        let conn = self.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
-        conn.execute(
-            "INSERT INTO student_private_photos
-             (tenant_id, student_code, content_type, content_base64, sha256, byte_size, updated_at_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-             ON CONFLICT(tenant_id, student_code) DO UPDATE SET
-               content_type=excluded.content_type, content_base64=excluded.content_base64,
-               sha256=excluded.sha256, byte_size=excluded.byte_size, updated_at_ms=excluded.updated_at_ms",
-            params![tenant_id, student_code, content_type, content_base64, sha256, byte_size, updated_at_ms],
-        ).map_err(|error| format!("db_student_private_photo_upsert_failed:{error}"))?;
-        Ok(json!({ "tenantId": tenant_id, "studentCode": student_code, "contentType": content_type,
-            "contentBase64": content_base64, "sha256": sha256, "byteSize": byte_size, "updatedAtMs": updated_at_ms }))
-    }
-
-    fn get_student_private_photo(&self, tenant_id: String, student_code: String) -> Result<Option<Value>, String> {
-        let safe_tenant = normalize_tenant_id(Some(&Value::String(tenant_id)));
-        let safe_student = normalize_student_code(Some(&Value::String(student_code)));
-        if safe_tenant.is_empty() || safe_student.is_empty() { return Err("student_photo_scope_required".to_string()); }
-        let conn = self.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
-        match conn.query_row(
-            "SELECT content_type, content_base64, sha256, byte_size, updated_at_ms
-             FROM student_private_photos WHERE tenant_id=?1 AND student_code=?2",
-            params![safe_tenant, safe_student],
-            |row| Ok(json!({ "tenantId": safe_tenant, "studentCode": safe_student,
-                "contentType": row.get::<_, String>(0)?, "contentBase64": row.get::<_, String>(1)?,
-                "sha256": row.get::<_, String>(2)?, "byteSize": row.get::<_, i64>(3)?,
-                "updatedAtMs": row.get::<_, i64>(4)? })),
-        ) {
-            Ok(value) => Ok(Some(value)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(error) => Err(format!("db_student_private_photo_query_failed:{error}")),
-        }
-    }
-
-    fn delete_student_private_photo(&self, tenant_id: String, student_code: String) -> Result<bool, String> {
-        let safe_tenant = normalize_tenant_id(Some(&Value::String(tenant_id)));
-        let safe_student = normalize_student_code(Some(&Value::String(student_code)));
-        if safe_tenant.is_empty() || safe_student.is_empty() { return Err("student_photo_scope_required".to_string()); }
-        let conn = self.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
-        Ok(conn.execute("DELETE FROM student_private_photos WHERE tenant_id=?1 AND student_code=?2", params![safe_tenant, safe_student])
-            .map_err(|error| format!("db_student_private_photo_delete_failed:{error}"))? == 1)
-    }
-
     fn import_observations(&self, tenant_id: String, records: Vec<Value>) -> Result<Vec<Value>, String> {
         let safe_tenant = normalize_tenant_id(Some(&Value::String(tenant_id)));
         if safe_tenant.is_empty() {
@@ -2035,13 +1441,6 @@ impl SqliteStore {
                 ))
             })
             .map_err(|e| format!("db_stats_student_private_failed:{e}"))?;
-        let student_private_photos = conn
-            .query_row(
-                "SELECT COUNT(*), MAX(updated_at_ms) FROM student_private_photos WHERE tenant_id = ?1",
-                params![&safe_tenant],
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?)),
-            )
-            .map_err(|e| format!("db_stats_student_private_photos_failed:{e}"))?;
         let mut snapshot_stmt = conn
             .prepare(
                 "SELECT COUNT(*), MAX(updated_at_ms), MAX(archived_at_ms) \
@@ -2149,20 +1548,6 @@ impl SqliteStore {
                 |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?)),
             )
             .map_err(|e| format!("db_stats_attendance_document_requests_failed:{e}"))?;
-        let counseling_records = conn
-            .query_row(
-                "SELECT COUNT(*), MAX(updated_at_ms) FROM counseling_records WHERE tenant_id = ?1",
-                params![&safe_tenant],
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?)),
-            )
-            .map_err(|e| format!("db_stats_counseling_records_failed:{e}"))?;
-        let counseling_teacher_notes = conn
-            .query_row(
-                "SELECT COUNT(*), MAX(updated_at_ms) FROM counseling_teacher_notes WHERE tenant_id = ?1",
-                params![&safe_tenant],
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?)),
-            )
-            .map_err(|e| format!("db_stats_counseling_teacher_notes_failed:{e}"))?;
         let eval_assignments = conn
             .query_row(
                 "SELECT COUNT(*), MAX(updated_at_ms) FROM eval_assignments WHERE tenant_id = ?1",
@@ -2206,7 +1591,7 @@ impl SqliteStore {
             )
             .map_err(|e| format!("db_stats_cloud_sync_runs_failed:{e}"))?;
         let observation_updated_at_ms = observation.3.unwrap_or(0);
-        let student_private_updated_at_ms = student_private.1.unwrap_or(0).max(student_private_photos.1.unwrap_or(0));
+        let student_private_updated_at_ms = student_private.1.unwrap_or(0);
         let math_daily_updated_at_ms = math_attempts
             .3
             .unwrap_or(0)
@@ -2223,10 +1608,6 @@ impl SqliteStore {
             .unwrap_or(0)
             .max(attendance_nais_checks.1.unwrap_or(0))
             .max(attendance_document_requests.1.unwrap_or(0));
-        let counseling_updated_at_ms = counseling_records
-            .1
-            .unwrap_or(0)
-            .max(counseling_teacher_notes.1.unwrap_or(0));
         let evals_updated_at_ms = eval_assignments
             .1
             .unwrap_or(0)
@@ -2243,7 +1624,6 @@ impl SqliteStore {
             .max(board_snapshot_archived_at_ms)
             .max(board_media_archived_at_ms)
             .max(attendance_updated_at_ms)
-            .max(counseling_updated_at_ms)
             .max(evals_updated_at_ms)
             .max(student_record_draft_updated_at_ms)
             .max(import_run_updated_at_ms)
@@ -2261,7 +1641,6 @@ impl SqliteStore {
         put_stat!("updatedAtMs", observation_updated_at_ms);
         put_stat!("observationUpdatedAtMs", observation_updated_at_ms);
         put_stat!("studentPrivateDetailCount", student_private.0);
-        put_stat!("studentPrivatePhotoCount", student_private_photos.0);
         put_stat!("studentPrivateDetailUpdatedAtMs", student_private_updated_at_ms);
         put_stat!("mathDailyAttemptCount", math_attempts.0);
         put_stat!("mathDailyProfileCount", math_profiles.0);
@@ -2296,9 +1675,6 @@ impl SqliteStore {
         put_stat!("attendanceFirstDate", attendance_records.1.unwrap_or_default());
         put_stat!("attendanceLastDate", attendance_records.2.unwrap_or_default());
         put_stat!("attendanceUpdatedAtMs", attendance_updated_at_ms);
-        put_stat!("counselingRecordCount", counseling_records.0);
-        put_stat!("counselingTeacherNoteCount", counseling_teacher_notes.0);
-        put_stat!("counselingUpdatedAtMs", counseling_updated_at_ms);
         put_stat!("evalAssignmentCount", eval_assignments.0);
         put_stat!("evalResultCount", eval_results.0);
         put_stat!("evalsUpdatedAtMs", evals_updated_at_ms);
@@ -3372,216 +2748,6 @@ impl SqliteStore {
         )
     }
 
-    fn upsert_counseling_record(&self, input: Value) -> Result<Value, String> {
-        let record = normalize_counseling_record(input)?;
-        let tenant_id = normalize_tenant_id(record.get("tenantId"));
-        let request_id = normalize_id_segment(record.get("requestId"), 260);
-        let conn = self.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
-        write_counseling_record(&conn, &record)?;
-        let mut records = query_counseling_records(
-            &conn,
-            &tenant_id,
-            "",
-            "",
-            &request_id,
-            1,
-        )?;
-        records.pop().ok_or_else(|| "counseling_record_not_found".to_string())
-    }
-
-    fn list_counseling_records(
-        &self,
-        tenant_id: String,
-        status: String,
-        student_code: String,
-        limit: i64,
-    ) -> Result<Vec<Value>, String> {
-        let tenant_id = normalize_tenant_id(Some(&Value::String(tenant_id)));
-        if tenant_id.is_empty() {
-            return Err("tenant_id_required".to_string());
-        }
-        let status = normalize(status, 40).to_lowercase();
-        if !status.is_empty() && !COUNSELING_STATUSES.contains(&status.as_str()) {
-            return Err("counseling_status_invalid".to_string());
-        }
-        let student_code = normalize_student_code(Some(&Value::String(student_code)));
-        let conn = self.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
-        query_counseling_records(&conn, &tenant_id, &status, &student_code, "", limit)
-    }
-
-    fn get_counseling_record(
-        &self,
-        tenant_id: String,
-        request_id: String,
-    ) -> Result<Option<Value>, String> {
-        let tenant_id = normalize_tenant_id(Some(&Value::String(tenant_id)));
-        let request_id = normalize_id_segment(Some(&Value::String(request_id)), 260);
-        if tenant_id.is_empty() {
-            return Err("tenant_id_required".to_string());
-        }
-        if request_id.is_empty() {
-            return Err("counseling_request_id_required".to_string());
-        }
-        let conn = self.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
-        Ok(query_counseling_records(
-            &conn,
-            &tenant_id,
-            "",
-            "",
-            &request_id,
-            1,
-        )?
-        .pop())
-    }
-
-    fn upsert_counseling_teacher_note(&self, input: Value) -> Result<Value, String> {
-        let note = normalize_counseling_teacher_note(input)?;
-        let tenant_id = normalize_tenant_id(note.get("tenantId"));
-        let request_id = normalize_id_segment(note.get("requestId"), 260);
-        let conn = self.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
-        write_counseling_teacher_note(&conn, &note)?;
-        query_counseling_teacher_notes(&conn, &tenant_id, &request_id, 1)?
-            .pop()
-            .ok_or_else(|| "counseling_teacher_note_not_found".to_string())
-    }
-
-    fn list_counseling_teacher_notes(
-        &self,
-        tenant_id: String,
-        request_id: String,
-        limit: i64,
-    ) -> Result<Vec<Value>, String> {
-        let tenant_id = normalize_tenant_id(Some(&Value::String(tenant_id)));
-        let request_id = normalize_id_segment(Some(&Value::String(request_id)), 260);
-        if tenant_id.is_empty() {
-            return Err("tenant_id_required".to_string());
-        }
-        let conn = self.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
-        query_counseling_teacher_notes(&conn, &tenant_id, &request_id, limit)
-    }
-
-    fn get_counseling_teacher_note(
-        &self,
-        tenant_id: String,
-        request_id: String,
-    ) -> Result<Option<Value>, String> {
-        Ok(self
-            .list_counseling_teacher_notes(tenant_id, request_id, 1)?
-            .pop())
-    }
-
-    fn compare_counseling_snapshot(&self, input: Value) -> Result<Value, String> {
-        let source = prepare_counseling_snapshot(&input)?;
-        let conn = self.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
-        compare_prepared_counseling_snapshot(&conn, &source)
-    }
-
-    fn import_counseling_snapshot(&self, input: Value) -> Result<Value, String> {
-        let source = prepare_counseling_snapshot(&input)?;
-        let run_id = normalize_id_segment(
-            input.get("runId").or_else(|| input.get("id")),
-            260,
-        );
-        if run_id.is_empty() {
-            return Err("import_run_id_required".to_string());
-        }
-        let expected_sha256 = normalize_json_text(input.get("sourceSnapshotSha256"), 64).to_lowercase();
-        if expected_sha256.len() != 64
-            || !expected_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
-            || expected_sha256 != source.source_snapshot_sha256
-        {
-            return Err("counseling_source_hash_mismatch".to_string());
-        }
-        let mut conn = self.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
-        let transaction = conn
-            .transaction()
-            .map_err(|error| format!("db_counseling_import_begin_failed:{error}"))?;
-        let existing = transaction.query_row(
-            "SELECT kind, payload_json FROM local_import_runs WHERE tenant_id = ?1 AND run_id = ?2",
-            params![&source.tenant_id, &run_id],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-        );
-        if let Ok((kind, payload_json)) = existing {
-            let receipt = serde_json::from_str::<Value>(&payload_json).unwrap_or_else(|_| json!({}));
-            if kind != "counseling_firestore_copy"
-                || normalize_json_text(receipt.get("sourceSnapshotSha256"), 64)
-                    != source.source_snapshot_sha256
-            {
-                return Err("counseling_import_run_conflict".to_string());
-            }
-            let mut result = receipt.get("result").cloned().unwrap_or_else(|| json!({}));
-            if let Value::Object(ref mut obj) = result {
-                set_obj(obj, "replayed", true);
-            }
-            transaction
-                .commit()
-                .map_err(|error| format!("db_counseling_import_commit_failed:{error}"))?;
-            return Ok(result);
-        }
-        for record in &source.records {
-            write_counseling_record(&transaction, record)?;
-        }
-        for note in &source.teacher_notes {
-            write_counseling_teacher_note(&transaction, note)?;
-        }
-        let compare = compare_prepared_counseling_snapshot(&transaction, &source)?;
-        let started_at_ms = now_ms();
-        let finished_at_ms = now_ms();
-        let result = json!({
-            "ok": true,
-            "tenantId": source.tenant_id,
-            "runId": run_id,
-            "sourceSnapshotSha256": source.source_snapshot_sha256,
-            "imported": {
-                "records": source.records.len(),
-                "teacherNotes": source.teacher_notes.len()
-            },
-            "compare": compare,
-            "replayed": false
-        });
-        let status = if result
-            .get("compare")
-            .and_then(|value| value.get("matches"))
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-        {
-            "completed"
-        } else {
-            "mismatch"
-        };
-        let receipt = json!({
-            "id": run_id,
-            "runId": run_id,
-            "tenantId": source.tenant_id,
-            "kind": "counseling_firestore_copy",
-            "status": status,
-            "sourceRetention": "copy_only",
-            "sourceSnapshotSha256": source.source_snapshot_sha256,
-            "startedAtMs": started_at_ms,
-            "finishedAtMs": finished_at_ms,
-            "result": result
-        });
-        transaction
-            .execute(
-                "INSERT INTO local_import_runs
-                 (tenant_id, run_id, kind, status, payload_json, started_at_ms, finished_at_ms)
-                 VALUES (?1, ?2, 'counseling_firestore_copy', ?3, ?4, ?5, ?6)",
-                params![
-                    &source.tenant_id,
-                    &run_id,
-                    status,
-                    payload_json(&receipt, "counseling_import_receipt_encode_failed")?,
-                    started_at_ms,
-                    finished_at_ms
-                ],
-            )
-            .map_err(|error| format!("db_counseling_import_receipt_failed:{error}"))?;
-        transaction
-            .commit()
-            .map_err(|error| format!("db_counseling_import_commit_failed:{error}"))?;
-        Ok(result)
-    }
-
     fn upsert_eval_assignment(&self, mut input: Value) -> Result<Value, String> {
         let tenant_id = normalize_tenant_id(input.get("tenantId"));
         if tenant_id.is_empty() {
@@ -4091,15 +3257,12 @@ impl SqliteStore {
         let sections = json!([
             { "key": "observations", "label": "수업 관찰", "count": stats.get("observationCount").and_then(|value| value.as_i64()).unwrap_or(0), "updatedAtMs": stats.get("observationUpdatedAtMs").and_then(|value| value.as_i64()).unwrap_or(0), "route": "/v1/observations" },
             { "key": "student-private-details", "label": "학생 민감정보", "count": stats.get("studentPrivateDetailCount").and_then(|value| value.as_i64()).unwrap_or(0), "updatedAtMs": stats.get("studentPrivateDetailUpdatedAtMs").and_then(|value| value.as_i64()).unwrap_or(0), "route": "/v1/student-private-details" },
-            { "key": "student-private-photos", "label": "학생 비공개 사진", "count": stats.get("studentPrivatePhotoCount").and_then(|value| value.as_i64()).unwrap_or(0), "updatedAtMs": stats.get("studentPrivateDetailUpdatedAtMs").and_then(|value| value.as_i64()).unwrap_or(0), "route": "/v1/student-private-photos" },
             { "key": "math-daily-attempts", "label": "매일수학 시도", "count": stats.get("mathDailyAttemptCount").and_then(|value| value.as_i64()).unwrap_or(0), "updatedAtMs": stats.get("mathDailyUpdatedAtMs").and_then(|value| value.as_i64()).unwrap_or(0), "route": "/v1/math-daily/attempts" },
             { "key": "board-post-snapshots", "label": "게시판 스냅샷", "count": stats.get("boardSnapshotCount").and_then(|value| value.as_i64()).unwrap_or(0), "updatedAtMs": stats.get("boardSnapshotUpdatedAtMs").and_then(|value| value.as_i64()).unwrap_or(0), "route": "/v1/board-post-snapshots" },
             { "key": "board-media", "label": "게시판 첨부파일", "count": stats.get("boardMediaCount").and_then(|value| value.as_i64()).unwrap_or(0), "updatedAtMs": stats.get("boardMediaArchivedAtMs").and_then(|value| value.as_i64()).unwrap_or(0), "route": "/v1/board-media" },
             { "key": "attendance-records", "label": "출결 기록", "count": stats.get("attendanceRecordCount").and_then(|value| value.as_i64()).unwrap_or(0), "updatedAtMs": stats.get("attendanceUpdatedAtMs").and_then(|value| value.as_i64()).unwrap_or(0), "route": "/v1/attendance-records" },
             { "key": "attendance-nais-checks", "label": "출결 NEIS 확인", "count": stats.get("attendanceNaisCheckCount").and_then(|value| value.as_i64()).unwrap_or(0), "updatedAtMs": stats.get("attendanceUpdatedAtMs").and_then(|value| value.as_i64()).unwrap_or(0), "route": "/v1/attendance-nais-checks" },
             { "key": "attendance-document-requests", "label": "출결 증빙 요청", "count": stats.get("attendanceDocumentRequestCount").and_then(|value| value.as_i64()).unwrap_or(0), "updatedAtMs": stats.get("attendanceUpdatedAtMs").and_then(|value| value.as_i64()).unwrap_or(0), "route": "/v1/attendance-document-requests" },
-            { "key": "counseling-records", "label": "상담 원문", "count": stats.get("counselingRecordCount").and_then(|value| value.as_i64()).unwrap_or(0), "updatedAtMs": stats.get("counselingUpdatedAtMs").and_then(|value| value.as_i64()).unwrap_or(0), "route": "/v1/counseling-records" },
-            { "key": "counseling-teacher-notes", "label": "상담 교사 메모", "count": stats.get("counselingTeacherNoteCount").and_then(|value| value.as_i64()).unwrap_or(0), "updatedAtMs": stats.get("counselingUpdatedAtMs").and_then(|value| value.as_i64()).unwrap_or(0), "route": "/v1/counseling-teacher-notes" },
             { "key": "eval-assignments", "label": "평가 운영", "count": stats.get("evalAssignmentCount").and_then(|value| value.as_i64()).unwrap_or(0), "updatedAtMs": stats.get("evalsUpdatedAtMs").and_then(|value| value.as_i64()).unwrap_or(0), "route": "/v1/eval-assignments" },
             { "key": "eval-results", "label": "평가 기록", "count": stats.get("evalResultCount").and_then(|value| value.as_i64()).unwrap_or(0), "updatedAtMs": stats.get("evalsUpdatedAtMs").and_then(|value| value.as_i64()).unwrap_or(0), "route": "/v1/eval-results" },
             { "key": "student-record-draft-sets", "label": "학생부 초안 세트", "count": stats.get("studentRecordDraftSetCount").and_then(|value| value.as_i64()).unwrap_or(0), "updatedAtMs": stats.get("studentRecordDraftUpdatedAtMs").and_then(|value| value.as_i64()).unwrap_or(0), "route": "/v1/student-record-draft-sets" },
@@ -4138,14 +3301,7 @@ fn allowed_origin(request: &Request) -> String {
         if let Some(host) = parsed.host_str() {
             if matches!(
                 host,
-                "localhost"
-                    | "127.0.0.1"
-                    | "::1"
-                    | "classaimate.pages.dev"
-                    | "classaimate.netlify.app"
-                    | "classaimate-v3.pages.dev"
-                    | "v3.classaimate.com"
-                    | "test.classaimate.com"
+                "localhost" | "127.0.0.1" | "::1" | "classaimate.pages.dev" | "classaimate.netlify.app"
             ) {
                 return origin;
             }
@@ -4196,7 +3352,7 @@ fn json_response(status: u16, payload: Value, origin: &str) -> Response<std::io:
             "Access-Control-Allow-Headers",
             "Content-Type, Authorization, X-OnlineClass-Local-Store-Key, X-OnlineClass-Local-Browser-Token",
         ),
-        ("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS"),
+        ("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS"),
     ] {
         if let Ok(header) = Header::from_bytes(name.as_bytes(), value.as_bytes()) {
             response.add_header(header);
@@ -4226,12 +3382,7 @@ fn normalize_teacher_settings_url(url: &str) -> Result<String, String> {
     let scheme = parsed.scheme();
     let host_allowed = matches!(
         host,
-        "classaimate.pages.dev"
-            | "classaimate.netlify.app"
-            | "classaimate-v3.pages.dev"
-            | "v3.classaimate.com"
-            | "localhost"
-            | "127.0.0.1"
+        "classaimate.pages.dev" | "classaimate.netlify.app" | "localhost" | "127.0.0.1"
     );
     if !host_allowed || !(scheme == "https" || scheme == "http") {
         return Err("url_not_allowed".to_string());
@@ -4368,26 +3519,6 @@ fn handle_request(
                 200,
                 json!({ "ok": true, "imported": saved.len(), "records": saved }),
             ));
-        }
-
-        if path.starts_with("/v1/student-private-photos/") {
-            let student_code = path.trim_start_matches("/v1/student-private-photos/").to_string();
-            if request.method() == &Method::Get {
-                let record = store.get_student_private_photo(query(&url, "tenantId"), student_code)?;
-                return Ok((200, json!({ "ok": true, "record": record })));
-            }
-            if request.method() == &Method::Put {
-                let mut body = read_body(&mut request)?;
-                if let Value::Object(ref mut obj) = body {
-                    obj.insert("studentCode".to_string(), Value::String(student_code));
-                }
-                let record = store.upsert_student_private_photo(body)?;
-                return Ok((200, json!({ "ok": true, "record": record })));
-            }
-            if request.method() == &Method::Delete {
-                let deleted = store.delete_student_private_photo(query(&url, "tenantId"), student_code)?;
-                return Ok((200, json!({ "ok": true, "deleted": deleted })));
-            }
         }
 
         if request.method() == &Method::Get && path == "/v1/math-daily/cache" {
@@ -4582,71 +3713,6 @@ fn handle_request(
             let records = body.get("records").and_then(|value| value.as_array()).cloned().unwrap_or_default();
             let saved = store.import_attendance_document_requests(tenant_id, records)?;
             return Ok((200, json!({ "ok": true, "imported": saved.len(), "records": saved })));
-        }
-
-        if request.method() == &Method::Get && path == "/v1/counseling-records" {
-            let limit = query(&url, "limit").parse::<i64>().unwrap_or(500);
-            let records = store.list_counseling_records(
-                query(&url, "tenantId"),
-                query(&url, "status"),
-                query(&url, "studentCode"),
-                limit,
-            )?;
-            return Ok((200, json!({ "ok": true, "records": records })));
-        }
-
-        if request.method() == &Method::Get && path.starts_with("/v1/counseling-records/") {
-            let request_id = path.trim_start_matches("/v1/counseling-records/").to_string();
-            return match store.get_counseling_record(query(&url, "tenantId"), request_id)? {
-                Some(record) => Ok((200, json!({ "ok": true, "record": record }))),
-                None => Ok((404, json!({ "ok": false, "error": "counseling_record_not_found" }))),
-            };
-        }
-
-        if request.method() == &Method::Put && path.starts_with("/v1/counseling-records/") {
-            let mut body = read_body(&mut request)?;
-            let request_id = path.trim_start_matches("/v1/counseling-records/").to_string();
-            if let Value::Object(ref mut obj) = body {
-                set_obj(obj, "requestId", request_id);
-            }
-            let record = store.upsert_counseling_record(body)?;
-            return Ok((200, json!({ "ok": true, "record": record })));
-        }
-
-        if request.method() == &Method::Get && path == "/v1/counseling-teacher-notes" {
-            let limit = query(&url, "limit").parse::<i64>().unwrap_or(500);
-            let records = store.list_counseling_teacher_notes(
-                query(&url, "tenantId"),
-                query(&url, "requestId"),
-                limit,
-            )?;
-            return Ok((200, json!({ "ok": true, "records": records })));
-        }
-
-        if request.method() == &Method::Get && path.starts_with("/v1/counseling-teacher-notes/") {
-            let request_id = path.trim_start_matches("/v1/counseling-teacher-notes/").to_string();
-            return match store.get_counseling_teacher_note(query(&url, "tenantId"), request_id)? {
-                Some(record) => Ok((200, json!({ "ok": true, "record": record }))),
-                None => Ok((404, json!({ "ok": false, "error": "counseling_teacher_note_not_found" }))),
-            };
-        }
-
-        if request.method() == &Method::Put && path.starts_with("/v1/counseling-teacher-notes/") {
-            let mut body = read_body(&mut request)?;
-            let request_id = path.trim_start_matches("/v1/counseling-teacher-notes/").to_string();
-            if let Value::Object(ref mut obj) = body {
-                set_obj(obj, "requestId", request_id);
-            }
-            let record = store.upsert_counseling_teacher_note(body)?;
-            return Ok((200, json!({ "ok": true, "record": record })));
-        }
-
-        if request.method() == &Method::Post && path == "/v1/counseling-import" {
-            return Ok((200, store.import_counseling_snapshot(read_body(&mut request)?)?));
-        }
-
-        if request.method() == &Method::Post && path == "/v1/counseling-compare" {
-            return Ok((200, store.compare_counseling_snapshot(read_body(&mut request)?)?));
         }
 
         if request.method() == &Method::Get && path == "/v1/eval-assignments" {
@@ -4935,18 +4001,9 @@ fn handle_request(
                 | "attendance_record_id_required" | "attendance_check_id_required"
                 | "attendance_request_id_required" | "eval_assignment_id_required"
                 | "eval_result_id_required" | "student_id_required" | "import_run_id_required"
-                | "counseling_request_id_required" | "counseling_status_invalid"
-                | "counseling_content_required" | "counseling_reply_content_required"
-                | "counseling_source_hash_mismatch" | "counseling_duplicate_request_id"
-                | "counseling_duplicate_teacher_note_id"
-                | "student_photo_scope_required" | "student_photo_content_type_invalid"
-                | "student_photo_content_invalid" | "student_photo_sha256_invalid"
-                | "student_photo_size_invalid"
                 | "backup_root_required" | "backup_root_inside_local_store"
                 | "backup_manifest_required" | "backup_manifest_outside_configured_root" | "backup_db_required" => 400,
-                "media_not_found" | "media_file_missing" | "counseling_record_not_found"
-                | "counseling_teacher_note_not_found" => 404,
-                "counseling_import_run_conflict" => 409,
+                "media_not_found" | "media_file_missing" => 404,
                 _ => 500,
             };
             json_response(
@@ -5191,8 +4248,6 @@ fn list_local_data_section(
         "/v1/attendance-records" => store.list_attendance_records(tenant_id.clone(), String::new(), String::new(), String::new(), String::new(), safe_limit),
         "/v1/attendance-nais-checks" => store.list_attendance_nais_checks(tenant_id.clone(), String::new(), String::new(), String::new(), String::new(), safe_limit),
         "/v1/attendance-document-requests" => store.list_attendance_document_requests(tenant_id.clone(), String::new(), String::new(), String::new(), String::new(), safe_limit),
-        "/v1/counseling-records" => store.list_counseling_records(tenant_id.clone(), String::new(), String::new(), safe_limit),
-        "/v1/counseling-teacher-notes" => store.list_counseling_teacher_notes(tenant_id.clone(), String::new(), safe_limit),
         "/v1/eval-assignments" => store.list_eval_assignments(tenant_id.clone(), String::new(), String::new(), String::new(), safe_limit),
         "/v1/eval-results" => store.list_eval_results(tenant_id.clone(), String::new(), String::new(), String::new(), String::new(), safe_limit),
         "/v1/student-record-draft-sets" => store.list_student_record_draft_sets(tenant_id.clone(), String::new(), String::new(), safe_limit),
@@ -5360,221 +4415,13 @@ pub fn run() {
             restore_local_backup,
             get_local_overview,
             list_local_data_section,
-            open_teacher_settings_url
+            open_teacher_settings_url,
+            shared_archive::import_shared_archive,
+            shared_archive::list_shared_archives,
+            shared_archive::get_shared_archive,
+            shared_archive::export_shared_archive,
+            shared_archive::open_shared_archive_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
-}
-
-#[cfg(test)]
-mod counseling_tests {
-    use super::*;
-
-    fn test_store() -> (SqliteStore, PathBuf) {
-        let suffix: String = rand::thread_rng()
-            .sample_iter(&Alphanumeric)
-            .take(8)
-            .map(char::from)
-            .collect();
-        let root = env::temp_dir().join(format!(
-            "onlineclass-counseling-rust-{}-{}-{}",
-            std::process::id(),
-            now_ms(),
-            suffix
-        ));
-        fs::create_dir_all(&root).expect("create counseling test directory");
-        let store = SqliteStore::open(root.join("store.sqlite")).expect("open counseling test store");
-        (store, root)
-    }
-
-    #[test]
-    fn student_private_profile_and_photo_round_trip() {
-        let (store, root) = test_store();
-        let detail = store
-            .upsert_student_private_detail(json!({
-                "tenantId": "tenant-a",
-                "studentCode": "s01",
-                "studentName": "학생 1",
-                "gender": "F",
-                "birthDate": "2018-03-04"
-            }))
-            .expect("save student private detail");
-        assert_eq!(detail["studentCode"], "S01");
-        assert_eq!(detail["gender"], "F");
-        assert_eq!(detail["birthDate"], "2018-03-04");
-
-        let saved_photo = store
-            .upsert_student_private_photo(json!({
-                "tenantId": "tenant-a",
-                "studentCode": "s01",
-                "contentType": "image/webp",
-                "contentBase64": "cGhvdG8=",
-                "sha256": "55c64d0fcd6f9d5f7c828093857e3fdfda68478bb4e9bd24d481ef391c7804e8",
-                "byteSize": 5
-            }))
-            .expect("save student private photo");
-        assert_eq!(saved_photo["studentCode"], "S01");
-        assert_eq!(saved_photo["byteSize"], 5);
-        let loaded_photo = store
-            .get_student_private_photo("tenant-a".to_string(), "s01".to_string())
-            .expect("load student private photo")
-            .expect("student private photo exists");
-        assert_eq!(loaded_photo["contentBase64"], "cGhvdG8=");
-        assert_eq!(store.stats("tenant-a".to_string()).unwrap()["studentPrivatePhotoCount"], 1);
-
-        assert_eq!(
-            store
-                .upsert_student_private_photo(json!({
-                    "tenantId": "tenant-a",
-                    "studentCode": "s02",
-                    "contentType": "image/webp",
-                    "contentBase64": "cGhvdG8=",
-                    "sha256": "0".repeat(64),
-                    "byteSize": 5
-                }))
-                .unwrap_err(),
-            "student_photo_sha256_invalid"
-        );
-        assert!(store
-            .delete_student_private_photo("tenant-a".to_string(), "s01".to_string())
-            .expect("delete student private photo"));
-        assert!(store
-            .get_student_private_photo("tenant-a".to_string(), "s01".to_string())
-            .expect("reload deleted photo")
-            .is_none());
-        drop(store);
-        fs::remove_dir_all(root).expect("remove student private test directory");
-    }
-
-    #[test]
-    fn counseling_import_replay_isolation_and_validation() {
-        let (store, root) = test_store();
-        let backup_root = env::temp_dir().join(format!(
-            "onlineclass-counseling-rust-backup-{}-{}",
-            std::process::id(),
-            now_ms()
-        ));
-        let restore_root = env::temp_dir().join(format!(
-            "onlineclass-counseling-rust-restore-{}-{}",
-            std::process::id(),
-            now_ms()
-        ));
-        fs::create_dir_all(&backup_root).expect("create counseling backup directory");
-        fs::create_dir_all(&restore_root).expect("create counseling restore directory");
-        let source = json!({
-            "tenantId": "tenant-a",
-            "records": [
-                {
-                    "requestId": "req-1",
-                    "studentCode": "s01",
-                    "studentName": "학생 1",
-                    "content": "상담 요청 1",
-                    "status": "unread",
-                    "createdAtMs": 1000,
-                    "updatedAtMs": 1000
-                },
-                {
-                    "requestId": "req-2",
-                    "studentCode": "s02",
-                    "content": "상담 요청 2",
-                    "status": "read",
-                    "createdAtMs": 1001,
-                    "updatedAtMs": 1001
-                }
-            ],
-            "teacherNotes": [{
-                "requestId": "req-1",
-                "teacherNote": "교사 메모",
-                "updatedAtMs": 1002
-            }]
-        });
-        let prepared = prepare_counseling_snapshot(&source).expect("prepare counseling source");
-        assert_eq!(
-            prepared.source_snapshot_sha256,
-            "277a9cd841e1ea400a798eff1924e88081f7c9d63dcfe6c296676b656ef900fe"
-        );
-        let mut import = source.clone();
-        import["runId"] = json!("run-1");
-        import["sourceSnapshotSha256"] = json!(prepared.source_snapshot_sha256);
-
-        let first = store
-            .import_counseling_snapshot(import.clone())
-            .expect("first counseling import");
-        assert_eq!(first["replayed"], false);
-        assert_eq!(first["compare"]["matches"], true);
-        let replay = store
-            .import_counseling_snapshot(import)
-            .expect("exact counseling replay");
-        assert_eq!(replay["replayed"], true);
-        assert_eq!(store.stats("tenant-a".to_string()).unwrap()["counselingRecordCount"], 2);
-        assert!(store
-            .get_counseling_record("tenant-b".to_string(), "req-1".to_string())
-            .unwrap()
-            .is_none());
-        assert_eq!(
-            store
-                .upsert_counseling_record(json!({
-                    "tenantId": "tenant-a",
-                    "requestId": "bad-status",
-                    "studentCode": "s03",
-                    "content": "invalid",
-                    "status": "closed"
-                }))
-                .unwrap_err(),
-            "counseling_status_invalid"
-        );
-        assert_eq!(
-            store
-                .upsert_counseling_teacher_note(json!({
-                    "tenantId": "tenant-a",
-                    "requestId": "missing",
-                    "teacherNote": "orphan"
-                }))
-                .unwrap_err(),
-            "counseling_record_not_found"
-        );
-        backup::set_folder(
-            &store,
-            "tenant-a".to_string(),
-            backup_root.to_string_lossy().to_string(),
-        )
-        .expect("configure counseling backup");
-        let backup_result = backup::run_now(&store, "tenant-a".to_string())
-            .expect("run counseling backup");
-        assert_eq!(backup_result["counts"]["counselingRecordCount"], 2);
-        assert_eq!(backup_result["counts"]["counselingTeacherNoteCount"], 1);
-        let manifest_path = backup_result["manifestPath"]
-            .as_str()
-            .expect("counseling backup manifest path")
-            .to_string();
-        let restored = SqliteStore::open(restore_root.join("store.sqlite"))
-            .expect("open counseling restore store");
-        backup::set_folder(
-            &restored,
-            "tenant-a".to_string(),
-            backup_root.to_string_lossy().to_string(),
-        )
-        .expect("configure counseling restore backup root");
-        let preview = backup::restore_preview(
-            &restored,
-            json!({ "tenantId": "tenant-a", "manifestPath": manifest_path }),
-        )
-        .expect("preview counseling restore");
-        assert_eq!(preview["counts"]["counseling_records"], 2);
-        assert_eq!(preview["counts"]["counseling_teacher_notes"], 1);
-        backup::restore(
-            &restored,
-            json!({ "tenantId": "tenant-a", "manifestPath": manifest_path }),
-        )
-        .expect("restore counseling backup");
-        assert_eq!(
-            restored.stats("tenant-a".to_string()).unwrap()["counselingRecordCount"],
-            2
-        );
-        drop(store);
-        drop(restored);
-        fs::remove_dir_all(root).expect("remove counseling test directory");
-        fs::remove_dir_all(backup_root).expect("remove counseling backup directory");
-        fs::remove_dir_all(restore_root).expect("remove counseling restore directory");
-    }
 }

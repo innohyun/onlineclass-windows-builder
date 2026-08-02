@@ -218,6 +218,30 @@
           </div>
         </section>
 
+        <section class="shared-archive-panel" aria-labelledby="sharedArchiveTitle">
+          <div class="data-overview-head">
+            <div>
+              <span class="panel-label">공유자료 장기 보관</span>
+              <h2 id="sharedArchiveTitle">과제·보드 로컬 보관소</h2>
+              <p>웹에서 보관한 자료를 이 PC의 별도 읽기 전용 DB로 내려받습니다.</p>
+            </div>
+            <div class="data-overview-actions">
+              <button class="secondary-action" id="sharedArchiveRefreshButton" type="button">새로고침</button>
+              <button class="secondary-action" id="sharedArchiveExportButton" type="button">JSON 내보내기</button>
+            </div>
+          </div>
+          <div class="archive-import-row">
+            <label for="sharedArchiveCodeInput">웹에서 발급한 보관 코드</label>
+            <input id="sharedArchiveCodeInput" type="password" autocomplete="off" maxlength="43" placeholder="10분 동안 한 번만 사용할 수 있습니다" />
+            <button class="primary-action" id="sharedArchiveImportButton" type="button">검증 후 보관</button>
+          </div>
+          <p class="status-message" id="sharedArchiveStatus">보관 코드는 URL·브라우저 저장소에 남기지 않습니다.</p>
+          <div class="shared-archive-grid">
+            <div class="shared-archive-list" id="sharedArchiveList" aria-label="로컬 공유자료 보관 목록"></div>
+            <div class="shared-archive-detail" id="sharedArchiveDetail" aria-live="polite"></div>
+          </div>
+        </section>
+
         <aside class="warning-callout" aria-label="백업 주의">
           <strong>중요 안내</strong>
           <p>백업 파일은 암호화하지 않은 평문으로 저장됩니다. 학교 계정 OneDrive처럼 접근 권한이 제한된 폴더를 사용하세요.</p>

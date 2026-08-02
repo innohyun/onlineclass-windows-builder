@@ -799,6 +799,68 @@ button:disabled {
   background: #fffbeb;
 }
 
+.shared-archive-panel {
+  margin-top: 18px;
+  border: 1px solid var(--soft-line);
+  border-radius: 12px;
+  padding: 18px;
+  background: #ffffff;
+}
+
+.archive-import-row {
+  display: grid;
+  grid-template-columns: auto minmax(220px, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  margin: 16px 0 8px;
+}
+
+.archive-import-row label { font-weight: 800; color: #334155; }
+.archive-import-row input { min-width: 0; border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px 12px; }
+.archive-status-ok { color: #166534; }
+.archive-status-error { color: #b91c1c; }
+
+.shared-archive-grid {
+  display: grid;
+  grid-template-columns: minmax(240px, .85fr) minmax(0, 1.4fr);
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.shared-archive-list,
+.shared-archive-detail {
+  min-height: 180px;
+  border: 1px solid var(--soft-line);
+  border-radius: 10px;
+  padding: 10px;
+  background: #f8fafc;
+}
+
+.archive-row,
+.archive-file-row {
+  width: 100%;
+  display: grid;
+  gap: 4px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 10px;
+  text-align: left;
+  color: var(--text);
+  background: transparent;
+}
+
+.archive-row + .archive-row { margin-top: 6px; }
+.archive-row span, .archive-row small, .archive-file-row small, .archive-detail-head span { color: #64748b; }
+.archive-row.is-selected { border-color: #93c5fd; background: #eff6ff; }
+.archive-detail-head { display: flex; justify-content: space-between; gap: 12px; align-items: start; }
+.archive-detail-head > div { display: grid; gap: 4px; }
+.archive-file-list { display: grid; gap: 6px; margin-top: 12px; }
+.archive-file-row { grid-template-columns: minmax(0, 1fr) auto; background: #ffffff; border-color: var(--soft-line); }
+.archive-file-row span { overflow-wrap: anywhere; }
+.archive-records { margin-top: 12px; }
+.archive-records summary { cursor: pointer; font-weight: 800; }
+.archive-records pre { max-height: 320px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+
 .warning-callout strong {
   color: #92400e;
 }
@@ -871,7 +933,8 @@ button:disabled {
 @media (max-width: 960px) {
   .summary-card,
   .card-grid,
-  .data-overview-grid {
+  .data-overview-grid,
+  .shared-archive-grid {
     grid-template-columns: 1fr;
   }
 
@@ -908,7 +971,8 @@ button:disabled {
   .compact-list div,
   .inline-field,
   .path-row,
-  .pairing-row {
+  .pairing-row,
+  .archive-import-row {
     grid-template-columns: 1fr;
   }
 
