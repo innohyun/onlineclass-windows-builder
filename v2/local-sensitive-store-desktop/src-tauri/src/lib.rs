@@ -24,7 +24,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-08-03.1-teacher-local-records";
+pub(crate) const SERVICE_VERSION: &str = "2026-08-04.1-teacher-mobile-counseling";
 const DB_FILE_NAME: &str = "onlineclass-sensitive.sqlite";
 const KEY_FILE_NAME: &str = "pairing-key.txt";
 const BROWSER_LINK_FILE_NAME: &str = "browser-link-tokens.json";
@@ -573,6 +573,17 @@ fn normalize_teacher_counseling_session(input: Value) -> Result<NormalizedTeache
     let class_no = normalize_period(obj.get("classNo").or_else(|| obj.get("number")));
     let topics = normalize_topics(obj.get("topics"));
     let follow_up_note = normalize_json_text(obj.get("followUpNote"), 2000);
+    let source_transcript = obj.get("sourceTranscript").and_then(Value::as_object).and_then(|source| {
+        let text = normalize_json_text(source.get("text"), 120000);
+        if text.is_empty() { return None; }
+        Some(json!({
+            "version": 1,
+            "text": text,
+            "model": normalize_json_text(source.get("model"), 120),
+            "transcribedAtMs": timestamp_like(source.get("transcribedAtMs")),
+            "audioStored": false
+        }))
+    });
     let created_at_ms = {
         let value = timestamp_like(obj.get("createdAtMs").or_else(|| obj.get("createdAt")));
         if value > 0 { value } else { updated_at_ms }
@@ -593,6 +604,7 @@ fn normalize_teacher_counseling_session(input: Value) -> Result<NormalizedTeache
     set_obj(&mut obj, "topics", topics);
     set_obj(&mut obj, "summary", summary);
     set_obj(&mut obj, "followUpNote", follow_up_note);
+    if let Some(value) = source_transcript { set_obj(&mut obj, "sourceTranscript", value); }
     set_obj(&mut obj, "archivedAtMs", archived_at_ms);
     set_obj(&mut obj, "archivedAtIso", if archived_at_ms > 0 { DateTime::<Utc>::from_timestamp_millis(archived_at_ms).unwrap_or_else(Utc::now).to_rfc3339() } else { String::new() });
     set_obj(&mut obj, "recordOrigin", "teacher_local_counseling");
