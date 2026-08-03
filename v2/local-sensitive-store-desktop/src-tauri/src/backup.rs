@@ -29,6 +29,13 @@ const BACKUP_TABLES: &[BackupTable] = &[
         optional: false,
     },
     BackupTable {
+        name: "teacher_counseling_sessions",
+        columns: &["tenant_id", "session_id", "student_code", "counseling_at_ms", "status", "follow_up_on", "archived_at_ms", "payload_json", "updated_at_ms"],
+        key_columns: &["tenant_id", "session_id"],
+        timestamp_column: "updated_at_ms",
+        optional: false,
+    },
+    BackupTable {
         name: "student_private_details",
         columns: &["tenant_id", "student_code", "payload_json", "updated_at_ms"],
         key_columns: &["tenant_id", "student_code"],
@@ -197,6 +204,18 @@ fn backup_schema_sql(prefix: &str) -> String {
           payload_json TEXT NOT NULL,
           updated_at_ms INTEGER NOT NULL,
           PRIMARY KEY (tenant_id, doc_id)
+        );
+        CREATE TABLE IF NOT EXISTS {prefix}teacher_counseling_sessions (
+          tenant_id TEXT NOT NULL,
+          session_id TEXT NOT NULL,
+          student_code TEXT NOT NULL,
+          counseling_at_ms INTEGER NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('completed', 'follow_up')),
+          follow_up_on TEXT,
+          archived_at_ms INTEGER,
+          payload_json TEXT NOT NULL,
+          updated_at_ms INTEGER NOT NULL,
+          PRIMARY KEY (tenant_id, session_id)
         );
         CREATE TABLE IF NOT EXISTS {prefix}student_private_details (
           tenant_id TEXT NOT NULL,

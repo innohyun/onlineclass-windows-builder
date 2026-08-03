@@ -24,7 +24,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-07-04.3-student-record-local-first";
+pub(crate) const SERVICE_VERSION: &str = "2026-08-03.1-teacher-local-records";
 const DB_FILE_NAME: &str = "onlineclass-sensitive.sqlite";
 const KEY_FILE_NAME: &str = "pairing-key.txt";
 const BROWSER_LINK_FILE_NAME: &str = "browser-link-tokens.json";
@@ -38,6 +38,7 @@ const LOCAL_SENSITIVE_STORE_ROUTES: &[&str] = &[
     "/v1/observations",
     "/v1/stats",
     "/v1/observations/import",
+    "/v1/teacher-counseling-sessions",
     "/v1/student-private-details",
     "/v1/student-private-details/import",
     "/v1/math-daily/cache",
@@ -77,7 +78,7 @@ const LOCAL_SENSITIVE_STORE_ROUTES: &[&str] = &[
     "/v1/backups/restore-preview",
     "/v1/backups/restore",
 ];
-const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 1] = ["non_lesson_observations"];
+const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 2] = ["non_lesson_observations", "teacher_local_records"];
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -161,6 +162,18 @@ struct NormalizedObservation {
     date_key: String,
     period: i64,
     student_code: String,
+    payload: Value,
+    updated_at_ms: i64,
+}
+
+struct NormalizedTeacherCounselingSession {
+    tenant_id: String,
+    session_id: String,
+    student_code: String,
+    counseling_at_ms: i64,
+    status: String,
+    follow_up_on: String,
+    archived_at_ms: i64,
     payload: Value,
     updated_at_ms: i64,
 }
@@ -280,6 +293,24 @@ fn normalize_tags(value: Option<&Value>) -> Value {
         }
     }
     Value::Array(tags)
+}
+
+fn normalize_topics(value: Option<&Value>) -> Value {
+    let mut topics = Vec::new();
+    if let Some(Value::Array(items)) = value {
+        for item in items.iter().take(8) {
+            let topic = normalize_json_text(Some(item), 60);
+            if !topic.is_empty() {
+                topics.push(Value::String(topic));
+            }
+        }
+    }
+    Value::Array(topics)
+}
+
+fn normalize_enum(value: Option<&Value>, allowed: &[&str], fallback: &str) -> String {
+    let text = normalize_json_text(value, 60);
+    if allowed.contains(&text.as_str()) { text } else { fallback.to_string() }
 }
 
 fn timestamp_like(value: Option<&Value>) -> i64 {
@@ -511,6 +542,65 @@ fn normalize_observation(input: Value) -> Result<NormalizedObservation, String> 
         student_code,
         payload: Value::Object(obj),
         updated_at_ms,
+    })
+}
+
+fn normalize_teacher_counseling_session(input: Value) -> Result<NormalizedTeacherCounselingSession, String> {
+    let mut obj = input.as_object().cloned().ok_or_else(|| "invalid_record".to_string())?;
+    let tenant_id = normalize_tenant_id(obj.get("tenantId"));
+    let student_code = normalize_student_code(obj.get("studentCode").or_else(|| obj.get("code")).or_else(|| obj.get("studentId")));
+    let counseling_at_ms = {
+        let value = timestamp_like(obj.get("counselingAtMs").or_else(|| obj.get("counselingAt")).or_else(|| obj.get("counselingDate")));
+        if value > 0 { value } else { now_ms() }
+    };
+    let updated_at_ms = updated_at_ms(&Value::Object(obj.clone()));
+    let fallback_id = format!("counseling_{student_code}_{counseling_at_ms}");
+    let session_id = normalize_local_record_id(
+        obj.get("sessionId").or_else(|| obj.get("id")).or_else(|| obj.get("docId")),
+        fallback_id,
+        "teacher_counseling_session_id_required",
+    )?;
+    let summary = normalize_json_text(obj.get("summary"), 5000);
+    if tenant_id.is_empty() { return Err("tenant_id_required".to_string()); }
+    if student_code.is_empty() { return Err("student_code_required".to_string()); }
+    if summary.is_empty() { return Err("teacher_counseling_summary_required".to_string()); }
+    let participant_type = normalize_enum(obj.get("participantType"), &["student", "guardian", "student_guardian"], "student");
+    let channel = normalize_enum(obj.get("channel"), &["in_person", "phone", "online"], "in_person");
+    let status = normalize_enum(obj.get("status"), &["completed", "follow_up"], "completed");
+    let follow_up_on = if status == "follow_up" { normalize_date_key(obj.get("followUpOn")) } else { String::new() };
+    let archived_at_ms = timestamp_like(obj.get("archivedAtMs"));
+    let student_name = normalize_json_text(obj.get("studentName").or_else(|| obj.get("name")), 160);
+    let class_no = normalize_period(obj.get("classNo").or_else(|| obj.get("number")));
+    let topics = normalize_topics(obj.get("topics"));
+    let follow_up_note = normalize_json_text(obj.get("followUpNote"), 2000);
+    let created_at_ms = {
+        let value = timestamp_like(obj.get("createdAtMs").or_else(|| obj.get("createdAt")));
+        if value > 0 { value } else { updated_at_ms }
+    };
+    set_obj(&mut obj, "id", session_id.clone());
+    set_obj(&mut obj, "docId", session_id.clone());
+    set_obj(&mut obj, "sessionId", session_id.clone());
+    set_obj(&mut obj, "tenantId", tenant_id.clone());
+    set_obj(&mut obj, "studentCode", student_code.clone());
+    set_obj(&mut obj, "studentName", student_name);
+    set_obj(&mut obj, "classNo", class_no);
+    set_obj(&mut obj, "participantType", participant_type);
+    set_obj(&mut obj, "channel", channel);
+    set_obj(&mut obj, "counselingAtMs", counseling_at_ms);
+    set_obj(&mut obj, "counselingAtIso", DateTime::<Utc>::from_timestamp_millis(counseling_at_ms).unwrap_or_else(Utc::now).to_rfc3339());
+    set_obj(&mut obj, "status", status.clone());
+    set_obj(&mut obj, "followUpOn", follow_up_on.clone());
+    set_obj(&mut obj, "topics", topics);
+    set_obj(&mut obj, "summary", summary);
+    set_obj(&mut obj, "followUpNote", follow_up_note);
+    set_obj(&mut obj, "archivedAtMs", archived_at_ms);
+    set_obj(&mut obj, "archivedAtIso", if archived_at_ms > 0 { DateTime::<Utc>::from_timestamp_millis(archived_at_ms).unwrap_or_else(Utc::now).to_rfc3339() } else { String::new() });
+    set_obj(&mut obj, "recordOrigin", "teacher_local_counseling");
+    set_obj(&mut obj, "createdAtMs", created_at_ms);
+    set_updated_payload_fields(&mut obj, updated_at_ms);
+    Ok(NormalizedTeacherCounselingSession {
+        tenant_id, session_id, student_code, counseling_at_ms, status, follow_up_on,
+        archived_at_ms, payload: Value::Object(obj), updated_at_ms,
     })
 }
 
@@ -843,6 +933,22 @@ impl SqliteStore {
               ON lesson_observations (tenant_id, date_key, period);
             CREATE INDEX IF NOT EXISTS idx_lesson_observations_tenant_student_date
               ON lesson_observations (tenant_id, student_code, date_key);
+            CREATE TABLE IF NOT EXISTS teacher_counseling_sessions (
+              tenant_id TEXT NOT NULL,
+              session_id TEXT NOT NULL,
+              student_code TEXT NOT NULL,
+              counseling_at_ms INTEGER NOT NULL,
+              status TEXT NOT NULL CHECK (status IN ('completed', 'follow_up')),
+              follow_up_on TEXT,
+              archived_at_ms INTEGER,
+              payload_json TEXT NOT NULL,
+              updated_at_ms INTEGER NOT NULL,
+              PRIMARY KEY (tenant_id, session_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_teacher_counseling_tenant_student_date
+              ON teacher_counseling_sessions (tenant_id, student_code, counseling_at_ms DESC);
+            CREATE INDEX IF NOT EXISTS idx_teacher_counseling_tenant_status_follow_up
+              ON teacher_counseling_sessions (tenant_id, status, follow_up_on);
             CREATE TABLE IF NOT EXISTS lesson_observation_conflicts (
               tenant_id TEXT NOT NULL,
               doc_id TEXT NOT NULL,
@@ -1141,6 +1247,84 @@ impl SqliteStore {
         Ok(record.payload)
     }
 
+    fn upsert_teacher_counseling_session(&self, input: Value) -> Result<Value, String> {
+        let record = normalize_teacher_counseling_session(input)?;
+        let payload_json = payload_json(&record.payload, "teacher_counseling_payload_encode_failed")?;
+        let conn = self.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
+        conn.execute(
+            r#"INSERT INTO teacher_counseling_sessions (
+              tenant_id, session_id, student_code, counseling_at_ms, status, follow_up_on,
+              archived_at_ms, payload_json, updated_at_ms
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            ON CONFLICT(tenant_id, session_id) DO UPDATE SET
+              student_code = excluded.student_code,
+              counseling_at_ms = excluded.counseling_at_ms,
+              status = excluded.status,
+              follow_up_on = excluded.follow_up_on,
+              archived_at_ms = excluded.archived_at_ms,
+              payload_json = excluded.payload_json,
+              updated_at_ms = excluded.updated_at_ms"#,
+            params![record.tenant_id, record.session_id, record.student_code, record.counseling_at_ms,
+                record.status, if record.follow_up_on.is_empty() { None::<String> } else { Some(record.follow_up_on) },
+                if record.archived_at_ms > 0 { Some(record.archived_at_ms) } else { None },
+                payload_json, record.updated_at_ms],
+        ).map_err(|e| format!("db_teacher_counseling_upsert_failed:{e}"))?;
+        Ok(record.payload)
+    }
+
+    fn get_teacher_counseling_session(&self, tenant_id: String, session_id: String) -> Result<Option<Value>, String> {
+        let safe_tenant = normalize_tenant_id(Some(&Value::String(tenant_id)));
+        let safe_session = normalize_id_segment(Some(&Value::String(session_id)), 240);
+        if safe_tenant.is_empty() { return Err("tenant_id_required".to_string()); }
+        if safe_session.is_empty() { return Err("teacher_counseling_session_id_required".to_string()); }
+        let conn = self.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
+        match conn.query_row(
+            "SELECT payload_json FROM teacher_counseling_sessions WHERE tenant_id = ?1 AND session_id = ?2",
+            params![safe_tenant, safe_session], |row| row.get::<_, String>(0),
+        ) {
+            Ok(raw) => Ok(Some(serde_json::from_str(&raw).unwrap_or_else(|_| json!({})))),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(error) => Err(format!("db_teacher_counseling_get_failed:{error}")),
+        }
+    }
+
+    fn list_teacher_counseling_sessions(
+        &self, tenant_id: String, student_code: String, status: String, include_archived: bool, limit: i64,
+    ) -> Result<Vec<Value>, String> {
+        let safe_tenant = normalize_tenant_id(Some(&Value::String(tenant_id)));
+        if safe_tenant.is_empty() { return Err("tenant_id_required".to_string()); }
+        let safe_student = normalize_student_code(Some(&Value::String(student_code)));
+        let safe_status = normalize_enum(Some(&Value::String(status)), &["completed", "follow_up"], "");
+        let mut where_parts = vec!["tenant_id = ?".to_string()];
+        let mut values: Vec<Box<dyn ToSql>> = vec![Box::new(safe_tenant)];
+        if !safe_student.is_empty() { where_parts.push("student_code = ?".to_string()); values.push(Box::new(safe_student)); }
+        if !safe_status.is_empty() { where_parts.push("status = ?".to_string()); values.push(Box::new(safe_status)); }
+        if !include_archived { where_parts.push("archived_at_ms IS NULL".to_string()); }
+        let safe_limit = limit.clamp(1, 500);
+        let sql = format!("SELECT payload_json FROM teacher_counseling_sessions WHERE {} ORDER BY counseling_at_ms DESC, session_id ASC LIMIT {safe_limit}", where_parts.join(" AND "));
+        let conn = self.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
+        let mut stmt = conn.prepare(&sql).map_err(|e| format!("db_teacher_counseling_query_prepare_failed:{e}"))?;
+        let refs: Vec<&dyn ToSql> = values.iter().map(|value| value.as_ref() as &dyn ToSql).collect();
+        let rows = stmt.query_map(params_from_iter(refs), |row| row.get::<_, String>(0))
+            .map_err(|e| format!("db_teacher_counseling_query_failed:{e}"))?;
+        let mut out = Vec::new();
+        for row in rows {
+            let raw = row.map_err(|e| format!("db_teacher_counseling_row_failed:{e}"))?;
+            let payload: Value = serde_json::from_str(&raw).unwrap_or_else(|_| json!({}));
+            out.push(json!({
+                "id": payload.get("sessionId"), "sessionId": payload.get("sessionId"),
+                "tenantId": payload.get("tenantId"), "studentCode": payload.get("studentCode"),
+                "studentName": payload.get("studentName"), "classNo": payload.get("classNo"),
+                "participantType": payload.get("participantType"), "channel": payload.get("channel"),
+                "counselingAtMs": payload.get("counselingAtMs"), "counselingAtIso": payload.get("counselingAtIso"),
+                "status": payload.get("status"), "followUpOn": payload.get("followUpOn"),
+                "topics": payload.get("topics"), "summaryPreview": normalize_json_text(payload.get("summary"), 160),
+                "archivedAtMs": payload.get("archivedAtMs"), "updatedAtMs": payload.get("updatedAtMs")
+            }));
+        }
+        Ok(out)
+    }
+
     pub(crate) fn get_observation_updated_at_ms(&self, tenant_id: &str, doc_id: &str) -> Result<Option<i64>, String> {
         let safe_tenant = normalize_tenant_id(Some(&Value::String(tenant_id.to_string())));
         let safe_doc_id = normalize(doc_id, 240).replace(['/', '\\'], "_");
@@ -1324,14 +1508,30 @@ impl SqliteStore {
         if safe_tenant.is_empty() {
             return Err("tenant_id_required".to_string());
         }
-        let mut saved = Vec::new();
+        let mut normalized = Vec::new();
         for mut record in records {
             if let Value::Object(ref mut obj) = record {
                 obj.insert("tenantId".to_string(), Value::String(safe_tenant.clone()));
             }
-            saved.push(self.upsert_observation(record)?);
+            normalized.push(normalize_observation(record)?);
         }
-        Ok(saved)
+        let mut conn = self.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
+        let tx = conn.transaction().map_err(|e| format!("db_observation_import_begin_failed:{e}"))?;
+        for record in &normalized {
+            let raw = payload_json(&record.payload, "observation_import_payload_encode_failed")?;
+            tx.execute(
+                r#"INSERT INTO lesson_observations (
+                  tenant_id, doc_id, date_key, period, student_code, payload_json, updated_at_ms
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                ON CONFLICT(tenant_id, doc_id) DO UPDATE SET
+                  date_key = excluded.date_key, period = excluded.period,
+                  student_code = excluded.student_code, payload_json = excluded.payload_json,
+                  updated_at_ms = excluded.updated_at_ms"#,
+                params![record.tenant_id, record.doc_id, record.date_key, record.period, record.student_code, raw, record.updated_at_ms],
+            ).map_err(|e| format!("db_observation_import_failed:{e}"))?;
+        }
+        tx.commit().map_err(|e| format!("db_observation_import_commit_failed:{e}"))?;
+        Ok(normalized.into_iter().map(|record| record.payload).collect())
     }
 
     fn list_observations(
@@ -1427,6 +1627,11 @@ impl SqliteStore {
                 ))
             })
             .map_err(|e| format!("db_stats_failed:{e}"))?;
+        let teacher_counseling = conn.query_row(
+            "SELECT COUNT(*), MAX(updated_at_ms) FROM teacher_counseling_sessions WHERE tenant_id = ?1",
+            params![&safe_tenant],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?)),
+        ).map_err(|e| format!("db_stats_teacher_counseling_failed:{e}"))?;
         let mut student_private_stmt = conn
             .prepare(
                 "SELECT COUNT(*), MAX(updated_at_ms) \
@@ -1591,6 +1796,7 @@ impl SqliteStore {
             )
             .map_err(|e| format!("db_stats_cloud_sync_runs_failed:{e}"))?;
         let observation_updated_at_ms = observation.3.unwrap_or(0);
+        let teacher_counseling_updated_at_ms = teacher_counseling.1.unwrap_or(0);
         let student_private_updated_at_ms = student_private.1.unwrap_or(0);
         let math_daily_updated_at_ms = math_attempts
             .3
@@ -1619,6 +1825,7 @@ impl SqliteStore {
         let import_run_updated_at_ms = import_runs.1.unwrap_or(0);
         let cloud_sync_run_updated_at_ms = cloud_sync_runs.1.unwrap_or(0);
         let latest_local_write_at_ms = observation_updated_at_ms
+            .max(teacher_counseling_updated_at_ms)
             .max(student_private_updated_at_ms)
             .max(math_daily_updated_at_ms)
             .max(board_snapshot_archived_at_ms)
@@ -1640,6 +1847,8 @@ impl SqliteStore {
         put_stat!("lastDate", observation.2.unwrap_or_default());
         put_stat!("updatedAtMs", observation_updated_at_ms);
         put_stat!("observationUpdatedAtMs", observation_updated_at_ms);
+        put_stat!("teacherCounselingSessionCount", teacher_counseling.0);
+        put_stat!("teacherCounselingUpdatedAtMs", teacher_counseling_updated_at_ms);
         put_stat!("studentPrivateDetailCount", student_private.0);
         put_stat!("studentPrivateDetailUpdatedAtMs", student_private_updated_at_ms);
         put_stat!("mathDailyAttemptCount", math_attempts.0);
@@ -3256,6 +3465,7 @@ impl SqliteStore {
         let stats = self.stats(safe_tenant.clone())?;
         let sections = json!([
             { "key": "observations", "label": "수업 관찰", "count": stats.get("observationCount").and_then(|value| value.as_i64()).unwrap_or(0), "updatedAtMs": stats.get("observationUpdatedAtMs").and_then(|value| value.as_i64()).unwrap_or(0), "route": "/v1/observations" },
+            { "key": "teacher-counseling-sessions", "label": "교사 상담기록", "count": stats.get("teacherCounselingSessionCount").and_then(|value| value.as_i64()).unwrap_or(0), "updatedAtMs": stats.get("teacherCounselingUpdatedAtMs").and_then(|value| value.as_i64()).unwrap_or(0), "route": "/v1/teacher-counseling-sessions" },
             { "key": "student-private-details", "label": "학생 민감정보", "count": stats.get("studentPrivateDetailCount").and_then(|value| value.as_i64()).unwrap_or(0), "updatedAtMs": stats.get("studentPrivateDetailUpdatedAtMs").and_then(|value| value.as_i64()).unwrap_or(0), "route": "/v1/student-private-details" },
             { "key": "math-daily-attempts", "label": "매일수학 시도", "count": stats.get("mathDailyAttemptCount").and_then(|value| value.as_i64()).unwrap_or(0), "updatedAtMs": stats.get("mathDailyUpdatedAtMs").and_then(|value| value.as_i64()).unwrap_or(0), "route": "/v1/math-daily/attempts" },
             { "key": "board-post-snapshots", "label": "게시판 스냅샷", "count": stats.get("boardSnapshotCount").and_then(|value| value.as_i64()).unwrap_or(0), "updatedAtMs": stats.get("boardSnapshotUpdatedAtMs").and_then(|value| value.as_i64()).unwrap_or(0), "route": "/v1/board-post-snapshots" },
@@ -3620,6 +3830,30 @@ fn handle_request(
                 200,
                 json!({ "ok": true, "imported": saved.len(), "records": saved }),
             ));
+        }
+
+        if request.method() == &Method::Get && path == "/v1/teacher-counseling-sessions" {
+            let records = store.list_teacher_counseling_sessions(
+                query(&url, "tenantId"), query(&url, "studentCode"), query(&url, "status"),
+                query(&url, "includeArchived") == "true", query(&url, "limit").parse::<i64>().unwrap_or(100),
+            )?;
+            return Ok((200, json!({ "ok": true, "records": records })));
+        }
+
+        if request.method() == &Method::Get && path.starts_with("/v1/teacher-counseling-sessions/") {
+            let session_id = path.trim_start_matches("/v1/teacher-counseling-sessions/").to_string();
+            return match store.get_teacher_counseling_session(query(&url, "tenantId"), session_id)? {
+                Some(record) => Ok((200, json!({ "ok": true, "record": record }))),
+                None => Ok((404, json!({ "ok": false, "error": "teacher_counseling_session_not_found" }))),
+            };
+        }
+
+        if request.method() == &Method::Put && path.starts_with("/v1/teacher-counseling-sessions/") {
+            let mut body = read_body(&mut request)?;
+            let session_id = path.trim_start_matches("/v1/teacher-counseling-sessions/").to_string();
+            if let Value::Object(ref mut obj) = body { obj.insert("sessionId".to_string(), Value::String(session_id)); }
+            let record = store.upsert_teacher_counseling_session(body)?;
+            return Ok((200, json!({ "ok": true, "record": record })));
         }
 
         if request.method() == &Method::Get && path == "/v1/attendance-records" {
