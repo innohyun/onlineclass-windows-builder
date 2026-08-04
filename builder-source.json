@@ -1,7 +1,7 @@
 {
   "sourceRepo": "innohyun/onlineClass-v3",
-  "sourceCommit": "d5ad489639e2925e1dcc768fc4d17684a1b84e6f",
-  "sourceBranch": "codex/v3-local-store-overview-auth-fix-20260804",
+  "sourceCommit": "8ee1d65295a0df22010be7eb2f8109f3d0b08fe2",
+  "sourceBranch": "codex/v3-student-center-local-auth-fix-20260804",
   "sourceDirty": false,
-  "syncedAt": "2026-08-04T12:29:52.790Z"
+  "syncedAt": "2026-08-04T13:10:05.871Z"
 }

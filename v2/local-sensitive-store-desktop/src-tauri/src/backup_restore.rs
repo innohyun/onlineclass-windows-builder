@@ -248,6 +248,15 @@ where
             )
             .map_err(|e| format!("restore_media_path_update_failed:{e}"))?;
         }
+        transaction
+            .execute("DELETE FROM work_note_pages_fts WHERE tenant_id = ?1", params![tenant_id])
+            .map_err(|e| format!("restore_work_note_fts_delete_failed:{e}"))?;
+        transaction
+            .execute(
+                "INSERT INTO work_note_pages_fts (tenant_id, page_id, title, markdown) SELECT tenant_id, page_id, title, markdown FROM work_note_pages WHERE tenant_id = ?1",
+                params![tenant_id],
+            )
+            .map_err(|e| format!("restore_work_note_fts_insert_failed:{e}"))?;
         transaction.commit().map_err(|e| format!("restore_transaction_commit_failed:{e}"))?;
         Ok(imported)
     })();

@@ -5,6 +5,7 @@ mod cloud_sync;
 mod data_explorer;
 mod desktop_preferences;
 mod shared_archive;
+mod student_private_photos;
 use rand::{distributions::Alphanumeric, Rng};
 use rusqlite::{params, params_from_iter, Connection, ToSql};
 use serde::{Deserialize, Serialize};
@@ -28,7 +29,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-08-04.1-teacher-mobile-counseling";
+pub(crate) const SERVICE_VERSION: &str = "2026-08-04.3-student-private-photos";
 const DB_FILE_NAME: &str = "onlineclass-sensitive.sqlite";
 const KEY_FILE_NAME: &str = "pairing-key.txt";
 const BROWSER_LINK_FILE_NAME: &str = "browser-link-tokens.json";
@@ -50,6 +51,7 @@ const LOCAL_SENSITIVE_STORE_ROUTES: &[&str] = &[
     "/v1/teacher-counseling-sessions",
     "/v1/student-private-details",
     "/v1/student-private-details/import",
+    "/v1/student-private-photos",
     "/v1/math-daily/cache",
     "/v1/math-daily/cache-status",
     "/v1/math-daily/import",
@@ -75,6 +77,9 @@ const LOCAL_SENSITIVE_STORE_ROUTES: &[&str] = &[
     "/v1/student-record-drafts",
     "/v1/student-record-drafts/import",
     "/v1/import-runs",
+    "/v1/work-notes",
+    "/v1/work-notes/import",
+    "/v1/work-notes/export",
     "/v1/overview",
     "/v1/cloud-sync/status",
     "/v1/cloud-sync/runs",
@@ -87,7 +92,7 @@ const LOCAL_SENSITIVE_STORE_ROUTES: &[&str] = &[
     "/v1/backups/restore-preview",
     "/v1/backups/restore",
 ];
-const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 2] = ["non_lesson_observations", "teacher_local_records"];
+const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 3] = ["non_lesson_observations", "teacher_local_records", "work_notes"];
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1071,6 +1076,15 @@ impl SqliteStore {
             );
             CREATE INDEX IF NOT EXISTS idx_student_private_details_tenant_updated
               ON student_private_details (tenant_id, updated_at_ms);
+            CREATE TABLE IF NOT EXISTS student_private_photos (
+              tenant_id TEXT NOT NULL,
+              student_code TEXT NOT NULL,
+              payload_json TEXT NOT NULL,
+              updated_at_ms INTEGER NOT NULL,
+              PRIMARY KEY (tenant_id, student_code)
+            );
+            CREATE INDEX IF NOT EXISTS idx_student_private_photos_tenant_updated
+              ON student_private_photos (tenant_id, updated_at_ms);
             CREATE TABLE IF NOT EXISTS student_private_detail_conflicts (
               tenant_id TEXT NOT NULL,
               student_code TEXT NOT NULL,
@@ -1293,6 +1307,25 @@ impl SqliteStore {
             );
             CREATE INDEX IF NOT EXISTS idx_cloud_sync_runs_tenant_finished
               ON cloud_sync_runs (tenant_id, finished_at_ms DESC);
+            CREATE TABLE IF NOT EXISTS work_note_pages (
+              tenant_id TEXT NOT NULL,
+              page_id TEXT NOT NULL,
+              parent_id TEXT,
+              title TEXT NOT NULL,
+              emoji TEXT NOT NULL,
+              position INTEGER NOT NULL DEFAULT 0,
+              properties_json TEXT NOT NULL,
+              document_json TEXT NOT NULL,
+              markdown TEXT NOT NULL,
+              created_at_ms INTEGER NOT NULL,
+              updated_at_ms INTEGER NOT NULL,
+              PRIMARY KEY (tenant_id, page_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_work_note_pages_tree
+              ON work_note_pages (tenant_id, parent_id, position, updated_at_ms DESC);
+            CREATE VIRTUAL TABLE IF NOT EXISTS work_note_pages_fts USING fts5(
+              tenant_id UNINDEXED, page_id UNINDEXED, title, markdown, tokenize='unicode61'
+            );
             "#,
         )
         .map_err(|e| format!("db_schema_failed:{e}"))?;
@@ -1319,6 +1352,115 @@ impl SqliteStore {
             "routes": LOCAL_SENSITIVE_STORE_ROUTES,
             "features": LOCAL_SENSITIVE_STORE_FEATURES
         })
+    }
+
+    fn upsert_work_note(&self, mut input: Value) -> Result<Value, String> {
+        let tenant_id = normalize_tenant_id(input.get("tenantId"));
+        let page_id = normalize_id_segment(input.get("pageId").or_else(|| input.get("id")), 180);
+        let parent_id = normalize_id_segment(input.get("parentId"), 180);
+        let title = {
+            let value = normalize_json_text(input.get("title"), 240);
+            if value.is_empty() { "제목 없음".to_string() } else { value }
+        };
+        let emoji = {
+            let value = normalize_json_text(input.get("emoji"), 16);
+            if value.is_empty() { "📄".to_string() } else { value }
+        };
+        let position = input.get("position").and_then(Value::as_i64).unwrap_or(0).max(0);
+        let properties = input.get("properties").cloned().unwrap_or_else(|| json!({}));
+        let blocks = input.get("blocks").cloned().unwrap_or_else(|| json!([]));
+        let markdown = input.get("markdown").and_then(Value::as_str).unwrap_or("").chars().take(2_000_000).collect::<String>();
+        let now = Utc::now().timestamp_millis();
+        let updated_at_ms = input.get("updatedAtMs").and_then(Value::as_i64).filter(|value| *value > 0).unwrap_or(now);
+        let created_at_ms = input.get("createdAtMs").and_then(Value::as_i64).filter(|value| *value > 0).unwrap_or(updated_at_ms);
+        if tenant_id.is_empty() { return Err("tenant_id_required".to_string()); }
+        if page_id.is_empty() { return Err("work_note_page_id_required".to_string()); }
+        if parent_id == page_id { return Err("work_note_parent_cycle".to_string()); }
+        if let Some(object) = input.as_object_mut() {
+            object.insert("tenantId".to_string(), Value::String(tenant_id.clone()));
+            object.insert("pageId".to_string(), Value::String(page_id.clone()));
+            object.insert("parentId".to_string(), if parent_id.is_empty() { Value::Null } else { Value::String(parent_id.clone()) });
+            object.insert("title".to_string(), Value::String(title.clone()));
+            object.insert("emoji".to_string(), Value::String(emoji.clone()));
+            object.insert("position".to_string(), Value::Number(position.into()));
+            object.insert("properties".to_string(), properties.clone());
+            object.insert("blocks".to_string(), blocks.clone());
+            object.insert("markdown".to_string(), Value::String(markdown.clone()));
+            object.insert("updatedAtMs".to_string(), Value::Number(updated_at_ms.into()));
+        }
+        let properties_json = serde_json::to_string(&properties).map_err(|e| format!("work_note_properties_encode_failed:{e}"))?;
+        let document_json = serde_json::to_string(&blocks).map_err(|e| format!("work_note_document_encode_failed:{e}"))?;
+        let mut conn = self.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
+        let transaction = conn.transaction().map_err(|e| format!("db_work_note_transaction_failed:{e}"))?;
+        transaction.execute(
+            r#"INSERT INTO work_note_pages (
+              tenant_id, page_id, parent_id, title, emoji, position, properties_json,
+              document_json, markdown, created_at_ms, updated_at_ms
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
+              COALESCE((SELECT created_at_ms FROM work_note_pages WHERE tenant_id = ?1 AND page_id = ?2), ?10), ?11)
+            ON CONFLICT(tenant_id, page_id) DO UPDATE SET
+              parent_id=excluded.parent_id, title=excluded.title, emoji=excluded.emoji,
+              position=excluded.position, properties_json=excluded.properties_json,
+              document_json=excluded.document_json, markdown=excluded.markdown,
+              updated_at_ms=excluded.updated_at_ms"#,
+            params![tenant_id, page_id, if parent_id.is_empty(){None::<String>}else{Some(parent_id)}, title, emoji,
+                position, properties_json, document_json, markdown, created_at_ms, updated_at_ms],
+        ).map_err(|e| format!("db_work_note_upsert_failed:{e}"))?;
+        transaction.execute("DELETE FROM work_note_pages_fts WHERE tenant_id = ?1 AND page_id = ?2", params![tenant_id, page_id])
+            .map_err(|e| format!("db_work_note_fts_delete_failed:{e}"))?;
+        transaction.execute("INSERT INTO work_note_pages_fts (tenant_id,page_id,title,markdown) VALUES (?1,?2,?3,?4)", params![tenant_id,page_id,title,markdown])
+            .map_err(|e| format!("db_work_note_fts_insert_failed:{e}"))?;
+        transaction.commit().map_err(|e| format!("db_work_note_commit_failed:{e}"))?;
+        Ok(input)
+    }
+
+    fn list_work_notes(&self, tenant_id: String, query: String) -> Result<Vec<Value>, String> {
+        let tenant = normalize_tenant_id(Some(&Value::String(tenant_id)));
+        if tenant.is_empty() { return Err("tenant_id_required".to_string()); }
+        let search = normalize(&query, 200);
+        let conn = self.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
+        let (sql, values): (&str, Vec<String>) = if search.is_empty() {
+            ("SELECT p.tenant_id,p.page_id,p.parent_id,p.title,p.emoji,p.position,p.properties_json,p.document_json,p.markdown,p.created_at_ms,p.updated_at_ms FROM work_note_pages p WHERE p.tenant_id=?1 ORDER BY COALESCE(p.parent_id,''),p.position,p.updated_at_ms DESC", vec![tenant])
+        } else {
+            let terms = search.split_whitespace().map(|term| format!("\"{}\"*", term.replace('"', "\"\""))).collect::<Vec<_>>().join(" AND ");
+            ("SELECT p.tenant_id,p.page_id,p.parent_id,p.title,p.emoji,p.position,p.properties_json,p.document_json,p.markdown,p.created_at_ms,p.updated_at_ms FROM work_note_pages_fts f JOIN work_note_pages p ON p.tenant_id=f.tenant_id AND p.page_id=f.page_id WHERE f.tenant_id=?1 AND work_note_pages_fts MATCH ?2 ORDER BY rank,p.updated_at_ms DESC LIMIT 100", vec![tenant, terms])
+        };
+        let mut statement = conn.prepare(sql).map_err(|e| format!("db_work_note_query_prepare_failed:{e}"))?;
+        let rows = statement.query_map(params_from_iter(values.iter()), |row| {
+            let properties_raw: String = row.get(6)?;
+            let blocks_raw: String = row.get(7)?;
+            Ok(json!({
+                "tenantId": row.get::<_, String>(0)?, "pageId": row.get::<_, String>(1)?,
+                "parentId": row.get::<_, Option<String>>(2)?, "title": row.get::<_, String>(3)?,
+                "emoji": row.get::<_, String>(4)?, "position": row.get::<_, i64>(5)?,
+                "properties": serde_json::from_str::<Value>(&properties_raw).unwrap_or_else(|_| json!({})),
+                "blocks": serde_json::from_str::<Value>(&blocks_raw).unwrap_or_else(|_| json!([])),
+                "markdown": row.get::<_, String>(8)?, "createdAtMs": row.get::<_, i64>(9)?,
+                "updatedAtMs": row.get::<_, i64>(10)?
+            }))
+        }).map_err(|e| format!("db_work_note_query_failed:{e}"))?;
+        let mut records = Vec::new();
+        for row in rows { records.push(row.map_err(|e| format!("db_work_note_row_failed:{e}"))?); }
+        Ok(records)
+    }
+
+    fn get_work_note(&self, tenant_id: String, page_id: String) -> Result<Option<Value>, String> {
+        Ok(self.list_work_notes(tenant_id, String::new())?.into_iter().find(|page| page.get("pageId").and_then(Value::as_str) == Some(page_id.as_str())))
+    }
+
+    fn delete_work_note(&self, tenant_id: String, page_id: String) -> Result<Value, String> {
+        let tenant = normalize_tenant_id(Some(&Value::String(tenant_id)));
+        let page = normalize_id_segment(Some(&Value::String(page_id)), 180);
+        if tenant.is_empty() { return Err("tenant_id_required".to_string()); }
+        if page.is_empty() { return Err("work_note_page_id_required".to_string()); }
+        let mut conn = self.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
+        let child: i64 = conn.query_row("SELECT COUNT(*) FROM work_note_pages WHERE tenant_id=?1 AND parent_id=?2", params![tenant,page], |row| row.get(0)).map_err(|e| format!("db_work_note_child_check_failed:{e}"))?;
+        if child > 0 { return Err("work_note_has_children".to_string()); }
+        let transaction = conn.transaction().map_err(|e| format!("db_work_note_transaction_failed:{e}"))?;
+        transaction.execute("DELETE FROM work_note_pages_fts WHERE tenant_id=?1 AND page_id=?2",params![tenant,page]).map_err(|e|format!("db_work_note_fts_delete_failed:{e}"))?;
+        let deleted=transaction.execute("DELETE FROM work_note_pages WHERE tenant_id=?1 AND page_id=?2",params![tenant,page]).map_err(|e|format!("db_work_note_delete_failed:{e}"))?;
+        transaction.commit().map_err(|e|format!("db_work_note_commit_failed:{e}"))?;
+        Ok(json!({"ok":true,"deleted":deleted}))
     }
 
     pub(crate) fn upsert_observation(&self, input: Value) -> Result<Value, String> {
@@ -1893,6 +2035,13 @@ impl SqliteStore {
                 |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?)),
             )
             .map_err(|e| format!("db_stats_import_runs_failed:{e}"))?;
+        let work_notes = conn
+            .query_row(
+                "SELECT COUNT(*), MAX(updated_at_ms) FROM work_note_pages WHERE tenant_id = ?1",
+                params![&safe_tenant],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?)),
+            )
+            .map_err(|e| format!("db_stats_work_notes_failed:{e}"))?;
         let cloud_sync_runs = conn
             .query_row(
                 "SELECT COUNT(*), MAX(finished_at_ms) FROM cloud_sync_runs WHERE tenant_id = ?1",
@@ -1928,6 +2077,7 @@ impl SqliteStore {
             .unwrap_or(0)
             .max(student_record_drafts.1.unwrap_or(0));
         let import_run_updated_at_ms = import_runs.1.unwrap_or(0);
+        let work_note_updated_at_ms = work_notes.1.unwrap_or(0);
         let cloud_sync_run_updated_at_ms = cloud_sync_runs.1.unwrap_or(0);
         let latest_local_write_at_ms = observation_updated_at_ms
             .max(teacher_counseling_updated_at_ms)
@@ -1939,6 +2089,7 @@ impl SqliteStore {
             .max(evals_updated_at_ms)
             .max(student_record_draft_updated_at_ms)
             .max(import_run_updated_at_ms)
+            .max(work_note_updated_at_ms)
             .max(cloud_sync_run_updated_at_ms);
         let mut stats = Map::new();
         macro_rules! put_stat {
@@ -2000,6 +2151,8 @@ impl SqliteStore {
         );
         put_stat!("importRunCount", import_runs.0);
         put_stat!("importRunUpdatedAtMs", import_run_updated_at_ms);
+        put_stat!("workNoteCount", work_notes.0);
+        put_stat!("workNoteUpdatedAtMs", work_note_updated_at_ms);
         put_stat!("cloudSyncRunCount", cloud_sync_runs.0);
         put_stat!("cloudSyncRunUpdatedAtMs", cloud_sync_run_updated_at_ms);
         put_stat!("latestLocalWriteAtMs", latest_local_write_at_ms);
@@ -3582,6 +3735,7 @@ impl SqliteStore {
             { "key": "eval-results", "label": "평가 기록", "count": stats.get("evalResultCount").and_then(|value| value.as_i64()).unwrap_or(0), "updatedAtMs": stats.get("evalsUpdatedAtMs").and_then(|value| value.as_i64()).unwrap_or(0), "route": "/v1/eval-results" },
             { "key": "student-record-draft-sets", "label": "학생부 초안 세트", "count": stats.get("studentRecordDraftSetCount").and_then(|value| value.as_i64()).unwrap_or(0), "updatedAtMs": stats.get("studentRecordDraftUpdatedAtMs").and_then(|value| value.as_i64()).unwrap_or(0), "route": "/v1/student-record-draft-sets" },
             { "key": "student-record-drafts", "label": "학생부 초안", "count": stats.get("studentRecordDraftCount").and_then(|value| value.as_i64()).unwrap_or(0), "updatedAtMs": stats.get("studentRecordDraftUpdatedAtMs").and_then(|value| value.as_i64()).unwrap_or(0), "route": "/v1/student-record-drafts" },
+            { "key": "work-notes", "label": "업무 노트", "count": stats.get("workNoteCount").and_then(|value| value.as_i64()).unwrap_or(0), "updatedAtMs": stats.get("workNoteUpdatedAtMs").and_then(|value| value.as_i64()).unwrap_or(0), "route": "/v1/work-notes" },
             { "key": "import-runs", "label": "가져오기 이력", "count": stats.get("importRunCount").and_then(|value| value.as_i64()).unwrap_or(0), "updatedAtMs": stats.get("importRunUpdatedAtMs").and_then(|value| value.as_i64()).unwrap_or(0), "route": "/v1/import-runs" }
         ]);
         let recent_import_runs = self.list_import_runs(safe_tenant.clone(), String::new(), String::new(), 10)?;
@@ -3695,7 +3849,7 @@ fn json_response(status: u16, payload: Value, origin: &str) -> Response<std::io:
             "Access-Control-Allow-Headers",
             "Content-Type, Authorization, X-OnlineClass-Local-Store-Key, X-OnlineClass-Local-Browser-Token",
         ),
-        ("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS"),
+        ("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS"),
         ("Access-Control-Allow-Private-Network", "true"),
     ] {
         if let Ok(header) = Header::from_bytes(name.as_bytes(), value.as_bytes()) {
@@ -3872,6 +4026,50 @@ fn handle_request(
             return Ok((200, store.overview(query(&url, "tenantId"))?));
         }
 
+        if request.method() == &Method::Get && path == "/v1/work-notes" {
+            let records = store.list_work_notes(query(&url, "tenantId"), query(&url, "query"))?;
+            return Ok((200, json!({ "ok": true, "records": records })));
+        }
+
+        if request.method() == &Method::Get && path == "/v1/work-notes/export" {
+            let records = store.list_work_notes(query(&url, "tenantId"), String::new())?;
+            return Ok((200, json!({ "ok": true, "records": records })));
+        }
+
+        if request.method() == &Method::Get && path.starts_with("/v1/work-notes/") {
+            let page_id = path.trim_start_matches("/v1/work-notes/").to_string();
+            return match store.get_work_note(query(&url, "tenantId"), page_id)? {
+                Some(record) => Ok((200, json!({ "ok": true, "record": record }))),
+                None => Ok((404, json!({ "ok": false, "error": "work_note_not_found" }))),
+            };
+        }
+
+        if request.method() == &Method::Put && path.starts_with("/v1/work-notes/") {
+            let page_id = path.trim_start_matches("/v1/work-notes/").to_string();
+            let mut body = read_body(&mut request)?;
+            if let Some(object) = body.as_object_mut() { object.insert("pageId".to_string(), Value::String(page_id)); }
+            let record = store.upsert_work_note(body)?;
+            return Ok((200, json!({ "ok": true, "record": record })));
+        }
+
+        if request.method() == &Method::Delete && path.starts_with("/v1/work-notes/") {
+            let page_id = path.trim_start_matches("/v1/work-notes/").to_string();
+            return Ok((200, store.delete_work_note(query(&url, "tenantId"), page_id)?));
+        }
+
+        if request.method() == &Method::Post && path == "/v1/work-notes/import" {
+            let body = read_body(&mut request)?;
+            let records = body.get("records").and_then(Value::as_array).cloned().unwrap_or_default();
+            let mut imported = Vec::new();
+            for mut record in records.into_iter().take(2000) {
+                if let Some(object) = record.as_object_mut() {
+                    object.insert("tenantId".to_string(), body.get("tenantId").cloned().unwrap_or(Value::Null));
+                }
+                imported.push(store.upsert_work_note(record)?);
+            }
+            return Ok((200, json!({ "ok": true, "imported": imported.len(), "records": imported })));
+        }
+
         if request.method() == &Method::Get && path == "/v1/student-private-details" {
             let records = store.list_student_private_details(
                 query(&url, "tenantId"),
@@ -3903,6 +4101,26 @@ fn handle_request(
                 200,
                 json!({ "ok": true, "imported": saved.len(), "records": saved }),
             ));
+        }
+
+        if path.starts_with("/v1/student-private-photos/") {
+            let student_code = path.trim_start_matches("/v1/student-private-photos/").to_string();
+            if request.method() == &Method::Get {
+                let record = store.get_student_private_photo(query(&url, "tenantId"), student_code)?;
+                return Ok((200, json!({ "ok": true, "record": record })));
+            }
+            if request.method() == &Method::Put {
+                let mut body = read_body(&mut request)?;
+                if let Value::Object(ref mut obj) = body {
+                    obj.insert("studentCode".to_string(), Value::String(student_code));
+                }
+                let record = store.upsert_student_private_photo(body)?;
+                return Ok((200, json!({ "ok": true, "record": record })));
+            }
+            if request.method() == &Method::Delete {
+                let deleted = store.delete_student_private_photo(query(&url, "tenantId"), student_code)?;
+                return Ok((200, json!({ "ok": true, "deleted": deleted })));
+            }
         }
 
         if request.method() == &Method::Get && path == "/v1/math-daily/cache" {
@@ -4414,8 +4632,12 @@ fn handle_request(
                 | "attendance_record_id_required" | "attendance_check_id_required"
                 | "attendance_request_id_required" | "eval_assignment_id_required"
                 | "eval_result_id_required" | "student_id_required" | "import_run_id_required"
+                | "work_note_page_id_required" | "work_note_parent_cycle"
                 | "backup_root_required" | "backup_root_inside_local_store"
                 | "backup_manifest_required" | "backup_manifest_outside_configured_root" | "backup_db_required" => 400,
+                "work_note_has_children" => 409,
+                "student_photo_content_type_invalid" | "student_photo_data_invalid"
+                | "student_photo_size_invalid" | "student_photo_digest_mismatch" => 400,
                 "media_not_found" | "media_file_missing" => 404,
                 _ => 500,
             };
@@ -5042,6 +5264,7 @@ mod device_authorization_tests {
             "tenant_scope_mismatch"
         );
     }
+
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

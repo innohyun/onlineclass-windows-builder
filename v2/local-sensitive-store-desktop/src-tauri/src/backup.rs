@@ -45,6 +45,13 @@ const BACKUP_TABLES: &[BackupTable] = &[
         optional: false,
     },
     BackupTable {
+        name: "student_private_photos",
+        columns: &["tenant_id", "student_code", "payload_json", "updated_at_ms"],
+        key_columns: &["tenant_id", "student_code"],
+        timestamp_column: "updated_at_ms",
+        optional: true,
+    },
+    BackupTable {
         name: "math_daily_attempts",
         columns: &["tenant_id", "attempt_id", "date_key", "student_code", "curriculum", "payload_json", "updated_at_ms"],
         key_columns: &["tenant_id", "attempt_id"],
@@ -170,6 +177,13 @@ const BACKUP_TABLES: &[BackupTable] = &[
         optional: true,
     },
     BackupTable {
+        name: "work_note_pages",
+        columns: &["tenant_id", "page_id", "parent_id", "title", "emoji", "position", "properties_json", "document_json", "markdown", "created_at_ms", "updated_at_ms"],
+        key_columns: &["tenant_id", "page_id"],
+        timestamp_column: "updated_at_ms",
+        optional: true,
+    },
+    BackupTable {
         name: "cloud_sync_runs",
         columns: &["tenant_id", "run_id", "payload_json", "started_at_ms", "finished_at_ms"],
         key_columns: &["tenant_id", "run_id"],
@@ -220,6 +234,13 @@ fn backup_schema_sql(prefix: &str) -> String {
           PRIMARY KEY (tenant_id, session_id)
         );
         CREATE TABLE IF NOT EXISTS {prefix}student_private_details (
+          tenant_id TEXT NOT NULL,
+          student_code TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          updated_at_ms INTEGER NOT NULL,
+          PRIMARY KEY (tenant_id, student_code)
+        );
+        CREATE TABLE IF NOT EXISTS {prefix}student_private_photos (
           tenant_id TEXT NOT NULL,
           student_code TEXT NOT NULL,
           payload_json TEXT NOT NULL,
@@ -385,6 +406,20 @@ fn backup_schema_sql(prefix: &str) -> String {
           started_at_ms INTEGER NOT NULL,
           finished_at_ms INTEGER NOT NULL,
           PRIMARY KEY (tenant_id, run_id)
+        );
+        CREATE TABLE IF NOT EXISTS {prefix}work_note_pages (
+          tenant_id TEXT NOT NULL,
+          page_id TEXT NOT NULL,
+          parent_id TEXT,
+          title TEXT NOT NULL,
+          emoji TEXT NOT NULL,
+          position INTEGER NOT NULL DEFAULT 0,
+          properties_json TEXT NOT NULL,
+          document_json TEXT NOT NULL,
+          markdown TEXT NOT NULL,
+          created_at_ms INTEGER NOT NULL,
+          updated_at_ms INTEGER NOT NULL,
+          PRIMARY KEY (tenant_id, page_id)
         );
         CREATE TABLE IF NOT EXISTS {prefix}cloud_sync_runs (
           tenant_id TEXT NOT NULL,
@@ -1007,6 +1042,7 @@ pub(crate) fn run_now(store: &SqliteStore, tenant_id: String) -> Result<Value, S
             "studentRecordDraftSetCount": stats.get("studentRecordDraftSetCount").and_then(|value| value.as_i64()).unwrap_or(0),
             "studentRecordDraftCount": stats.get("studentRecordDraftCount").and_then(|value| value.as_i64()).unwrap_or(0),
             "importRunCount": stats.get("importRunCount").and_then(|value| value.as_i64()).unwrap_or(0),
+            "workNoteCount": stats.get("workNoteCount").and_then(|value| value.as_i64()).unwrap_or(0),
             "cloudSyncRunCount": stats.get("cloudSyncRunCount").and_then(|value| value.as_i64()).unwrap_or(0)
         },
         "media": {

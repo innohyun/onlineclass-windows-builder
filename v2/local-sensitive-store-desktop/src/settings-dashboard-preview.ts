@@ -53,11 +53,11 @@ export function initSettingsDashboardPreview() {
       backupOk: true,
       backupLocation: state === "backup-unconfigured" ? "아직 선택하지 않음" : "학교 OneDrive · OnlineClassLocalBackups",
       backupLatest: state === "backup-unconfigured" ? "아직 없음" : "어제 오후 5:58",
-      appVersion: "0.2.26",
+      appVersion: "0.2.28",
     });
   } else {
     showAuth(state);
-    text("settingsAppVersionFooter", "앱 v0.2.26");
+    text("settingsAppVersionFooter", "앱 v0.2.28");
   }
 
   for (const id of ["settingsStartWithWindows", "settingsKeepRunningOnClose"]) {
