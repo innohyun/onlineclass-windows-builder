@@ -32,6 +32,10 @@ export function createDeviceAuthorizationController(options: Options) {
   function render(result: DeviceAuthorizationResult) {
     const panel = element<HTMLElement>("deviceAuthPanel");
     const waiting = result.status === "pending" || result.status === "approved";
+    if (result.status !== "connected") {
+      panel.hidden = false;
+      element<HTMLElement>("settingsConnectedContent").hidden = true;
+    }
     panel.dataset.state = result.status === "connected" ? "connected" : result.ok ? (waiting ? "pending" : "idle") : "error";
     element<HTMLElement>("deviceAuthWait").hidden = !waiting;
     element<HTMLButtonElement>("deviceAuthStart").hidden = waiting || result.status === "connected";

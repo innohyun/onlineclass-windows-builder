@@ -28,6 +28,7 @@ export type SettingsDashboardView = {
 
 type Options = {
   onDisconnected(): Promise<void>;
+  onAuthorizeBrowser(): Promise<void>;
 };
 
 function element<T extends HTMLElement>(id: string) {
@@ -72,7 +73,7 @@ export function renderSettingsDashboard(view: SettingsDashboardView) {
     text("settingsConnectionDescription", "브라우저 로그인 정보가 만료되었습니다. 교사 로그인으로 다시 연결해 주세요.");
   } else {
     setBadge("정상 연결", "ok");
-    text("settingsConnectionDescription", "교사 계정으로 안전하게 연결되어 있습니다. 별도의 페어링 키가 필요하지 않습니다.");
+    text("settingsConnectionDescription", "이 PC는 교사 계정과 연결되어 있습니다. 웹에서 자료를 보려면 현재 브라우저를 승인하세요.");
   }
 
   if (!view.backupOk) {
@@ -136,10 +137,14 @@ export function initSettingsDashboard(options: Options) {
   keepRunningOnClose.addEventListener("change", () => void savePreference(keepRunningOnClose, "keepRunningOnClose"));
 
   element<HTMLButtonElement>("settingsOpenTeacherButton").addEventListener("click", async () => {
-    setPreferenceStatus("교사 설정을 열고 있습니다.");
-    const result = await invoke<{ ok?: boolean; error?: string }>("open_teacher_data_security_settings")
-      .catch((error) => ({ ok: false, error: String(error) }));
-    setPreferenceStatus(result?.ok ? "브라우저에서 교사 설정을 열었습니다." : `교사 설정을 열지 못했습니다: ${result?.error || "open_failed"}`, result?.ok ? "ok" : "error");
+    const button = element<HTMLButtonElement>("settingsOpenTeacherButton");
+    button.disabled = true;
+    setPreferenceStatus("현재 브라우저 연결 승인을 시작하고 있습니다.");
+    try {
+      await options.onAuthorizeBrowser();
+    } finally {
+      button.disabled = false;
+    }
   });
 
   element<HTMLButtonElement>("settingsDisconnectButton").addEventListener("click", async () => {

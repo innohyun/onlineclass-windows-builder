@@ -35,7 +35,6 @@ const BROWSER_LINK_FILE_NAME: &str = "browser-link-tokens.json";
 const BROWSER_LINK_HEADER: &str = "X-OnlineClass-Local-Browser-Token";
 const DEVICE_AUTHORIZATION_API_URL: &str = "https://t.classaimate.com/api/v3/local-store-device-authorizations";
 const DEVICE_AUTHORIZATION_PAGE_URL: &str = "https://t.classaimate.com/connect-local";
-const TEACHER_DATA_SECURITY_URL: &str = "https://t.classaimate.com/admin/settings?tab=data-security";
 const DEVICE_AUTHORIZATION_TTL_MS: i64 = 10 * 60 * 1000;
 const BROWSER_LINK_PICKUP_TTL_MS: i64 = 60 * 1000;
 const HOST: &str = "127.0.0.1";
@@ -4899,11 +4898,6 @@ fn open_teacher_settings_url(url: String) -> Value {
     open_external_url(&safe_url)
 }
 
-#[tauri::command]
-fn open_teacher_data_security_settings() -> Value {
-    open_external_url(TEACHER_DATA_SECURITY_URL)
-}
-
 fn open_external_url(url: &str) -> Value {
     #[cfg(target_os = "windows")]
     let result = Command::new("rundll32.exe")
@@ -5117,7 +5111,6 @@ pub fn run() {
             data_explorer::search_local_data,
             data_explorer::open_local_data_attachment,
             open_teacher_settings_url,
-            open_teacher_data_security_settings,
             start_device_authorization,
             reopen_device_authorization,
             poll_device_authorization,

@@ -1245,7 +1245,7 @@ initHomeDashboard({
 });
 bindUi();
 if (designPreview !== "settings") {
-  initSettingsDashboard({ onDisconnected: refreshAll });
+  initSettingsDashboard({ onDisconnected: refreshAll, onAuthorizeBrowser: () => deviceAuthorization.start() });
 }
 renderAppVersion();
 if (designPreview === "archive") initSharedArchivePreview();

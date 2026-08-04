@@ -53,11 +53,11 @@ export function initSettingsDashboardPreview() {
       backupOk: true,
       backupLocation: state === "backup-unconfigured" ? "아직 선택하지 않음" : "학교 OneDrive · OnlineClassLocalBackups",
       backupLatest: state === "backup-unconfigured" ? "아직 없음" : "어제 오후 5:58",
-      appVersion: "0.2.24",
+      appVersion: "0.2.25",
     });
   } else {
     showAuth(state);
-    text("settingsAppVersionFooter", "앱 v0.2.24");
+    text("settingsAppVersionFooter", "앱 v0.2.25");
   }
 
   for (const id of ["settingsStartWithWindows", "settingsKeepRunningOnClose"]) {
@@ -68,8 +68,9 @@ export function initSettingsDashboardPreview() {
   }
 
   element("settingsOpenTeacherButton").addEventListener("click", () => {
-    text("settingsPreferenceStatus", "브라우저에서 교사 설정을 열었습니다.");
-    element("settingsPreferenceStatus").className = "settings-inline-status is-ok";
+    showAuth("pending");
+    text("settingsPreferenceStatus", "현재 브라우저 연결 승인을 시작했습니다.");
+    element("settingsPreferenceStatus").className = "settings-inline-status";
   });
 
   element("settingsDisconnectButton").addEventListener("click", () => {
