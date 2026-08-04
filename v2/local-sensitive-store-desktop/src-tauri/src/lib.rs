@@ -3696,6 +3696,7 @@ fn json_response(status: u16, payload: Value, origin: &str) -> Response<std::io:
             "Content-Type, Authorization, X-OnlineClass-Local-Store-Key, X-OnlineClass-Local-Browser-Token",
         ),
         ("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS"),
+        ("Access-Control-Allow-Private-Network", "true"),
     ] {
         if let Ok(header) = Header::from_bytes(name.as_bytes(), value.as_bytes()) {
             response.add_header(header);

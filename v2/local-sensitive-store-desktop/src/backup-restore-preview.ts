@@ -50,7 +50,7 @@ function renderSelection(index: number) {
   byId("backupPreviewDetails").innerHTML = `
     <div class="restore-preview-source">
       <i class="fa-solid fa-desktop" aria-hidden="true"></i>
-      <strong>${backup.pc} / ${backup.relation} / 앱 v0.2.25 / ${backup.os}</strong>
+      <strong>${backup.pc} / ${backup.relation} / 앱 v0.2.26 / ${backup.os}</strong>
       <span>${backup.date} 백업</span>
     </div>
   `;
