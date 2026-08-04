@@ -184,6 +184,13 @@ const BACKUP_TABLES: &[BackupTable] = &[
         optional: true,
     },
     BackupTable {
+        name: "work_note_attachments",
+        columns: &["tenant_id", "attachment_id", "page_id", "block_id", "file_name", "content_type", "byte_size", "sha256", "local_path", "created_at_ms", "updated_at_ms"],
+        key_columns: &["tenant_id", "attachment_id"],
+        timestamp_column: "updated_at_ms",
+        optional: true,
+    },
+    BackupTable {
         name: "cloud_sync_runs",
         columns: &["tenant_id", "run_id", "payload_json", "started_at_ms", "finished_at_ms"],
         key_columns: &["tenant_id", "run_id"],
@@ -202,6 +209,20 @@ struct MediaRow {
     file_name: String,
     size: i64,
     archived_at_ms: i64,
+}
+
+#[derive(Clone)]
+struct WorkNoteAttachmentRow {
+    attachment_id: String,
+    page_id: String,
+    block_id: String,
+    file_name: String,
+    content_type: String,
+    size: i64,
+    sha256: String,
+    local_path: String,
+    created_at_ms: i64,
+    updated_at_ms: i64,
 }
 
 fn now_ms() -> i64 {
@@ -421,6 +442,20 @@ fn backup_schema_sql(prefix: &str) -> String {
           updated_at_ms INTEGER NOT NULL,
           PRIMARY KEY (tenant_id, page_id)
         );
+        CREATE TABLE IF NOT EXISTS {prefix}work_note_attachments (
+          tenant_id TEXT NOT NULL,
+          attachment_id TEXT NOT NULL,
+          page_id TEXT NOT NULL,
+          block_id TEXT NOT NULL,
+          file_name TEXT NOT NULL,
+          content_type TEXT NOT NULL,
+          byte_size INTEGER NOT NULL,
+          sha256 TEXT NOT NULL,
+          local_path TEXT NOT NULL,
+          created_at_ms INTEGER NOT NULL,
+          updated_at_ms INTEGER NOT NULL,
+          PRIMARY KEY (tenant_id, attachment_id)
+        );
         CREATE TABLE IF NOT EXISTS {prefix}cloud_sync_runs (
           tenant_id TEXT NOT NULL,
           run_id TEXT NOT NULL,
@@ -535,6 +570,20 @@ fn list_media_rows(store: &SqliteStore, tenant_id: &str) -> Result<Vec<MediaRow>
         out.push(row.map_err(|e| format!("db_backup_media_row_failed:{e}"))?);
     }
     Ok(out)
+}
+
+fn list_work_note_attachment_rows(store: &SqliteStore, tenant_id: &str) -> Result<Vec<WorkNoteAttachmentRow>, String> {
+    let conn = store.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
+    if !table_exists(&conn, "work_note_attachments")? { return Ok(Vec::new()); }
+    let mut statement = conn.prepare(
+        "SELECT attachment_id,page_id,block_id,file_name,content_type,byte_size,sha256,local_path,created_at_ms,updated_at_ms FROM work_note_attachments WHERE tenant_id=?1",
+    ).map_err(|e| format!("db_backup_work_note_attachment_prepare_failed:{e}"))?;
+    let rows = statement.query_map(params![tenant_id], |row| Ok(WorkNoteAttachmentRow {
+        attachment_id: row.get(0)?, page_id: row.get(1)?, block_id: row.get(2)?, file_name: row.get(3)?,
+        content_type: row.get(4)?, size: row.get(5)?, sha256: row.get(6)?, local_path: row.get(7)?,
+        created_at_ms: row.get(8)?, updated_at_ms: row.get(9)?,
+    })).map_err(|e| format!("db_backup_work_note_attachment_query_failed:{e}"))?;
+    rows.map(|row| row.map_err(|e| format!("db_backup_work_note_attachment_row_failed:{e}"))).collect()
 }
 
 fn media_extension(row: &MediaRow) -> String {
@@ -711,7 +760,8 @@ pub(crate) fn list_backups(store: &SqliteStore, tenant_id: String, limit: i64) -
                 "dbPath": manifest.get("db").and_then(|db| db.get("absolutePath")).and_then(|value| value.as_str()).unwrap_or(""),
                 "source": manifest.get("source").cloned().unwrap_or_else(|| json!({})),
                 "counts": manifest.get("counts").cloned().unwrap_or_else(|| json!({})),
-                "media": manifest.get("media").cloned().unwrap_or_else(|| json!({}))
+                "media": manifest.get("media").cloned().unwrap_or_else(|| json!({})),
+                "workNoteAttachments": manifest.get("workNoteAttachments").cloned().unwrap_or_else(|| json!({}))
             }));
         }
     }
@@ -811,7 +861,8 @@ fn backup_manifest_summary(path: &Path, fallback_tenant_id: &str) -> Option<Valu
         "dbPath": db_path,
         "source": manifest.get("source").cloned().unwrap_or_else(|| json!({})),
         "counts": manifest.get("counts").cloned().unwrap_or_else(|| json!({})),
-        "media": manifest.get("media").cloned().unwrap_or_else(|| json!({}))
+        "media": manifest.get("media").cloned().unwrap_or_else(|| json!({})),
+        "workNoteAttachments": manifest.get("workNoteAttachments").cloned().unwrap_or_else(|| json!({}))
     }))
 }
 
@@ -951,6 +1002,7 @@ pub(crate) fn run_now(store: &SqliteStore, tenant_id: String) -> Result<Value, S
     let out_dir = tenant_backup_dir(&root, &tenant_id);
     fs::create_dir_all(out_dir.join("db")).map_err(|e| format!("backup_dir_failed:{e}"))?;
     fs::create_dir_all(out_dir.join("board-media")).map_err(|e| format!("backup_media_dir_failed:{e}"))?;
+    fs::create_dir_all(out_dir.join("work-note-attachments")).map_err(|e| format!("backup_work_note_attachment_dir_failed:{e}"))?;
     let created_at_ms = now_ms();
     let backup_id = format!("{}", Utc::now().format("%Y%m%d%H%M%S%3f"));
     let db_relative_path = PathBuf::from("db").join(format!("local-sensitive-{backup_id}.sqlite"));
@@ -1010,10 +1062,63 @@ pub(crate) fn run_now(store: &SqliteStore, tenant_id: String) -> Result<Value, S
             "status": status
         }));
     }
+    let attachment_rows = list_work_note_attachment_rows(store, &tenant_id)?;
+    let attachment_count = attachment_rows.len() as i64;
+    let mut attachment_records = Vec::new();
+    let mut attachments_copied = 0i64;
+    let mut attachments_skipped = 0i64;
+    let mut attachments_missing = 0i64;
+    let mut attachments_failed = 0i64;
+    let mut attachment_bytes = 0i64;
+    for row in attachment_rows {
+        let backup_relative_path = PathBuf::from("work-note-attachments")
+            .join(&backup_id)
+            .join(safe_segment(&row.attachment_id, "attachment"))
+            .join(safe_segment(&row.file_name, "attachment.bin"));
+        let source_path = store.data_dir.join(&row.local_path);
+        let target_path = out_dir.join(&backup_relative_path);
+        let mut status = "copied";
+        match fs::metadata(&source_path) {
+            Ok(source_meta) => {
+                if let Some(parent) = target_path.parent() {
+                    fs::create_dir_all(parent).map_err(|e| format!("backup_work_note_attachment_target_dir_failed:{e}"))?;
+                }
+                let same = fs::metadata(&target_path).map(|target| target.len() == source_meta.len()).unwrap_or(false);
+                if same {
+                    attachments_skipped += 1;
+                    status = "skipped";
+                } else if fs::copy(&source_path, &target_path).is_err() {
+                    attachments_failed += 1;
+                    status = "failed";
+                } else {
+                    attachments_copied += 1;
+                }
+                attachment_bytes += source_meta.len() as i64;
+            }
+            Err(_) => {
+                attachments_missing += 1;
+                status = "missing";
+            }
+        }
+        attachment_records.push(json!({
+            "attachmentId": row.attachment_id,
+            "pageId": row.page_id,
+            "blockId": row.block_id,
+            "fileName": row.file_name,
+            "contentType": row.content_type,
+            "size": row.size,
+            "sha256": row.sha256,
+            "localPath": row.local_path,
+            "backupRelativePath": backup_relative_path.to_string_lossy().replace('\\', "/"),
+            "createdAtMs": row.created_at_ms,
+            "updatedAtMs": row.updated_at_ms,
+            "status": status
+        }));
+    }
     let stats = store.stats(tenant_id.clone())?;
     let manifest = json!({
-        "ok": failed == 0,
-        "version": 1,
+        "ok": failed == 0 && attachments_failed == 0,
+        "version": 2,
         "tenantId": tenant_id,
         "backupId": backup_id,
         "createdAtMs": created_at_ms,
@@ -1043,6 +1148,7 @@ pub(crate) fn run_now(store: &SqliteStore, tenant_id: String) -> Result<Value, S
             "studentRecordDraftCount": stats.get("studentRecordDraftCount").and_then(|value| value.as_i64()).unwrap_or(0),
             "importRunCount": stats.get("importRunCount").and_then(|value| value.as_i64()).unwrap_or(0),
             "workNoteCount": stats.get("workNoteCount").and_then(|value| value.as_i64()).unwrap_or(0),
+            "workNoteAttachmentCount": attachment_count,
             "cloudSyncRunCount": stats.get("cloudSyncRunCount").and_then(|value| value.as_i64()).unwrap_or(0)
         },
         "media": {
@@ -1054,13 +1160,22 @@ pub(crate) fn run_now(store: &SqliteStore, tenant_id: String) -> Result<Value, S
             "bytes": bytes,
             "records": media_records
         },
+        "workNoteAttachments": {
+            "mode": "separate_folder_mirror",
+            "copied": attachments_copied,
+            "skipped": attachments_skipped,
+            "missing": attachments_missing,
+            "failed": attachments_failed,
+            "bytes": attachment_bytes,
+            "records": attachment_records
+        },
         "securityMode": "plain_warning"
     });
     let manifest_path = out_dir.join(format!("manifest-{backup_id}.json"));
     let manifest_raw = serde_json::to_string_pretty(&manifest).map_err(|e| format!("backup_manifest_encode_failed:{e}"))?;
     fs::write(&manifest_path, format!("{manifest_raw}\n")).map_err(|e| format!("backup_manifest_write_failed:{e}"))?;
     let result = json!({
-        "ok": failed == 0,
+        "ok": failed == 0 && attachments_failed == 0,
         "tenantId": tenant_id,
         "backupId": backup_id,
         "manifestPath": manifest_path.to_string_lossy(),
@@ -1068,7 +1183,8 @@ pub(crate) fn run_now(store: &SqliteStore, tenant_id: String) -> Result<Value, S
         "createdAtMs": created_at_ms,
         "source": manifest.get("source").cloned().unwrap_or_else(|| json!({})),
         "counts": manifest.get("counts").cloned().unwrap_or_else(|| json!({})),
-        "media": manifest.get("media").cloned().unwrap_or_else(|| json!({}))
+        "media": manifest.get("media").cloned().unwrap_or_else(|| json!({})),
+        "workNoteAttachments": manifest.get("workNoteAttachments").cloned().unwrap_or_else(|| json!({}))
     });
     let mut config = read_config(store);
     let root_text = root.to_string_lossy().to_string();
@@ -1129,7 +1245,8 @@ pub(crate) fn restore_preview(store: &SqliteStore, body: Value) -> Result<Value,
         "createdAtMs": manifest.get("createdAtMs").and_then(|value| value.as_i64()).unwrap_or(0),
         "source": manifest.get("source").cloned().unwrap_or_else(|| json!({})),
         "counts": counts,
-        "media": manifest.get("media").cloned().unwrap_or_else(|| json!({}))
+        "media": manifest.get("media").cloned().unwrap_or_else(|| json!({})),
+        "workNoteAttachments": manifest.get("workNoteAttachments").cloned().unwrap_or_else(|| json!({}))
     }))
 }
 

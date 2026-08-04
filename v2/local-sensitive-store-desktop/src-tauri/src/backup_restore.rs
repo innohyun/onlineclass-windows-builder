@@ -3,7 +3,8 @@ use std::collections::HashMap;
 
 #[derive(Debug)]
 struct RestoreMediaPlan {
-    media_id: String,
+    record_id: String,
+    kind: &'static str,
     staged_path: PathBuf,
     target_path: PathBuf,
     rollback_path: PathBuf,
@@ -84,7 +85,7 @@ fn stage_restore_media(
     tenant_id: &str,
     manifest_path: &Path,
     manifest: &Value,
-) -> Result<(PathBuf, Vec<RestoreMediaPlan>, i64), String> {
+) -> Result<(PathBuf, Vec<RestoreMediaPlan>, i64, i64), String> {
     let backup_id = manifest.get("backupId").and_then(Value::as_str).unwrap_or("backup");
     let staging_root = store
         .data_dir
@@ -148,13 +149,51 @@ fn stage_restore_media(
             return Err(format!("restore_media_stage_failed:{error}"));
         }
         plans.push(RestoreMediaPlan {
-            media_id,
+            record_id: media_id,
+            kind: "board_media",
             staged_path,
             target_path: store.data_dir.join(local_path),
             rollback_path: rollback_dir.join(format!("{index}")),
         });
     }
-    Ok((staging_root, plans, media_missing))
+    let current_attachment_timestamps = {
+        let conn = store.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
+        let mut statement = conn.prepare("SELECT attachment_id,updated_at_ms FROM work_note_attachments WHERE tenant_id=?1")
+            .map_err(|e| format!("restore_work_note_attachment_current_prepare_failed:{e}"))?;
+        let rows = statement.query_map(params![tenant_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
+            .map_err(|e| format!("restore_work_note_attachment_current_query_failed:{e}"))?;
+        let mut timestamps = HashMap::new();
+        for row in rows {
+            let (attachment_id, timestamp) = row.map_err(|e| format!("restore_work_note_attachment_current_row_failed:{e}"))?;
+            timestamps.insert(attachment_id, timestamp);
+        }
+        timestamps
+    };
+    let attachment_records = manifest.get("workNoteAttachments").and_then(|value| value.get("records"))
+        .and_then(Value::as_array).cloned().unwrap_or_default();
+    let mut attachment_missing = 0i64;
+    for (index, record) in attachment_records.iter().enumerate() {
+        let attachment_id = normalize_json_text(record.get("attachmentId"), 180).replace(['/', '\\'], "_");
+        let backup_relative = normalize_json_text(record.get("backupRelativePath"), 600);
+        let local_path_text = normalize_json_text(record.get("localPath"), 600);
+        let updated_at_ms = record.get("updatedAtMs").and_then(Value::as_i64).unwrap_or(0);
+        if attachment_id.is_empty() || current_attachment_timestamps.get(&attachment_id).copied().unwrap_or(i64::MIN) > updated_at_ms { continue; }
+        let Some(backup_relative_path) = safe_relative_path(&backup_relative) else { continue; };
+        let Some(local_path) = safe_relative_path(&local_path_text) else { continue; };
+        let source_path = manifest_path.parent().unwrap_or_else(|| Path::new(".")).join(backup_relative_path);
+        if !source_path.is_file() { attachment_missing += 1; continue; }
+        let staged_path = staged_dir.join(format!("attachment-{index}-{}", safe_segment(&attachment_id, "attachment")));
+        if let Some(parent) = staged_path.parent() { fs::create_dir_all(parent).map_err(|e| format!("restore_work_note_attachment_stage_dir_failed:{e}"))?; }
+        fs::copy(&source_path, &staged_path).map_err(|e| format!("restore_work_note_attachment_stage_failed:{e}"))?;
+        plans.push(RestoreMediaPlan {
+            record_id: attachment_id,
+            kind: "work_note_attachment",
+            staged_path,
+            target_path: store.data_dir.join(local_path),
+            rollback_path: rollback_dir.join(format!("attachment-{index}")),
+        });
+    }
+    Ok((staging_root, plans, media_missing, attachment_missing))
 }
 
 fn restore_with_prebackup<F>(store: &SqliteStore, body: Value, create_safety_backup: F) -> Result<Value, String>
@@ -166,9 +205,12 @@ where
     let safety_backup = create_safety_backup(store, tenant_id.clone())
         .map_err(|error| format!("pre_restore_backup_failed:{error}"))?;
     let safety_media = safety_backup.get("media").cloned().unwrap_or_else(|| json!({}));
+    let safety_attachments = safety_backup.get("workNoteAttachments").cloned().unwrap_or_else(|| json!({}));
     if safety_backup.get("ok").and_then(Value::as_bool) != Some(true)
         || safety_media.get("missing").and_then(Value::as_i64).unwrap_or(0) > 0
         || safety_media.get("failed").and_then(Value::as_i64).unwrap_or(0) > 0
+        || safety_attachments.get("missing").and_then(Value::as_i64).unwrap_or(0) > 0
+        || safety_attachments.get("failed").and_then(Value::as_i64).unwrap_or(0) > 0
     {
         return Err("pre_restore_backup_failed:safety_backup_incomplete".to_string());
     }
@@ -180,7 +222,7 @@ where
         .and_then(|value| value.as_str())
         .ok_or_else(|| "backup_db_required".to_string())?;
     let db_path = manifest_path.parent().unwrap_or_else(|| Path::new(".")).join(db_relative);
-    let (staging_root, media_plans, media_missing) = stage_restore_media(store, &tenant_id, &manifest_path, &manifest)?;
+    let (staging_root, media_plans, media_missing, work_note_attachments_missing) = stage_restore_media(store, &tenant_id, &manifest_path, &manifest)?;
     let applied_media = match apply_staged_media(&media_plans) {
         Ok(applied) => applied,
         Err(error) => {
@@ -242,10 +284,12 @@ where
                 .map_err(|_| "restore_media_target_outside_store".to_string())?
                 .to_string_lossy()
                 .to_string();
-            transaction.execute(
-                "UPDATE board_media_files SET local_path = ?1 WHERE tenant_id = ?2 AND media_id = ?3",
-                params![local_path, tenant_id, plan.media_id],
-            )
+            let sql = if plan.kind == "work_note_attachment" {
+                "UPDATE work_note_attachments SET local_path = ?1 WHERE tenant_id = ?2 AND attachment_id = ?3"
+            } else {
+                "UPDATE board_media_files SET local_path = ?1 WHERE tenant_id = ?2 AND media_id = ?3"
+            };
+            transaction.execute(sql, params![local_path, tenant_id, plan.record_id])
             .map_err(|e| format!("restore_media_path_update_failed:{e}"))?;
         }
         transaction
@@ -269,7 +313,8 @@ where
             return Err(error);
         }
     };
-    let media_restored = media_plans.len() as i64;
+    let media_restored = media_plans.iter().filter(|plan| plan.kind == "board_media").count() as i64;
+    let work_note_attachments_restored = media_plans.iter().filter(|plan| plan.kind == "work_note_attachment").count() as i64;
     let _ = fs::remove_dir_all(&staging_root);
     Ok(json!({
         "ok": true,
@@ -279,6 +324,8 @@ where
         "imported": imported,
         "mediaRestored": media_restored,
         "mediaMissing": media_missing,
+        "workNoteAttachmentsRestored": work_note_attachments_restored,
+        "workNoteAttachmentsMissing": work_note_attachments_missing,
         "safetyBackup": safety_backup
     }))
 }
@@ -291,6 +338,7 @@ pub(super) fn restore(store: &SqliteStore, body: Value) -> Result<Value, String>
 mod tests {
     use super::*;
     use crate::random_url_token;
+    use std::io::{Cursor, Read};
 
     fn test_store() -> (PathBuf, PathBuf, SqliteStore) {
         let base = std::env::temp_dir().join(format!("onlineclass-backup-restore-test-{}", random_url_token()));
@@ -348,6 +396,37 @@ mod tests {
     }
 
     #[test]
+    fn work_note_attachment_file_is_backed_up_and_restored() {
+        let (base, backup_root, store) = test_store();
+        set_folder(&store, "tenant-a".to_string(), backup_root.to_string_lossy().to_string()).expect("set backup folder");
+        store.upsert_work_note(json!({
+            "tenantId": "tenant-a", "pageId": "page-a", "title": "첨부 노트", "blocks": [], "markdown": "# 첨부 노트"
+        })).expect("create work note");
+        crate::work_note_attachments::save(
+            &store,
+            "tenant-a".to_string(),
+            "attachment-a".to_string(),
+            "page-a".to_string(),
+            "block-a".to_string(),
+            "자료.pdf".to_string(),
+            "application/pdf".to_string(),
+            &mut Cursor::new(b"pdf-fixture".to_vec()),
+        ).expect("save attachment");
+        let selected = run_now(&store, "tenant-a".to_string()).expect("backup work note attachment");
+        assert_eq!(selected.pointer("/counts/workNoteAttachmentCount").and_then(Value::as_i64), Some(1));
+        store.delete_work_note("tenant-a".to_string(), "page-a".to_string()).expect("delete page and attachment");
+        restore(&store, json!({
+            "tenantId": "tenant-a",
+            "manifestPath": selected.get("manifestPath").and_then(Value::as_str).unwrap_or("")
+        })).expect("restore attachment");
+        let mut restored = crate::work_note_attachments::open(&store, "tenant-a".to_string(), "attachment-a".to_string()).expect("open restored attachment");
+        let mut bytes = Vec::new();
+        restored.file.read_to_end(&mut bytes).expect("read restored attachment");
+        assert_eq!(bytes, b"pdf-fixture");
+        fs::remove_dir_all(base).expect("remove test directory");
+    }
+
+    #[test]
     fn restore_aborts_before_merge_when_safety_backup_fails() {
         let (base, backup_root, store) = test_store();
         set_folder(&store, "tenant-a".to_string(), backup_root.to_string_lossy().to_string()).expect("set backup folder");
@@ -383,11 +462,11 @@ mod tests {
         fs::write(target.join("one"), b"old-one").expect("write target file");
         let plans = vec![
             RestoreMediaPlan {
-                media_id: "one".to_string(), staged_path: staged.join("one"),
+                record_id: "one".to_string(), kind: "board_media", staged_path: staged.join("one"),
                 target_path: target.join("one"), rollback_path: rollback.join("one"),
             },
             RestoreMediaPlan {
-                media_id: "two".to_string(), staged_path: staged.join("missing"),
+                record_id: "two".to_string(), kind: "board_media", staged_path: staged.join("missing"),
                 target_path: target.join("two"), rollback_path: rollback.join("two"),
             },
         ];

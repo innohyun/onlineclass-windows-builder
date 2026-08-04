@@ -6,6 +6,7 @@ mod data_explorer;
 mod desktop_preferences;
 mod shared_archive;
 mod student_private_photos;
+mod work_note_attachments;
 use rand::{distributions::Alphanumeric, Rng};
 use rusqlite::{params, params_from_iter, Connection, ToSql};
 use serde::{Deserialize, Serialize};
@@ -29,7 +30,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-08-04.3-student-private-photos";
+pub(crate) const SERVICE_VERSION: &str = "2026-08-04.4-work-note-attachments";
 const DB_FILE_NAME: &str = "onlineclass-sensitive.sqlite";
 const KEY_FILE_NAME: &str = "pairing-key.txt";
 const BROWSER_LINK_FILE_NAME: &str = "browser-link-tokens.json";
@@ -78,6 +79,7 @@ const LOCAL_SENSITIVE_STORE_ROUTES: &[&str] = &[
     "/v1/student-record-drafts/import",
     "/v1/import-runs",
     "/v1/work-notes",
+    "/v1/work-note-attachments",
     "/v1/work-notes/import",
     "/v1/work-notes/export",
     "/v1/overview",
@@ -1329,6 +1331,7 @@ impl SqliteStore {
             "#,
         )
         .map_err(|e| format!("db_schema_failed:{e}"))?;
+        work_note_attachments::ensure_schema(&conn)?;
         let data_dir = db_path
             .parent()
             .unwrap_or_else(|| Path::new("."))
@@ -1453,13 +1456,17 @@ impl SqliteStore {
         let page = normalize_id_segment(Some(&Value::String(page_id)), 180);
         if tenant.is_empty() { return Err("tenant_id_required".to_string()); }
         if page.is_empty() { return Err("work_note_page_id_required".to_string()); }
-        let mut conn = self.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
+        let conn = self.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
         let child: i64 = conn.query_row("SELECT COUNT(*) FROM work_note_pages WHERE tenant_id=?1 AND parent_id=?2", params![tenant,page], |row| row.get(0)).map_err(|e| format!("db_work_note_child_check_failed:{e}"))?;
         if child > 0 { return Err("work_note_has_children".to_string()); }
+        drop(conn);
+        let attachment_paths = work_note_attachments::page_local_paths(self, &tenant, &page)?;
+        let mut conn = self.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
         let transaction = conn.transaction().map_err(|e| format!("db_work_note_transaction_failed:{e}"))?;
         transaction.execute("DELETE FROM work_note_pages_fts WHERE tenant_id=?1 AND page_id=?2",params![tenant,page]).map_err(|e|format!("db_work_note_fts_delete_failed:{e}"))?;
         let deleted=transaction.execute("DELETE FROM work_note_pages WHERE tenant_id=?1 AND page_id=?2",params![tenant,page]).map_err(|e|format!("db_work_note_delete_failed:{e}"))?;
         transaction.commit().map_err(|e|format!("db_work_note_commit_failed:{e}"))?;
+        work_note_attachments::delete_local_paths(self, &attachment_paths);
         Ok(json!({"ok":true,"deleted":deleted}))
     }
 
@@ -3859,6 +3866,30 @@ fn json_response(status: u16, payload: Value, origin: &str) -> Response<std::io:
     response
 }
 
+fn request_error_status(error: &str) -> u16 {
+    match error {
+        "invalid_json" => 400,
+        "tenant_scope_mismatch" => 403,
+        "body_too_large" => 413,
+        "tenant_id_required" | "date_required" | "period_required" | "student_code_required"
+        | "doc_id_required" | "cloud_sync_session_required" | "conflict_identity_required"
+        | "board_snapshot_identity_required" | "media_identity_required" | "media_data_required"
+        | "attendance_record_id_required" | "attendance_check_id_required"
+        | "attendance_request_id_required" | "eval_assignment_id_required"
+        | "eval_result_id_required" | "student_id_required" | "import_run_id_required"
+        | "work_note_page_id_required" | "work_note_parent_cycle"
+        | "work_note_attachment_id_required" | "work_note_attachment_path_invalid"
+        | "backup_root_required" | "backup_root_inside_local_store"
+        | "backup_manifest_required" | "backup_manifest_outside_configured_root" | "backup_db_required" => 400,
+        "work_note_has_children" => 409,
+        "student_photo_content_type_invalid" | "student_photo_data_invalid"
+        | "student_photo_size_invalid" | "student_photo_digest_mismatch" => 400,
+        "media_not_found" | "media_file_missing" | "work_note_not_found"
+        | "work_note_attachment_not_found" | "work_note_attachment_file_missing" => 404,
+        _ => 500,
+    }
+}
+
 fn parse_request_url(request: &Request) -> Result<Url, String> {
     Url::parse(&format!("http://{HOST}{}", request.url())).map_err(|e| format!("invalid_url:{e}"))
 }
@@ -3935,6 +3966,27 @@ fn handle_request(
     pairing_key: String,
 ) {
     let origin = allowed_origin(&request);
+    match work_note_attachments::handle_http_request(&mut request, &store, &browser_links, &pairing_key, &origin) {
+        Ok(Some(response)) => {
+            let _ = request.respond(response);
+            return;
+        }
+        Ok(None) => {}
+        Err(error) => {
+            let status = request_error_status(&error);
+            let response = json_response(
+                status,
+                json!({
+                    "ok": false,
+                    "error": if status >= 500 { "internal_error" } else { error.as_str() },
+                    "details": error
+                }),
+                &origin,
+            );
+            let _ = request.respond(response);
+            return;
+        }
+    }
     let result = (|| -> Result<(u16, Value), String> {
         if request.method() == &Method::Options {
             return Ok((200, json!({ "ok": true })));
@@ -4622,25 +4674,7 @@ fn handle_request(
     let response = match result {
         Ok((status, payload)) => json_response(status, payload, &origin),
         Err(error) => {
-            let status = match error.as_str() {
-                "invalid_json" => 400,
-                "tenant_scope_mismatch" => 403,
-                "body_too_large" => 413,
-                "tenant_id_required" | "date_required" | "period_required" | "student_code_required"
-                | "doc_id_required" | "cloud_sync_session_required" | "conflict_identity_required"
-                | "board_snapshot_identity_required" | "media_identity_required" | "media_data_required"
-                | "attendance_record_id_required" | "attendance_check_id_required"
-                | "attendance_request_id_required" | "eval_assignment_id_required"
-                | "eval_result_id_required" | "student_id_required" | "import_run_id_required"
-                | "work_note_page_id_required" | "work_note_parent_cycle"
-                | "backup_root_required" | "backup_root_inside_local_store"
-                | "backup_manifest_required" | "backup_manifest_outside_configured_root" | "backup_db_required" => 400,
-                "work_note_has_children" => 409,
-                "student_photo_content_type_invalid" | "student_photo_data_invalid"
-                | "student_photo_size_invalid" | "student_photo_digest_mismatch" => 400,
-                "media_not_found" | "media_file_missing" => 404,
-                _ => 500,
-            };
+            let status = request_error_status(&error);
             json_response(
                 status,
                 json!({
