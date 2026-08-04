@@ -303,9 +303,17 @@ pub(crate) fn list_shared_archives() -> Value {
 fn list_archives() -> Result<Vec<Value>, String> {
     let connection = open_db()?;
     let mut statement = connection
-        .prepare("SELECT id,tenant_id,source_type,title,record_count,file_count,total_file_bytes,imported_at FROM shared_archives ORDER BY imported_at DESC,id DESC")
+        .prepare(
+            "SELECT id,tenant_id,source_type,title,record_count,file_count,total_file_bytes,imported_at,
+             CASE WHEN source_type='assignment' THEN
+               (SELECT COUNT(*) FROM shared_archive_records WHERE archive_id=shared_archives.id AND record_type='assignment_submission')
+             ELSE
+               (SELECT COUNT(*) FROM shared_archive_records WHERE archive_id=shared_archives.id AND record_type='board_post')
+             END
+             FROM shared_archives ORDER BY imported_at DESC,id DESC",
+        )
         .map_err(|e| format!("archive_list_prepare_failed:{e}"))?;
-    let rows=statement.query_map([],|row|Ok(json!({"id":row.get::<_,String>(0)?,"tenantId":row.get::<_,String>(1)?,"sourceType":row.get::<_,String>(2)?,"title":row.get::<_,String>(3)?,"recordCount":row.get::<_,i64>(4)?,"fileCount":row.get::<_,i64>(5)?,"totalFileBytes":row.get::<_,i64>(6)?,"importedAt":row.get::<_,i64>(7)?}))).map_err(|e|format!("archive_list_query_failed:{e}"))?;
+    let rows=statement.query_map([],|row|Ok(json!({"id":row.get::<_,String>(0)?,"tenantId":row.get::<_,String>(1)?,"sourceType":row.get::<_,String>(2)?,"title":row.get::<_,String>(3)?,"recordCount":row.get::<_,i64>(4)?,"fileCount":row.get::<_,i64>(5)?,"totalFileBytes":row.get::<_,i64>(6)?,"importedAt":row.get::<_,i64>(7)?,"contentCount":row.get::<_,i64>(8)?}))).map_err(|e|format!("archive_list_query_failed:{e}"))?;
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("archive_list_row_failed:{e}"))
 }
 
@@ -319,7 +327,21 @@ pub(crate) fn get_shared_archive(archive_id: String) -> Value {
 
 fn archive_detail(id: &str) -> Result<Value, String> {
     let connection = open_db()?;
-    let archive=connection.query_row("SELECT id,tenant_id,source_type,source_id,title,record_count,file_count,total_file_bytes,imported_at FROM shared_archives WHERE id=?1",params![id],|row|Ok(json!({"id":row.get::<_,String>(0)?,"tenantId":row.get::<_,String>(1)?,"sourceType":row.get::<_,String>(2)?,"sourceId":row.get::<_,String>(3)?,"title":row.get::<_,String>(4)?,"recordCount":row.get::<_,i64>(5)?,"fileCount":row.get::<_,i64>(6)?,"totalFileBytes":row.get::<_,i64>(7)?,"importedAt":row.get::<_,i64>(8)?}))).map_err(|_|"archive_not_found".to_string())?;
+    archive_detail_from_connection(&connection, id)
+}
+
+fn archive_detail_from_connection(connection: &Connection, id: &str) -> Result<Value, String> {
+    let archive=connection.query_row(
+        "SELECT id,tenant_id,source_type,source_id,title,record_count,file_count,total_file_bytes,imported_at,
+         CASE WHEN source_type='assignment' THEN
+           (SELECT COUNT(*) FROM shared_archive_records WHERE archive_id=shared_archives.id AND record_type='assignment_submission')
+         ELSE
+           (SELECT COUNT(*) FROM shared_archive_records WHERE archive_id=shared_archives.id AND record_type='board_post')
+         END
+         FROM shared_archives WHERE id=?1",
+        params![id],
+        |row|Ok(json!({"id":row.get::<_,String>(0)?,"tenantId":row.get::<_,String>(1)?,"sourceType":row.get::<_,String>(2)?,"sourceId":row.get::<_,String>(3)?,"title":row.get::<_,String>(4)?,"recordCount":row.get::<_,i64>(5)?,"fileCount":row.get::<_,i64>(6)?,"totalFileBytes":row.get::<_,i64>(7)?,"importedAt":row.get::<_,i64>(8)?,"contentCount":row.get::<_,i64>(9)?})),
+    ).map_err(|_|"archive_not_found".to_string())?;
     let mut records_stmt = connection
         .prepare("SELECT ordinal,record_type,payload_json,payload_sha256 FROM shared_archive_records WHERE archive_id=?1 ORDER BY ordinal")
         .map_err(|e| format!("archive_detail_prepare_failed:{e}"))?;
@@ -331,11 +353,11 @@ fn archive_detail(id: &str) -> Result<Value, String> {
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("archive_detail_row_failed:{e}"))?;
     let mut files_stmt = connection
-        .prepare("SELECT ordinal,original_name,content_type,byte_size,sha256,local_path FROM shared_archive_files WHERE archive_id=?1 ORDER BY ordinal")
+        .prepare("SELECT ordinal,original_name,content_type,byte_size FROM shared_archive_files WHERE archive_id=?1 ORDER BY ordinal")
         .map_err(|e| format!("archive_file_prepare_failed:{e}"))?;
     let files = files_stmt
         .query_map(params![id], |row| {
-            Ok(json!({"ordinal":row.get::<_,i64>(0)?,"originalName":row.get::<_,String>(1)?,"contentType":row.get::<_,String>(2)?,"byteSize":row.get::<_,i64>(3)?,"sha256":row.get::<_,String>(4)?,"localPath":row.get::<_,String>(5)?}))
+            Ok(json!({"ordinal":row.get::<_,i64>(0)?,"originalName":row.get::<_,String>(1)?,"contentType":row.get::<_,String>(2)?,"byteSize":row.get::<_,i64>(3)?}))
         })
         .map_err(|e| format!("archive_file_query_failed:{e}"))?
         .collect::<Result<Vec<_>, _>>()
@@ -369,6 +391,9 @@ pub(crate) fn open_shared_archive_file(archive_id: String, ordinal: i64) -> Valu
         if !canonical.starts_with(safe_root) {
             return Err("archive_file_path_forbidden".to_string());
         }
+        if !canonical.is_file() {
+            return Err("archive_file_not_regular".to_string());
+        }
         #[cfg(target_os = "windows")]
         let opened = Command::new("explorer.exe").arg(&canonical).spawn();
         #[cfg(target_os = "macos")]
@@ -385,7 +410,8 @@ pub(crate) fn open_shared_archive_file(archive_id: String, ordinal: i64) -> Valu
 
 #[cfg(test)]
 mod tests {
-    use super::{api_root, manifest_hash};
+    use super::{api_root, archive_detail_from_connection, manifest_hash};
+    use rusqlite::{params, Connection};
     use serde_json::json;
 
     #[test]
@@ -409,5 +435,54 @@ mod tests {
         let mut server = base.clone();
         server["files"][0]["objectKey"] = json!("private/server/key");
         assert_eq!(manifest_hash(&base).unwrap(), manifest_hash(&server).unwrap());
+    }
+
+    #[test]
+    fn archive_detail_counts_primary_content_without_exposing_local_file_paths() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE shared_archives(
+                  id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,source_type TEXT NOT NULL,source_id TEXT NOT NULL,
+                  title TEXT NOT NULL,manifest_sha256 TEXT NOT NULL,record_count INTEGER NOT NULL,file_count INTEGER NOT NULL,
+                  total_file_bytes INTEGER NOT NULL,source_created_at INTEGER NOT NULL,source_expires_at INTEGER NOT NULL,
+                  imported_at INTEGER NOT NULL,manifest_json TEXT NOT NULL
+                );
+                CREATE TABLE shared_archive_records(
+                  archive_id TEXT NOT NULL,ordinal INTEGER NOT NULL,record_type TEXT NOT NULL,payload_json TEXT NOT NULL,
+                  payload_sha256 TEXT NOT NULL,PRIMARY KEY(archive_id,ordinal)
+                );
+                CREATE TABLE shared_archive_files(
+                  archive_id TEXT NOT NULL,ordinal INTEGER NOT NULL,original_name TEXT NOT NULL,content_type TEXT NOT NULL,
+                  byte_size INTEGER NOT NULL,sha256 TEXT NOT NULL,local_path TEXT NOT NULL,PRIMARY KEY(archive_id,ordinal)
+                );
+                "#,
+            )
+            .unwrap();
+        connection.execute(
+            "INSERT INTO shared_archives VALUES (?1,'tenant-private','assignment','source-private','생태 조사','manifest',2,1,128,1,2,3,'{}')",
+            params!["archive-1"],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO shared_archive_records VALUES (?1,1,'assignment_submission','{\"student_name_snapshot\":\"김하늘\"}','record-hash')",
+            params!["archive-1"],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO shared_archive_records VALUES (?1,2,'assignment_file_snapshot','{}','file-record-hash')",
+            params!["archive-1"],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO shared_archive_files VALUES (?1,0,'관찰.pdf','application/pdf',128,'file-hash','/private/archive/관찰.pdf')",
+            params!["archive-1"],
+        ).unwrap();
+
+        let detail = archive_detail_from_connection(&connection, "archive-1").unwrap();
+        assert_eq!(detail["meta"]["contentCount"], 1);
+        assert_eq!(detail["files"][0]["originalName"], "관찰.pdf");
+        let encoded = serde_json::to_string(&detail).unwrap();
+        assert!(!encoded.contains("localPath"));
+        assert!(!encoded.contains("/private/archive"));
+        assert!(!encoded.contains("file-hash"));
     }
 }

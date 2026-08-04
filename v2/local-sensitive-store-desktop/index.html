@@ -3,299 +3,379 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>OnlineClass Local Sensitive Store</title>
+    <link rel="icon" href="data:," />
+    <title>온라인 클래스 로컬 저장소</title>
   </head>
   <body>
     <main class="store-shell">
-      <section class="app-frame">
-        <header class="app-header">
-          <span class="status-dot" id="statusDot"></span>
+      <aside class="app-sidebar" aria-label="주 메뉴">
+        <div class="brand-lockup">
+          <span class="brand-mark" aria-hidden="true"><i class="fa-solid fa-database"></i></span>
           <div>
-            <h1>로컬 민감 데이터 저장소</h1>
-            <p>이 PC에 학생 민감기록을 안전하게 보관하고 임시 기록을 자동 수거합니다.</p>
+            <strong>온라인 클래스</strong>
+            <span>로컬 민감 데이터 저장소</span>
           </div>
-          <p class="tray-note"><strong id="appVersionBadge">앱 v-</strong><span>트레이에서 계속 실행</span></p>
+        </div>
+
+        <nav class="sidebar-nav">
+          <button class="sidebar-link is-active" type="button" data-app-view-target="home" aria-current="page">
+            <i class="fa-solid fa-house" aria-hidden="true"></i><span>홈</span>
+          </button>
+          <button class="sidebar-link" type="button" data-app-view-target="data">
+            <i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i><span>자료 탐색</span>
+          </button>
+          <button class="sidebar-link" type="button" data-app-view-target="students">
+            <i class="fa-solid fa-user-group" aria-hidden="true"></i><span>학생별 보기</span>
+          </button>
+          <button class="sidebar-link" type="button" data-app-view-target="backup">
+            <i class="fa-solid fa-clock-rotate-left" aria-hidden="true"></i><span>백업·복원</span>
+          </button>
+          <button class="sidebar-link" type="button" data-app-view-target="archive">
+            <i class="fa-solid fa-box-archive" aria-hidden="true"></i><span>보관소</span>
+          </button>
+          <button class="sidebar-link" type="button" data-app-view-target="health">
+            <i class="fa-solid fa-heart-pulse" aria-hidden="true"></i><span>건강 상태</span>
+          </button>
+        </nav>
+
+        <div class="sidebar-footer">
+          <button class="sidebar-link" type="button" data-app-view-target="settings">
+            <i class="fa-solid fa-gear" aria-hidden="true"></i><span>설정</span>
+          </button>
+          <p><strong id="appVersionBadge">앱 v-</strong><span>트레이에서 계속 실행</span></p>
+        </div>
+      </aside>
+
+      <section class="app-workspace">
+        <header class="workspace-topbar">
+          <div class="topbar-class">
+            <span class="topbar-school-icon" aria-hidden="true"><i class="fa-solid fa-school"></i></span>
+            <div>
+              <span>현재 학급</span>
+              <strong id="homeTenantLabel">연결된 학급 확인 중</strong>
+            </div>
+          </div>
+          <div class="topbar-statuses">
+            <span class="topbar-status"><i class="fa-solid fa-circle-check" aria-hidden="true"></i><strong id="homeConnectionText">연결 확인 중</strong></span>
+            <span class="topbar-divider" aria-hidden="true"></span>
+            <span class="topbar-backup"><i class="fa-solid fa-cloud-arrow-up" aria-hidden="true"></i> 최근 백업 <strong id="homeBackupText">-</strong></span>
+            <button class="icon-button" data-action="refresh-status" type="button" aria-label="상태 새로고침"><i class="fa-solid fa-rotate"></i></button>
+          </div>
         </header>
 
-        <section class="summary-card is-checking" id="summaryCard" aria-labelledby="summaryTitle">
-          <div class="summary-main">
-            <span class="panel-label">상태 요약</span>
-            <h2 id="summaryTitle">상태 확인 중</h2>
-            <p id="summaryDescription">로컬 저장소, 자동 수거, 백업 상태를 확인하고 있습니다.</p>
-          </div>
-          <dl class="summary-metrics">
-            <div>
-              <dt>연결 학급</dt>
-              <dd id="summaryTenantText">-</dd>
+        <div class="workspace-scroll">
+          <section class="app-view is-active" data-app-view="home" aria-labelledby="homeTitle">
+            <div class="home-hero">
+              <h1 id="homeTitle">저장된 자료를 바로 확인하세요</h1>
+              <p>웹에 접속하지 않아도 이 PC에 보관된 학생 자료를 찾고 내용을 확인할 수 있습니다.</p>
+              <form class="home-search" id="homeSearchForm" role="search">
+                <label class="home-search-field" for="homeSearchInput">
+                  <i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i>
+                  <span class="sr-only">학생 이름이나 자료 내용 검색</span>
+                  <input id="homeSearchInput" type="search" autocomplete="off" placeholder="학생 이름이나 자료 내용을 검색" />
+                </label>
+                <button class="home-search-button" type="submit"><i class="fa-solid fa-user-magnifying-glass" aria-hidden="true"></i>학생별 자료 찾기</button>
+              </form>
             </div>
-            <div>
-              <dt>최근 수거</dt>
-              <dd id="summarySyncText">-</dd>
-            </div>
-            <div>
-              <dt>최근 백업</dt>
-              <dd id="summaryBackupText">-</dd>
-            </div>
-            <div>
-              <dt>대기 중 기록</dt>
-              <dd id="summaryPendingText">-</dd>
-            </div>
-          </dl>
-          <div class="summary-actions">
-            <button class="primary-action" data-action="open-settings" type="button">다시 연결하기</button>
-            <button class="secondary-action" data-action="refresh-status" type="button">상태 확인</button>
-            <button class="secondary-action" data-action="run-sync" type="button">지금 수거</button>
-            <button class="secondary-action" data-action="run-backup" type="button">지금 백업</button>
-            <button class="secondary-action" data-action="open-data-overview" type="button">저장 내용</button>
-          </div>
-        </section>
 
-        <section class="card-grid" aria-label="핵심 상태">
-          <article class="action-card" id="connectionCard">
-            <div class="card-heading">
-              <span class="card-index">1</span>
-              <div>
-                <span class="card-kicker">연결 상태</span>
-                <h2 id="connectionTitle">로그인 연결 확인 중</h2>
-              </div>
-              <span class="status-badge badge-warning" id="connectionBadge">확인 중</span>
-            </div>
-            <p id="connectionMetaText">교사 설정 화면에서 로그인하면 이 PC가 자동으로 연결됩니다.</p>
-            <dl class="compact-list">
-              <div>
-                <dt>연결 방식</dt>
-                <dd id="connectionModeText">-</dd>
-              </div>
-              <div>
-                <dt>연결된 계정</dt>
-                <dd id="connectionAccountText">-</dd>
-              </div>
-              <div>
-                <dt>연결 확인 시간</dt>
-                <dd id="connectionCheckText">-</dd>
-              </div>
-            </dl>
-            <div class="card-actions">
-              <button class="secondary-action" data-action="refresh-status" type="button">상태 확인</button>
-              <button class="ghost-action" data-action="open-settings" type="button">교사 설정 열기</button>
-            </div>
-          </article>
+            <div class="home-grid">
+              <section class="home-panel recent-panel" aria-labelledby="recentDataTitle">
+                <div class="home-panel-head">
+                  <div>
+                    <p>최근 활동</p>
+                    <h2 id="recentDataTitle">최근 저장 자료</h2>
+                  </div>
+                  <button class="text-button" type="button" data-app-view-target="data">전체 자료 보기 <i class="fa-solid fa-arrow-right" aria-hidden="true"></i></button>
+                </div>
+                <div class="recent-table-head" aria-hidden="true"><span>자료</span><span>학생</span><span>저장 시각</span></div>
+                <div class="recent-records" id="homeRecentRecords" aria-live="polite">
+                  <p class="home-empty">로컬 저장 자료를 확인하고 있습니다.</p>
+                </div>
+              </section>
 
-          <article class="action-card" id="syncCard">
-            <div class="card-heading">
-              <span class="card-index">2</span>
-              <div>
-                <span class="card-kicker">임시 기록 수거</span>
-                <h2>임시 기록 수거</h2>
-              </div>
-              <span class="status-badge badge-warning" id="syncBadge">확인 중</span>
+              <section class="home-panel kinds-panel" aria-labelledby="dataKindsTitle">
+                <div class="home-panel-head">
+                  <div>
+                    <p>한눈에 보기</p>
+                    <h2 id="dataKindsTitle">자료 종류</h2>
+                  </div>
+                </div>
+                <div class="kind-list" id="homeKindList">
+                  <button type="button" data-home-kind="care" data-app-view-target="data"><span class="kind-icon is-blue"><i class="fa-solid fa-comments"></i></span><span><strong>관찰·상담</strong><small>관찰 기록과 상담 메모</small></span><b id="homeCareCount">0</b><i class="fa-solid fa-chevron-right"></i></button>
+                  <button type="button" data-home-kind="attendance" data-app-view-target="data"><span class="kind-icon is-violet"><i class="fa-solid fa-calendar-check"></i></span><span><strong>출결·증빙</strong><small>출결 기록과 첨부 자료</small></span><b id="homeAttendanceCount">0</b><i class="fa-solid fa-chevron-right"></i></button>
+                  <button type="button" data-home-kind="learning" data-app-view-target="data"><span class="kind-icon is-green"><i class="fa-solid fa-chart-line"></i></span><span><strong>평가·학습</strong><small>평가 결과와 학습 기록</small></span><b id="homeLearningCount">0</b><i class="fa-solid fa-chevron-right"></i></button>
+                  <button type="button" data-home-kind="student-record" data-app-view-target="data"><span class="kind-icon is-amber"><i class="fa-solid fa-folder-open"></i></span><span><strong>학생부·종합기록</strong><small>학생부 초안과 종합 기록</small></span><b id="homeStudentRecordCount">0</b><i class="fa-solid fa-chevron-right"></i></button>
+                </div>
+              </section>
             </div>
-            <p id="cloudSyncText">수거 상태를 확인하고 있습니다.</p>
-            <dl class="result-grid" aria-label="이번 수거 결과">
-              <div>
-                <dt>가져옴</dt>
-                <dd><strong id="syncImportedCount">0</strong>건</dd>
-              </div>
-              <div>
-                <dt>대기</dt>
-                <dd><strong id="syncPendingCount">0</strong>건</dd>
-              </div>
-              <div>
-                <dt>실패</dt>
-                <dd><strong id="syncFailedCount">0</strong>건</dd>
-              </div>
-              <div>
-                <dt>서버 처리</dt>
-                <dd><strong id="syncServerCount">0</strong>건</dd>
-              </div>
-            </dl>
-            <dl class="compact-list">
-              <div>
-                <dt>최근 수거</dt>
-                <dd id="cloudSyncMetaText">-</dd>
-              </div>
-              <div>
-                <dt>방식</dt>
-                <dd id="syncModeText">-</dd>
-              </div>
-            </dl>
-            <p class="status-message" id="syncStatus">창을 닫아도 트레이에서 계속 실행됩니다.</p>
-            <div class="card-actions">
-              <button class="primary-action" data-action="run-sync" type="button">지금 수거</button>
-              <button class="ghost-action" data-action="open-settings" type="button">교사 설정 열기</button>
-            </div>
-          </article>
 
-          <article class="action-card" id="backupCard">
-            <div class="card-heading">
-              <span class="card-index">3</span>
-              <div>
-                <span class="card-kicker">클라우드 폴더 백업</span>
-                <h2>클라우드 폴더 백업</h2>
-              </div>
-              <span class="status-badge badge-warning" id="backupBadge">확인 중</span>
+            <footer class="home-healthbar">
+              <span><i class="fa-solid fa-circle-check" aria-hidden="true"></i><strong id="homeHealthText">연결 상태 확인 중</strong></span>
+              <span>최근 수거 <strong id="homeSyncText">-</strong></span>
+              <span>최근 백업 <strong id="homeFooterBackupText">-</strong></span>
+              <span class="healthbar-pending">대기 중 <strong id="homePendingText">0건</strong></span>
+            </footer>
+          </section>
+
+          <section class="app-view data-explorer-view" data-app-view="data" aria-labelledby="dataExplorerTitle" hidden>
+            <div class="data-explorer-heading">
+              <div><h1 id="dataExplorerTitle">자료 탐색</h1><p>이 PC에 저장된 자료를 웹 접속 없이 바로 확인합니다.</p></div>
+              <button class="icon-button data-refresh-button" id="dataExplorerRefresh" type="button" aria-label="자료 새로고침"><i class="fa-solid fa-rotate" aria-hidden="true"></i></button>
             </div>
-            <p id="backupStatus">백업 폴더를 선택하면 하루 1회 자동 백업됩니다.</p>
-            <label class="inline-field" for="backupTenantInput">
-              <span>학급 ID</span>
-              <input id="backupTenantInput" type="text" placeholder="연결된 학급 ID가 자동으로 들어갑니다" />
-            </label>
-            <dl class="compact-list">
-              <div>
-                <dt>최근 백업</dt>
-                <dd id="backupLatestText">-</dd>
-              </div>
-              <div>
-                <dt>다음 백업</dt>
-                <dd id="backupNextText">-</dd>
-              </div>
-              <div>
-                <dt>첨부파일</dt>
-                <dd id="backupMediaText">-</dd>
-              </div>
-              <div>
-                <dt>백업 위치</dt>
-                <dd class="path-inline">
-                  <span id="backupFolderText">-</span>
-                  <button class="copy-button" data-copy-target="backupFolderText" type="button">복사</button>
-                </dd>
-              </div>
-            </dl>
-            <div class="card-actions">
-              <button class="secondary-action" data-action="choose-backup-folder" type="button">백업 폴더 선택</button>
-              <button class="primary-action" data-action="run-backup" type="button">지금 백업</button>
+
+            <form class="data-search-form" id="dataExplorerSearchForm" role="search">
+              <label class="data-search-field" for="dataExplorerQuery">
+                <i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i>
+                <span class="sr-only">학생 이름이나 자료 내용 검색</span>
+                <input id="dataExplorerQuery" type="search" autocomplete="off" placeholder="학생 이름, 자료 내용 검색" />
+              </label>
+              <button class="sr-only" type="submit">검색</button>
+            </form>
+
+            <div class="data-filter-strip" aria-label="자료 검색 조건">
+              <label><span>자료 종류</span><select id="dataExplorerGroup"><option value="">전체 자료</option><option value="care">관찰·상담</option><option value="attendance">출결·증빙</option><option value="learning">평가·학습</option><option value="student-record">학생부·종합기록</option></select></label>
+              <label><span>학생</span><input id="dataExplorerStudent" type="search" autocomplete="off" placeholder="전체 학생" /></label>
+              <label><span>기간</span><select id="dataExplorerPeriod"><option value="30">최근 30일</option><option value="7">최근 7일</option><option value="90">최근 90일</option><option value="all">전체 기간</option></select></label>
+              <label class="data-attachment-filter"><input id="dataExplorerHasAttachment" type="checkbox" /><span><i class="fa-solid fa-paperclip" aria-hidden="true"></i> 첨부 있는 자료</span></label>
+              <button class="data-reset-button" id="dataExplorerReset" type="button">초기화</button>
             </div>
-            <div class="backup-restore-panel" id="backupRestorePanel">
-              <div class="restore-panel-head">
-                <h3>백업 복원</h3>
-                <span class="status-badge badge-neutral" id="backupRestoreBadge">대기</span>
+
+            <section class="data-workbench" id="dataOverviewSection" aria-label="로컬 자료 검색 결과">
+              <nav class="data-group-list" id="dataExplorerGroups" aria-label="자료 종류">
+                <p class="data-column-title">자료 종류</p>
+                <button type="button" data-data-group="care"><i class="fa-solid fa-comments" aria-hidden="true"></i><span>관찰·상담</span><strong id="dataGroupCareCount">0</strong></button>
+                <button type="button" data-data-group="attendance"><i class="fa-solid fa-calendar-check" aria-hidden="true"></i><span>출결·증빙</span><strong id="dataGroupAttendanceCount">0</strong></button>
+                <button type="button" data-data-group="learning"><i class="fa-solid fa-chart-simple" aria-hidden="true"></i><span>평가·학습</span><strong id="dataGroupLearningCount">0</strong></button>
+                <button type="button" data-data-group="student-record"><i class="fa-solid fa-file-lines" aria-hidden="true"></i><span>학생부·종합기록</span><strong id="dataGroupStudentRecordCount">0</strong></button>
+              </nav>
+
+              <section class="data-results-column" aria-labelledby="dataResultsTitle">
+                <header><h2 id="dataResultsTitle">검색 결과 <strong id="dataExplorerTotal">0건</strong></h2><span>최신순 <i class="fa-solid fa-chevron-down" aria-hidden="true"></i></span></header>
+                <p class="data-search-status" id="dataOverviewStatus" aria-live="polite">로컬 DB에서 자료를 불러오고 있습니다.</p>
+                <div class="data-record-list" id="localDataRecordList" role="listbox" aria-label="저장 자료 목록"></div>
+                <footer class="data-pagination" id="dataExplorerPagination"><button id="dataExplorerPrevious" type="button"><i class="fa-solid fa-chevron-left" aria-hidden="true"></i> 이전</button><span id="dataExplorerPage">1 / 1</span><button id="dataExplorerNext" type="button">다음 <i class="fa-solid fa-chevron-right" aria-hidden="true"></i></button></footer>
+              </section>
+
+              <article class="data-detail-column" id="localDataDetail" aria-live="polite">
+                <div class="data-detail-empty" id="dataExplorerEmpty"><i class="fa-solid fa-file-circle-check" aria-hidden="true"></i><h2>자료를 선택하세요</h2><p>선택한 기록의 원문과 첨부파일을 이곳에서 확인할 수 있습니다.</p></div>
+                <div id="dataExplorerDetail" hidden>
+                  <header class="data-detail-head"><h2 id="dataDetailTitle">-</h2><span><i class="fa-solid fa-shield-halved" aria-hidden="true"></i> 로컬 저장</span></header>
+                  <dl class="data-detail-meta"><div><dt>학생</dt><dd id="dataDetailStudent">-</dd></div><div><dt>자료 종류</dt><dd id="dataDetailKind">-</dd></div><div><dt>저장 시간</dt><dd id="dataDetailSavedAt">-</dd></div></dl>
+                  <section class="data-detail-body"><h3>원문 내용</h3><div id="dataDetailBody"></div></section>
+                  <section class="data-attachments" id="dataAttachments"><h3>첨부파일 <span id="dataAttachmentCount">0개</span></h3><div id="dataAttachmentList"></div></section>
+                  <details class="data-json-disclosure"><summary>원본 JSON 보기</summary><pre id="dataJsonDetail"></pre></details>
+                </div>
+              </article>
+            </section>
+
+            <footer class="data-local-status"><i class="fa-solid fa-circle-check" aria-hidden="true"></i><span id="dataExplorerLocalStatus">로컬 DB에서 불러옴 · 인터넷 연결 없이 열람 가능</span></footer>
+          </section>
+
+          <section class="app-view student-timeline-view" data-app-view="students" aria-labelledby="studentViewTitle" hidden>
+            <div class="student-view-heading"><h1 id="studentViewTitle">학생별 보기</h1><p>학생 한 명의 저장 기록을 시간순으로 모아봅니다.</p></div>
+
+            <div class="student-timeline-controls">
+              <form class="student-timeline-search" id="studentTimelineSearchForm" role="search">
+                <label class="student-search-field" for="studentTimelineQuery"><i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i><span class="sr-only">학생 이름 또는 번호 검색</span><input id="studentTimelineQuery" type="search" autocomplete="off" placeholder="학생 이름 또는 번호 검색" /></label>
+                <button class="sr-only" type="submit">학생 검색</button>
+              </form>
+              <label class="student-filter-field"><span>기간</span><select id="studentTimelinePeriod"><option value="30">최근 30일</option><option value="7">최근 7일</option><option value="90">최근 90일</option><option value="all">전체 기간</option></select></label>
+              <label class="student-filter-field"><span>자료 종류</span><select id="studentTimelineGroup"><option value="">전체</option><option value="care">관찰·상담</option><option value="attendance">출결·증빙</option><option value="learning">평가·학습</option><option value="student-record">학생부</option></select></label>
+            </div>
+
+            <section class="student-timeline-workbench" aria-label="학생별 로컬 저장 기록">
+              <aside class="student-roster-column" aria-labelledby="studentRosterCount"><header><h2 id="studentRosterCount">학생 0명</h2></header><div class="student-roster-list" id="studentRosterList" aria-label="학생 목록"></div></aside>
+
+              <section class="student-records-column" aria-labelledby="studentTimelineName">
+                <header class="student-records-head"><h2><span id="studentTimelineName">학생</span><span id="studentTimelineNumber"></span></h2><p id="studentTimelineSummary">학생을 선택하면 저장 기록이 표시됩니다.</p></header>
+                <div class="student-timeline-list" id="studentTimelineList" aria-label="선택 학생 저장 기록"></div>
+                <footer class="student-timeline-pagination" id="studentTimelinePagination" hidden><button id="studentTimelinePrevious" type="button"><i class="fa-solid fa-chevron-left" aria-hidden="true"></i> 이전</button><span id="studentTimelinePage">1 / 1</span><button id="studentTimelineNext" type="button">다음 <i class="fa-solid fa-chevron-right" aria-hidden="true"></i></button></footer>
+              </section>
+
+              <article class="student-detail-column" aria-live="polite">
+                <div class="student-detail-empty" id="studentTimelineDetailEmpty"><i class="fa-solid fa-file-circle-check" aria-hidden="true"></i><h2>학생 기록을 선택하세요</h2><p>선택한 기록의 원문과 첨부파일을 이곳에서 확인할 수 있습니다.</p></div>
+                <div id="studentTimelineDetail" hidden>
+                  <header class="student-detail-head"><h2 id="studentTimelineDetailTitle">-</h2><span class="student-local-badge"><i class="fa-solid fa-shield-halved" aria-hidden="true"></i> 로컬 저장</span></header>
+                  <dl class="student-detail-meta"><div><dt>학생</dt><dd id="studentTimelineDetailStudent">-</dd></div><div><dt>자료 종류</dt><dd id="studentTimelineDetailKind">-</dd></div><div><dt>기록일</dt><dd id="studentTimelineDetailDate">-</dd></div><div><dt>저장 시간</dt><dd id="studentTimelineDetailSavedAt">-</dd></div></dl>
+                  <section class="student-detail-body"><h3>원문 내용</h3><div id="studentTimelineDetailBody"></div></section>
+                  <section class="student-attachments" id="studentTimelineAttachments"><h3>첨부파일 <span id="studentTimelineAttachmentCount">0개</span></h3><div id="studentTimelineAttachmentList"></div></section>
+                  <details class="student-json-disclosure"><summary>원본 JSON 보기</summary><pre id="studentTimelineJson"></pre></details>
+                </div>
+              </article>
+            </section>
+
+            <footer class="student-local-status"><i class="fa-solid fa-circle-check" aria-hidden="true"></i><span id="studentTimelineStatus">로컬 DB에서 불러옴 · 인터넷 연결 없이 열람 가능</span></footer>
+          </section>
+
+          <section class="app-view backup-view" data-app-view="backup" aria-labelledby="backupViewTitle" hidden>
+            <input id="backupTenantInput" type="hidden" />
+            <div class="backup-view-heading"><h1 id="backupViewTitle">백업·복원</h1><p>자동 백업 상태를 확인하고 필요한 시점의 자료를 안전하게 복원합니다.</p></div>
+
+            <section class="backup-health-strip" id="backupCard" aria-labelledby="backupHealthTitle">
+              <div class="backup-health-primary">
+                <span class="backup-health-icon" aria-hidden="true"><i class="fa-solid fa-check"></i></span>
+                <div><h2 id="backupHealthTitle"><span class="status-badge badge-warning" id="backupBadge">확인 중</span></h2><p>저장 위치: <strong id="backupFolderText">-</strong></p><span id="backupStatus" role="status">백업 상태를 확인하고 있습니다.</span></div>
               </div>
-              <p class="status-message" id="backupRestoreStatus">새 PC에서는 OneDrive 백업 폴더를 선택한 뒤 복원할 백업을 고르세요.</p>
-              <div class="backup-list" id="backupList" aria-live="polite"></div>
-              <dl class="restore-preview-grid" id="backupPreviewGrid" aria-label="복원 미리보기">
-                <div>
-                  <dt>관찰기록</dt>
-                  <dd id="backupPreviewObservations">-</dd>
-                </div>
-                <div>
-                  <dt>학생 비공개</dt>
-                  <dd id="backupPreviewPrivateDetails">-</dd>
-                </div>
-                <div>
-                  <dt>매일수학</dt>
-                  <dd id="backupPreviewMathDaily">-</dd>
-                </div>
-                <div>
-                  <dt>보드 미디어</dt>
-                  <dd id="backupPreviewBoardMedia">-</dd>
-                </div>
+              <dl class="backup-health-metrics"><div><dt>최근 백업</dt><dd id="backupLatestText">-</dd></div><div><dt>다음 백업</dt><dd id="backupNextText">-</dd></div><div><dt>첨부파일 복사</dt><dd id="backupMediaText">-</dd></div></dl>
+              <div class="backup-health-actions"><button class="primary-action" data-action="run-backup" type="button">지금 백업</button><button class="secondary-action" data-action="choose-backup-folder" type="button">백업 폴더 변경</button></div>
+            </section>
+
+            <section class="backup-restore-panel" id="backupRestorePanel" aria-label="백업 복원 작업대">
+              <section class="backup-history-column" aria-labelledby="backupHistoryTitle">
+                <header><h2 id="backupHistoryTitle">복원할 백업 선택</h2><span class="status-badge badge-neutral" id="backupRestoreBadge">대기</span></header>
+                <p class="backup-restore-status" id="backupRestoreStatus" role="status">백업 목록을 확인하고 있습니다.</p>
+                <div class="backup-list" id="backupList" aria-live="polite"></div>
+              </section>
+
+              <section class="backup-preview-column" aria-labelledby="backupPreviewTitle">
+                <header><h2 id="backupPreviewTitle">복원 미리보기</h2></header>
+                <div class="restore-preview-details" id="backupPreviewDetails" aria-label="선택 백업 PC와 자료 건수"><p class="restore-preview-empty">복원할 백업을 선택하면 PC 정보와 자료 건수가 표시됩니다.</p></div>
+                <dl class="restore-preview-grid" id="backupPreviewGrid" aria-label="복원 자료 묶음"><div><dt>관찰·상담</dt><dd id="backupPreviewCare">-</dd></div><div><dt>출결·증빙</dt><dd id="backupPreviewAttendance">-</dd></div><div><dt>평가·학습</dt><dd id="backupPreviewLearning">-</dd></div><div><dt>학생부</dt><dd id="backupPreviewStudentRecord">-</dd></div><div><dt>게시판</dt><dd id="backupPreviewBoard">-</dd></div><div><dt>첨부파일</dt><dd id="backupPreviewAttachments">-</dd></div></dl>
+                <aside class="backup-merge-callout"><i class="fa-solid fa-circle-info" aria-hidden="true"></i><div><strong>현재 PC의 더 최신 기록은 유지하고, 선택한 백업을 병합합니다.</strong><span>복원 전 현재 상태를 자동으로 한 번 더 백업합니다.</span></div></aside>
+                <div class="backup-restore-actions"><button class="secondary-action" data-action="choose-backup-folder" type="button">백업 폴더에서 다시 찾기</button><button class="primary-action" data-action="restore-backup" type="button">선택 백업 복원</button></div>
+              </section>
+
+              <footer class="backup-workbench-footer"><span><i class="fa-solid fa-circle-check" aria-hidden="true"></i> 백업 파일은 학교 OneDrive에 저장됨 · 인터넷이 끊겨도 로컬 자료는 유지됨</span><span class="backup-plain-warning"><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i> 백업 파일은 암호화하지 않은 평문입니다. 학교 계정 OneDrive처럼 접근이 제한된 폴더를 사용하세요.</span></footer>
+            </section>
+
+            <dialog class="backup-confirm-dialog" id="backupRestoreConfirmDialog" aria-labelledby="backupConfirmTitle">
+              <form method="dialog">
+                <span class="backup-confirm-icon" aria-hidden="true"><i class="fa-solid fa-clock-rotate-left"></i></span>
+                <h2 id="backupConfirmTitle">선택한 백업을 복원할까요?</h2>
+                <p id="backupConfirmSummary">선택한 백업을 현재 PC에 병합합니다.</p>
+                <dl><div><dt>백업 시점</dt><dd id="backupConfirmDate">-</dd></div><div><dt>원본 PC</dt><dd id="backupConfirmSource">-</dd></div></dl>
+                <aside><i class="fa-solid fa-shield-halved" aria-hidden="true"></i><span>현재 상태 보호 백업이 성공해야 복원을 시작하며, 더 최신 기록은 덮어쓰지 않습니다.</span></aside>
+                <div><button class="secondary-action" value="cancel" data-backup-confirm-cancel type="submit">취소</button><button class="primary-action" value="confirm" data-backup-confirm-accept type="submit">보호 백업 후 복원</button></div>
+              </form>
+            </dialog>
+          </section>
+
+          <section class="app-view shared-archive-view" data-app-view="archive" aria-labelledby="sharedArchiveTitle" hidden>
+            <div class="archive-view-heading"><h1 id="sharedArchiveTitle">보관소</h1><p>웹에서 종료한 과제·보드를 이 PC에서 읽기 전용으로 확인합니다.</p></div>
+
+            <section class="archive-import-strip" aria-labelledby="sharedArchiveImportTitle">
+              <span class="archive-import-icon" aria-hidden="true"><i class="fa-solid fa-shield-halved"></i></span>
+              <div class="archive-import-copy"><h2 id="sharedArchiveImportTitle">새 공유자료 보관</h2><p>웹에서 받은 10분·1회용 보관 코드를 입력하세요.</p></div>
+              <label class="sr-only" for="sharedArchiveCodeInput">43자 보관 코드</label>
+              <input id="sharedArchiveCodeInput" type="password" autocomplete="off" maxlength="43" spellcheck="false" placeholder="43자 보관 코드" />
+              <button class="primary-action" id="sharedArchiveImportButton" type="button">검증 후 보관</button>
+              <p class="archive-import-status" id="sharedArchiveStatus" role="status"><i class="fa-solid fa-shield" aria-hidden="true"></i><span>SHA-256 검증 · 완료 후 서버 첨부 72시간 유예</span></p>
+            </section>
+
+            <section class="shared-archive-workbench" aria-label="로컬 공유자료 보관 작업대">
+              <section class="shared-archive-list-column" aria-labelledby="sharedArchiveListTitle">
+                <header class="shared-archive-list-head"><div><h2 id="sharedArchiveListTitle">로컬 보관본</h2><p id="sharedArchiveListStatus">확인 중</p></div><button class="archive-icon-button" id="sharedArchiveRefreshButton" type="button" aria-label="보관본 새로고침"><i class="fa-solid fa-rotate" aria-hidden="true"></i></button></header>
+                <div class="shared-archive-list" id="sharedArchiveList" role="radiogroup" aria-label="로컬 공유자료 보관 목록"></div>
+              </section>
+
+              <section class="shared-archive-detail-column" aria-labelledby="sharedArchiveDetailTitle">
+                <header class="shared-archive-detail-toolbar"><div id="sharedArchiveDetailHeading"><h2 id="sharedArchiveDetailTitle">보관 자료를 선택하세요</h2><p>읽기 전용 내용과 첨부파일을 이 PC에서 확인할 수 있습니다.</p></div><button class="secondary-action" id="sharedArchiveExportButton" type="button" disabled>JSON 내보내기</button></header>
+                <div class="shared-archive-detail" id="sharedArchiveDetail" aria-live="polite"></div>
+              </section>
+
+              <footer class="shared-archive-footer"><i class="fa-solid fa-circle-check" aria-hidden="true"></i><span>별도 읽기 전용 DB에 보관됨 · 인터넷 연결 없이 내용과 첨부파일 확인 가능</span></footer>
+            </section>
+          </section>
+
+          <section class="app-view health-view" data-app-view="health" aria-labelledby="healthViewTitle" hidden>
+            <div class="health-view-heading"><h1 id="healthViewTitle">건강 상태</h1><p>이 PC의 연결·자동 수거·백업 상태를 한눈에 확인합니다.</p></div>
+
+            <section class="health-summary is-checking" id="summaryCard" aria-labelledby="summaryTitle">
+              <div class="health-summary-main"><span class="health-summary-icon" aria-hidden="true"><i class="fa-solid fa-check"></i></span><div><span class="health-summary-kicker">전체 상태</span><h2 id="summaryTitle">상태 확인 중</h2><p id="summaryDescription">로컬 저장소, 자동 수거, 백업 상태를 확인하고 있습니다.</p></div></div>
+              <div class="health-summary-refresh"><span>마지막 확인 <strong id="healthCheckedText">-</strong></span><button class="secondary-action" data-action="refresh-status" type="button">상태 새로고침</button></div>
+              <dl class="health-summary-facts">
+                <div><dt><i class="fa-solid fa-shield-halved" aria-hidden="true"></i><span>연결 학급</span></dt><dd id="summaryTenantText">-</dd></div>
+                <div><dt><i class="fa-solid fa-download" aria-hidden="true"></i><span>최근 수거</span></dt><dd id="summarySyncText">-</dd></div>
+                <div><dt><i class="fa-solid fa-cloud-arrow-up" aria-hidden="true"></i><span>최근 백업</span></dt><dd id="summaryBackupText">-</dd></div>
+                <div><dt><i class="fa-solid fa-clock" aria-hidden="true"></i><span>대기 중</span></dt><dd id="summaryPendingText">-</dd></div>
               </dl>
-              <div class="restore-preview-details" id="backupPreviewDetails" aria-label="백업 PC 정보와 상세 건수">
-                <p class="restore-preview-empty">복원할 백업을 선택하면 PC 정보와 상세 건수가 표시됩니다.</p>
+            </section>
+
+            <section class="health-panel-grid" id="healthPanelGrid" aria-label="핵심 상태">
+              <article class="health-panel is-checking" id="connectionCard">
+                <header class="health-panel-heading"><span class="health-panel-icon is-connection" aria-hidden="true"><i class="fa-solid fa-link"></i></span><h2>PC 연결</h2><span class="status-badge badge-warning" id="connectionBadge">확인 중</span></header>
+                <p class="health-panel-description" id="connectionMetaText">교사 설정 화면에서 로그인하면 이 PC가 자동으로 연결됩니다.</p>
+                <dl class="health-detail-list"><div><dt>연결 방식</dt><dd id="connectionModeText">-</dd></div><div><dt>연결 계정</dt><dd id="connectionAccountText">-</dd></div><div><dt>연결 확인</dt><dd id="connectionCheckText">-</dd></div></dl>
+                <p class="sr-only" id="connectionTitle">로그인 연결 확인 중</p>
+                <div class="health-panel-actions"><button class="secondary-action" id="healthConnectionAction" data-health-connection-action type="button">교사 설정 열기</button></div>
+              </article>
+
+              <article class="health-panel is-checking" id="syncCard">
+                <header class="health-panel-heading"><span class="health-panel-icon is-sync" aria-hidden="true"><i class="fa-solid fa-arrows-rotate"></i></span><h2>자동 수거</h2><span class="status-badge badge-warning" id="syncBadge">확인 중</span></header>
+                <p class="health-panel-description" id="cloudSyncText">수거 상태를 확인하고 있습니다.</p>
+                <dl class="health-result-grid" aria-label="이번 수거 결과"><div><dt>가져옴</dt><dd><strong id="syncImportedCount">0</strong>건</dd></div><div><dt>대기</dt><dd><strong id="syncPendingCount">0</strong>건</dd></div><div><dt>실패</dt><dd><strong id="syncFailedCount">0</strong>건</dd></div><div><dt>서버 처리</dt><dd><strong id="syncServerCount">0</strong>건</dd></div></dl>
+                <dl class="health-detail-list is-compact"><div><dt>최근 수거</dt><dd id="cloudSyncMetaText">-</dd></div><div><dt>방식</dt><dd id="syncModeText">-</dd></div></dl>
+                <p class="health-status-message" id="syncStatus">창을 닫아도 트레이에서 계속 실행됩니다.</p>
+                <div class="health-panel-actions"><button class="primary-action" data-action="run-sync" type="button">지금 수거</button><button class="secondary-action" id="healthSyncSettingsAction" data-action="open-settings" type="button" hidden>다시 연결하기</button></div>
+              </article>
+
+              <article class="health-panel is-checking" id="healthBackupCard">
+                <header class="health-panel-heading"><span class="health-panel-icon is-backup" aria-hidden="true"><i class="fa-solid fa-cloud-arrow-up"></i></span><h2>백업</h2><span class="status-badge badge-warning" id="healthBackupBadge">확인 중</span></header>
+                <p class="health-panel-description" id="healthBackupText">백업 상태를 확인하고 있습니다.</p>
+                <dl class="health-detail-list"><div><dt>최근 백업</dt><dd id="healthBackupLatestText">-</dd></div><div><dt>다음 백업</dt><dd id="healthBackupNextText">-</dd></div><div><dt>첨부파일</dt><dd id="healthBackupMediaText">-</dd></div></dl>
+                <div class="health-panel-actions"><button class="primary-action" id="healthBackupRunAction" data-action="run-backup" type="button">지금 백업</button><button class="primary-action" id="healthBackupFolderAction" data-action="choose-backup-folder" type="button" hidden>백업 폴더 선택</button><button class="secondary-action" data-app-view-target="backup" type="button">백업·복원 열기</button></div>
+              </article>
+            </section>
+
+            <footer class="health-runtime-note" id="healthRuntimeNote"><i class="fa-solid fa-circle-check" aria-hidden="true"></i><span>창을 닫아도 트레이에서 계속 실행 · 인터넷이 끊겨도 로컬 저장 자료는 유지됨</span></footer>
+          </section>
+
+          <section class="app-view settings-view" data-app-view="settings" aria-labelledby="settingsViewTitle" hidden>
+            <div class="settings-view-heading"><h1 id="settingsViewTitle">설정</h1><p>연결, 저장, 앱 동작을 안전하게 관리합니다.</p></div>
+
+            <section class="device-auth-panel settings-auth-panel" id="deviceAuthPanel" data-state="idle" aria-labelledby="deviceAuthTitle" hidden>
+              <div class="device-auth-icon" aria-hidden="true"><i class="fa-solid fa-shield-halved"></i></div>
+              <p class="device-auth-kicker">SECURE CONNECTION</p>
+              <h2 id="deviceAuthTitle">교사 로그인으로 이 PC 연결</h2>
+              <p id="deviceAuthDescription">브라우저에서 ClassAimate 교사 계정으로 로그인하고 연결을 승인하세요. 페어링 키는 필요하지 않습니다.</p>
+              <div class="device-auth-wait" id="deviceAuthWait" hidden><span></span><span></span><span></span></div>
+              <p class="device-auth-meta" id="deviceAuthMeta">승인 요청은 10분 뒤 자동으로 만료됩니다.</p>
+              <div class="device-auth-actions"><button class="primary-action" id="deviceAuthStart" type="button"><i class="fa-solid fa-arrow-up-right-from-square" aria-hidden="true"></i> 브라우저에서 교사 로그인</button><button class="secondary-action" id="deviceAuthReopen" type="button" hidden>다시 열기</button></div>
+            </section>
+
+            <div id="settingsConnectedContent">
+              <div class="settings-primary-grid">
+                <section class="settings-panel settings-connection-panel" id="settingsConnectionPanel" aria-labelledby="settingsConnectionTitle">
+                  <header><span class="settings-panel-icon is-green" aria-hidden="true"><i class="fa-solid fa-link"></i></span><h2 id="settingsConnectionTitle">PC 연결</h2><span class="settings-badge is-ok" id="settingsConnectionBadge">정상 연결</span></header>
+                  <dl class="settings-detail-list"><div><dt><i class="fa-solid fa-school" aria-hidden="true"></i> 연결된 학급</dt><dd id="settingsTenantText">-</dd></div><div><dt><i class="fa-solid fa-user" aria-hidden="true"></i> 교사 계정</dt><dd id="settingsAccountText">-</dd></div><div><dt><i class="fa-solid fa-shield-halved" aria-hidden="true"></i> 연결 방식</dt><dd>웹 로그인 승인</dd></div></dl>
+                  <p id="settingsConnectionDescription">교사 계정으로 안전하게 연결되어 있습니다. 별도의 페어링 키가 필요하지 않습니다.</p>
+                  <div class="settings-panel-actions"><button class="settings-outline-action" id="settingsOpenTeacherButton" type="button">교사 설정 열기</button><button class="settings-danger-action" id="settingsDisconnectButton" type="button">이 PC 연결 해제</button></div>
+                </section>
+
+                <section class="settings-panel settings-backup-panel" id="settingsBackupPanel" aria-labelledby="settingsBackupTitle">
+                  <header><span class="settings-panel-icon is-violet" aria-hidden="true"><i class="fa-solid fa-cloud-arrow-up"></i></span><h2 id="settingsBackupTitle">백업 위치</h2><span class="settings-badge is-ok" id="settingsBackupBadge">정상</span></header>
+                  <dl class="settings-detail-list settings-backup-details"><div><dt><i class="fa-solid fa-cloud" aria-hidden="true"></i> 백업 위치</dt><dd id="settingsBackupLocationText">-</dd></div><div><dt><i class="fa-solid fa-clock" aria-hidden="true"></i> 최근 백업</dt><dd id="settingsBackupLatestText">-</dd></div></dl>
+                  <p id="settingsBackupDescription">학교 계정 OneDrive에 자동 백업하고 있습니다.</p>
+                  <div class="settings-panel-actions"><button class="settings-outline-action" data-action="choose-backup-folder" type="button">백업 폴더 변경</button></div>
+                </section>
               </div>
-              <div class="card-actions">
-                <button class="primary-action" data-action="restore-backup" type="button">선택 백업 복원</button>
-              </div>
-            </div>
-          </article>
-        </section>
 
-        <section class="data-overview-panel" id="dataOverviewSection" aria-labelledby="dataOverviewTitle">
-          <div class="data-overview-head">
-            <div>
-              <span class="panel-label">저장 내용</span>
-              <h2 id="dataOverviewTitle">로컬 DB 전체 조망</h2>
-              <p id="dataOverviewStatus">학급 ID 기준으로 이 PC에 저장된 민감 기록을 확인합니다.</p>
-            </div>
-            <div class="data-overview-actions">
-              <button class="secondary-action" data-action="open-data-overview" type="button">새로고침</button>
-            </div>
-          </div>
-          <div class="data-overview-grid">
-            <nav class="data-section-list" id="localDataSectionList" aria-label="저장 데이터 종류"></nav>
-            <div class="data-record-list" id="localDataRecordList" aria-label="저장 데이터 목록"></div>
-            <pre class="data-detail" id="localDataDetail" aria-label="저장 데이터 상세">섹션을 선택하면 상세 payload가 표시됩니다.</pre>
-          </div>
-        </section>
+              <section class="settings-wide-panel settings-behavior-panel" aria-labelledby="settingsBehaviorTitle">
+                <header><span class="settings-section-icon is-blue" aria-hidden="true"><i class="fa-solid fa-gear"></i></span><h2 id="settingsBehaviorTitle">앱 동작</h2></header>
+                <div class="settings-preference-list">
+                  <label class="settings-preference-row" for="settingsStartWithWindows"><span class="settings-preference-icon" aria-hidden="true"><i class="fa-solid fa-power-off"></i></span><span><strong>Windows 시작 시 자동 실행</strong><small>PC를 켜면 자동 수거와 백업을 준비합니다.</small></span><input id="settingsStartWithWindows" type="checkbox" role="switch" checked><span class="settings-switch" aria-hidden="true"></span></label>
+                  <label class="settings-preference-row" for="settingsKeepRunningOnClose"><span class="settings-preference-icon" aria-hidden="true"><i class="fa-solid fa-window-restore"></i></span><span><strong>창을 닫아도 계속 실행</strong><small>작업 표시줄 트레이에서 안전하게 실행됩니다.</small></span><input id="settingsKeepRunningOnClose" type="checkbox" role="switch" checked><span class="settings-switch" aria-hidden="true"></span></label>
+                </div>
+                <p class="settings-inline-status" id="settingsPreferenceStatus" role="status" aria-live="polite"></p>
+              </section>
 
-        <section class="shared-archive-panel" aria-labelledby="sharedArchiveTitle">
-          <div class="data-overview-head">
-            <div>
-              <span class="panel-label">공유자료 장기 보관</span>
-              <h2 id="sharedArchiveTitle">과제·보드 로컬 보관소</h2>
-              <p>웹에서 보관한 자료를 이 PC의 별도 읽기 전용 DB로 내려받습니다.</p>
+              <section class="settings-security-strip" aria-labelledby="settingsSecurityTitle">
+                <header><span class="settings-section-icon is-green" aria-hidden="true"><i class="fa-solid fa-shield-halved"></i></span><h2 id="settingsSecurityTitle">보안과 저장</h2></header>
+                <div><p><i class="fa-solid fa-shield" aria-hidden="true"></i><span>민감자료 원문은 이 PC에만 저장</span></p><p><i class="fa-solid fa-lock" aria-hidden="true"></i><span>교사 계정 정보는 Windows에서 암호화 보관</span></p><p><i class="fa-solid fa-file-lines" aria-hidden="true"></i><span>연결을 해제해도 저장 자료는 삭제되지 않음</span></p></div>
+              </section>
             </div>
-            <div class="data-overview-actions">
-              <button class="secondary-action" id="sharedArchiveRefreshButton" type="button">새로고침</button>
-              <button class="secondary-action" id="sharedArchiveExportButton" type="button">JSON 내보내기</button>
-            </div>
-          </div>
-          <div class="archive-import-row">
-            <label for="sharedArchiveCodeInput">웹에서 발급한 보관 코드</label>
-            <input id="sharedArchiveCodeInput" type="password" autocomplete="off" maxlength="43" placeholder="10분 동안 한 번만 사용할 수 있습니다" />
-            <button class="primary-action" id="sharedArchiveImportButton" type="button">검증 후 보관</button>
-          </div>
-          <p class="status-message" id="sharedArchiveStatus">보관 코드는 URL·브라우저 저장소에 남기지 않습니다.</p>
-          <div class="shared-archive-grid">
-            <div class="shared-archive-list" id="sharedArchiveList" aria-label="로컬 공유자료 보관 목록"></div>
-            <div class="shared-archive-detail" id="sharedArchiveDetail" aria-live="polite"></div>
-          </div>
-        </section>
 
-        <aside class="warning-callout" aria-label="백업 주의">
-          <strong>중요 안내</strong>
-          <p>백업 파일은 암호화하지 않은 평문으로 저장됩니다. 학교 계정 OneDrive처럼 접근 권한이 제한된 폴더를 사용하세요.</p>
-        </aside>
+            <details class="settings-advanced-panel" id="settingsAdvancedPanel"><summary><span class="settings-advanced-icon" aria-hidden="true"><i class="fa-solid fa-chevron-right"></i></span><span><strong>고급 정보</strong><small>서비스 주소, DB 경로, 앱·서비스 버전</small></span><i class="fa-solid fa-chevron-down" aria-hidden="true"></i></summary><div class="advanced-grid"><div class="path-row"><span>로컬 서비스 주소</span><code id="endpointText">-</code><button class="copy-button" data-copy-target="endpointText" type="button">복사</button></div><div class="path-row"><span>DB 파일 경로</span><code id="dbPathText">-</code><button class="copy-button" data-copy-target="dbPathText" type="button">복사</button></div><div class="path-row"><span>데이터 폴더</span><code id="dataDirText">-</code><button class="copy-button" data-copy-target="dataDirText" type="button">복사</button></div><div class="path-row"><span>서비스 상태</span><code id="statusText">확인 중</code></div><div class="path-row"><span>앱 버전</span><code id="appVersionText">-</code></div><div class="path-row"><span>서비스 버전</span><code id="serviceVersionText">-</code></div><div class="path-row"><span>포트 번호</span><code id="servicePortText">-</code></div></div></details>
+            <footer class="settings-version-footer"><span id="settingsAppVersionFooter">앱 버전 확인 중</span><span>·</span><span>최신 상태</span></footer>
 
-        <details class="advanced-panel">
-          <summary>고급 정보</summary>
-          <div class="advanced-grid">
-            <div class="path-row">
-              <span>로컬 서비스 주소</span>
-              <code id="endpointText">-</code>
-              <button class="copy-button" data-copy-target="endpointText" type="button">복사</button>
-            </div>
-            <div class="path-row">
-              <span>DB 파일 경로</span>
-              <code id="dbPathText">-</code>
-              <button class="copy-button" data-copy-target="dbPathText" type="button">복사</button>
-            </div>
-            <div class="path-row">
-              <span>데이터 폴더</span>
-              <code id="dataDirText">-</code>
-              <button class="copy-button" data-copy-target="dataDirText" type="button">복사</button>
-            </div>
-            <div class="path-row">
-              <span>서비스 상태</span>
-              <code id="statusText">확인 중</code>
-            </div>
-            <div class="path-row">
-              <span>앱 버전</span>
-              <code id="appVersionText">-</code>
-            </div>
-            <div class="path-row">
-              <span>서비스 버전</span>
-              <code id="serviceVersionText">-</code>
-            </div>
-            <div class="path-row">
-              <span>포트 번호</span>
-              <code id="servicePortText">-</code>
-            </div>
-          </div>
-
-          <div class="pairing-box manual-key-box">
-            <label for="pairingKeyInput">수동 연결 코드</label>
-            <div class="pairing-row">
-              <input id="pairingKeyInput" type="password" readonly value="" />
-              <button id="toggleKeyBtn" type="button">보기</button>
-              <button id="copyKeyBtn" data-copy-target="pairingKeyInput" type="button">복사</button>
-            </div>
-            <p id="copyStatus">자동 연결이 막힌 환경에서만 교사 설정의 고급 입력에 이 코드를 사용하세요.</p>
-          </div>
-        </details>
+            <dialog class="settings-disconnect-dialog" id="settingsDisconnectDialog" aria-labelledby="settingsDisconnectTitle">
+              <form method="dialog"><span class="settings-disconnect-icon" aria-hidden="true"><i class="fa-solid fa-link-slash"></i></span><h2 id="settingsDisconnectTitle">이 PC 연결을 해제할까요?</h2><p>교사 로그인 연결과 자동 수거만 중지됩니다.</p><aside><i class="fa-solid fa-shield-halved" aria-hidden="true"></i><span>이 PC의 SQLite 자료, 첨부파일과 기존 백업은 삭제되지 않습니다.</span></aside><div><button class="settings-dialog-cancel" value="cancel" type="submit">취소</button><button class="settings-dialog-danger" value="confirm" type="submit">연결 해제</button></div></form>
+            </dialog>
+          </section>
+        </div>
       </section>
+      <span class="status-dot" id="statusDot" aria-hidden="true"></span>
     </main>
-
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

@@ -8,6 +8,9 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
+#[path = "backup_restore.rs"]
+mod restore_runtime;
+
 const BACKUP_CONFIG_FILE: &str = "backup-config.json";
 const BACKUP_NAMESPACE_DIR: &str = "OnlineClassLocalBackups";
 const BACKUP_INTERVAL_MS: i64 = 24 * 60 * 60 * 1000;
@@ -19,7 +22,6 @@ struct BackupTable {
     timestamp_column: &'static str,
     optional: bool,
 }
-
 const BACKUP_TABLES: &[BackupTable] = &[
     BackupTable {
         name: "lesson_observations",
@@ -930,6 +932,7 @@ pub(crate) fn run_now(store: &SqliteStore, tenant_id: String) -> Result<Value, S
     for row in media_rows {
         let ext = media_extension(&row);
         let backup_relative_path = PathBuf::from("board-media")
+            .join(&backup_id)
             .join(safe_segment(&row.board_id, "board"))
             .join(format!("{}.{}", safe_segment(&row.media_id, "media"), ext));
         let source_path = store.data_dir.join(&row.local_path);
@@ -986,6 +989,7 @@ pub(crate) fn run_now(store: &SqliteStore, tenant_id: String) -> Result<Value, S
         },
         "counts": {
             "observationCount": stats.get("observationCount").and_then(|value| value.as_i64()).unwrap_or(0),
+            "teacherCounselingSessionCount": stats.get("teacherCounselingSessionCount").and_then(|value| value.as_i64()).unwrap_or(0),
             "studentPrivateDetailCount": stats.get("studentPrivateDetailCount").and_then(|value| value.as_i64()).unwrap_or(0),
             "mathDailyAttemptCount": stats.get("mathDailyAttemptCount").and_then(|value| value.as_i64()).unwrap_or(0),
             "mathDailyProfileCount": stats.get("mathDailyProfileCount").and_then(|value| value.as_i64()).unwrap_or(0),
@@ -1094,103 +1098,7 @@ pub(crate) fn restore_preview(store: &SqliteStore, body: Value) -> Result<Value,
 }
 
 pub(crate) fn restore(store: &SqliteStore, body: Value) -> Result<Value, String> {
-    let preview = restore_preview(store, body.clone())?;
-    let tenant_id = preview.get("tenantId").and_then(|value| value.as_str()).unwrap_or("").to_string();
-    let manifest_path = PathBuf::from(preview.get("manifestPath").and_then(|value| value.as_str()).unwrap_or(""));
-    let manifest = read_manifest(&manifest_path)?;
-    let db_relative = manifest
-        .get("db")
-        .and_then(|db| db.get("relativePath"))
-        .and_then(|value| value.as_str())
-        .ok_or_else(|| "backup_db_required".to_string())?;
-    let db_path = manifest_path.parent().unwrap_or_else(|| Path::new(".")).join(db_relative);
-    let mut media_restored = 0i64;
-    let mut media_missing = 0i64;
-    let mut media_paths = Vec::new();
-    if let Some(records) = manifest.get("media").and_then(|media| media.get("records")).and_then(|value| value.as_array()) {
-        for record in records {
-            let media_id = normalize_json_text(record.get("mediaId"), 220).replace(['/', '\\'], "_");
-            let backup_relative = normalize_json_text(record.get("backupRelativePath"), 600);
-            let local_path_text = normalize_json_text(record.get("localPath"), 600);
-            if media_id.is_empty() {
-                continue;
-            }
-            let Some(backup_relative_path) = safe_relative_path(&backup_relative) else {
-                continue;
-            };
-            let Some(local_path) = safe_relative_path(&local_path_text) else {
-                continue;
-            };
-            let source_path = manifest_path.parent().unwrap_or_else(|| Path::new(".")).join(backup_relative_path);
-            let target_path = store.data_dir.join(&local_path);
-            if !source_path.exists() {
-                media_missing += 1;
-                continue;
-            }
-            if let Some(parent) = target_path.parent() {
-                fs::create_dir_all(parent).map_err(|e| format!("restore_media_dir_failed:{e}"))?;
-            }
-            fs::copy(&source_path, &target_path).map_err(|e| format!("restore_media_copy_failed:{e}"))?;
-            media_restored += 1;
-            media_paths.push((media_id, local_path.to_string_lossy().to_string()));
-        }
-    }
-    let conn = store.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
-    conn.execute("ATTACH DATABASE ?1 AS restore", params![db_path.to_string_lossy().to_string()])
-        .map_err(|e| format!("restore_db_attach_failed:{e}"))?;
-    let result = (|| -> Result<i64, String> {
-        let mut imported = 0i64;
-        for table in BACKUP_TABLES {
-            if !table_exists(&conn, table.name)? {
-                continue;
-            }
-            let columns = table.columns.join(", ");
-            let update_columns: Vec<&str> = table
-                .columns
-                .iter()
-                .copied()
-                .filter(|column| !table.key_columns.contains(column))
-                .collect();
-            let update_set = update_columns
-                .iter()
-                .map(|column| format!("{column} = excluded.{column}"))
-                .collect::<Vec<String>>()
-                .join(", ");
-            let sql = format!(
-                "INSERT INTO main.{name} ({columns})
-                 SELECT {columns} FROM restore.{name} WHERE tenant_id = ?1
-                 ON CONFLICT({keys}) DO UPDATE SET {update_set}
-                 WHERE excluded.{timestamp} >= main.{name}.{timestamp}",
-                name = table.name,
-                columns = columns,
-                keys = table.key_columns.join(", "),
-                update_set = update_set,
-                timestamp = table.timestamp_column
-            );
-            conn.execute(&sql, params![tenant_id])
-                .map_err(|e| format!("restore_table_merge_failed:{}:{e}", table.name))?;
-            imported += conn.changes() as i64;
-        }
-        for (media_id, local_path) in media_paths {
-            conn.execute(
-                "UPDATE board_media_files SET local_path = ?1 WHERE tenant_id = ?2 AND media_id = ?3",
-                params![local_path, tenant_id, media_id],
-            )
-            .map_err(|e| format!("restore_media_path_update_failed:{e}"))?;
-        }
-        Ok(imported)
-    })();
-    let _ = conn.execute_batch("DETACH DATABASE restore");
-    let imported = result?;
-    Ok(json!({
-        "ok": true,
-        "tenantId": tenant_id,
-        "backupId": preview.get("backupId").cloned().unwrap_or(Value::Null),
-        "manifestPath": manifest_path.to_string_lossy(),
-        "imported": imported,
-        "mediaRestored": media_restored,
-        "mediaMissing": media_missing
-    }))
+    restore_runtime::restore(store, body)
 }
 
 pub(crate) fn start_background(store: Arc<SqliteStore>) {

@@ -1,12 +1,31 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import "./vendor/fontawesome/css/fontawesome.min.css";
+import "./vendor/fontawesome/css/solid.min.css";
 import "./styles.css";
+import "./home-dashboard.css";
+import "./data-explorer.css";
+import "./student-timeline.css";
+import "./backup-restore.css";
+import "./shared-archive.css";
+import "./health-dashboard.css";
+import "./settings-dashboard.css";
 import { initSharedArchive } from "./shared-archive";
+import { initHomeDashboard, loadHomeOverview, renderHomeStatus } from "./home-dashboard";
+import { createDeviceAuthorizationController, type DeviceAuthorizationResult } from "./device-authorization";
+import { initDataExplorer } from "./data-explorer";
+import { initStudentTimeline } from "./student-timeline";
+import { confirmBackupRestore } from "./backup-restore-confirmation";
+import { initBackupRestorePreview } from "./backup-restore-preview";
+import { initSharedArchivePreview } from "./shared-archive-preview";
+import { initHealthDashboardPreview } from "./health-dashboard-preview";
+import { initSettingsDashboard, renderSettingsDashboard } from "./settings-dashboard";
+import { initSettingsDashboardPreview } from "./settings-dashboard-preview";
 
 declare const __APP_VERSION__: string;
 
-const TEACHER_SETTINGS_URL = "https://classaimate.pages.dev/teacher-dashboard/tenant-settings";
 const APP_VERSION = String(__APP_VERSION__ || "").trim() || "0.0.0";
+const designPreview = new URLSearchParams(window.location.search).get("designPreview");
 
 type ServiceStatus = {
   ok: boolean;
@@ -48,6 +67,12 @@ type CloudSyncStatus = {
   credentialStorage?: string;
   needsReconnect?: boolean;
   reconnectMessage?: string;
+};
+
+type DeviceConnectionStatus = DeviceAuthorizationResult & {
+  connected?: boolean;
+  uid?: string;
+  connectedAtMs?: number;
 };
 
 type BackupSource = {
@@ -155,29 +180,13 @@ type CommandResult = {
   error?: string;
 };
 
-type LocalDataSection = {
-  key: string;
-  label: string;
-  count?: number;
-  updatedAtMs?: number;
-  route?: string;
-};
-
-type LocalOverview = {
-  ok: boolean;
-  tenantId?: string;
-  stats?: Record<string, unknown>;
-  sections?: LocalDataSection[];
-  recentImportRuns?: unknown[];
-  error?: string;
-};
-
 type BadgeTone = "ok" | "warning" | "error" | "neutral";
-type ActionName = "open-settings" | "refresh-status" | "run-sync" | "run-backup" | "choose-backup-folder" | "restore-backup" | "open-data-overview";
+type ActionName = "open-settings" | "refresh-status" | "run-sync" | "run-backup" | "choose-backup-folder" | "restore-backup";
 
 let serviceSnapshot: ServiceStatus | null = null;
 let serviceLoadError = "";
 let cloudSyncSnapshot: CloudSyncStatus | null = null;
+let deviceConnectionSnapshot: DeviceConnectionStatus | null = null;
 let cloudSyncLoadError = "";
 let backupSnapshot: BackupStatus | null = null;
 let backupLoadError = "";
@@ -186,10 +195,6 @@ let selectedBackupManifestPath = "";
 let backupPreview: BackupPreview | null = null;
 let backupRestoreMessage = "";
 let backupRestoreTone: BadgeTone = "neutral";
-let localOverview: LocalOverview | null = null;
-let selectedDataSectionKey = "";
-let localDataRecords: unknown[] = [];
-let selectedDataRecordIndex = -1;
 const busyActions = new Set<ActionName>();
 
 function byId<T extends HTMLElement>(id: string): T {
@@ -213,6 +218,16 @@ function setBadge(id: string, label: string, tone: BadgeTone) {
   el.className = `status-badge badge-${tone}`;
 }
 
+function setHealthPanelState(id: "connectionCard" | "syncCard" | "healthBackupCard", tone: "ok" | "warning" | "error" | "checking") {
+  const panel = byId<HTMLElement>(id);
+  panel.classList.remove("is-ok", "is-warning", "is-error", "is-checking");
+  panel.classList.add(`is-${tone}`);
+}
+
+function setHidden(id: string, hidden: boolean) {
+  byId(id).hidden = hidden;
+}
+
 function numberText(value?: number) {
   return String(Number(value || 0) || 0);
 }
@@ -221,21 +236,13 @@ function numeric(value?: number) {
   return Number(value || 0) || 0;
 }
 
-function byteText(value?: number) {
-  const bytes = Math.max(0, Number(value || 0) || 0);
-  if (bytes < 1024) return `${numberText(bytes)} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-  return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
-}
-
 function actionButtons(action: ActionName) {
   return Array.from(document.querySelectorAll<HTMLButtonElement>(`button[data-action="${action}"]`));
 }
 
-function setActionLabel(action: ActionName, label: string) {
-  actionButtons(action).forEach((button) => {
-    button.textContent = label;
+function setBackupFolderActionLabels(label: string) {
+  actionButtons("choose-backup-folder").forEach((button) => {
+    button.textContent = button.closest(".backup-restore-actions") ? "백업 폴더에서 다시 찾기" : label;
   });
 }
 
@@ -248,7 +255,7 @@ function refreshActionStates() {
     "run-backup": backupUnavailable,
     "restore-backup": restoreUnavailable,
   };
-  (["open-settings", "refresh-status", "run-sync", "run-backup", "choose-backup-folder", "restore-backup", "open-data-overview"] as ActionName[]).forEach((action) => {
+  (["open-settings", "refresh-status", "run-sync", "run-backup", "choose-backup-folder", "restore-backup"] as ActionName[]).forEach((action) => {
     actionButtons(action).forEach((button) => {
       button.disabled = busyActions.has(action) || Boolean(disabledByAction[action]);
     });
@@ -301,26 +308,25 @@ function formatDateTime(ms?: number) {
   return `${date.toLocaleDateString("ko-KR")} ${timeLabel}`;
 }
 
+function formatBackupDateTime(ms?: number) {
+  const value = Number(ms || 0) || 0;
+  if (!value) return "-";
+  const date = new Date(value);
+  const hour = date.getHours();
+  const minute = String(date.getMinutes()).padStart(2, "0");
+  return `${date.getFullYear()}년 ${date.getMonth() + 1}월 ${date.getDate()}일 ${hour < 12 ? "오전" : "오후"} ${hour % 12 || 12}:${minute}`;
+}
+
 function currentBackupTenantId() {
   return byId<HTMLInputElement>("backupTenantInput").value.trim();
 }
 
-function tenantLabel(status?: CloudSyncStatus | null) {
+function tenantLabel(status?: Pick<CloudSyncStatus, "tenantName" | "tenantId"> | null) {
   return status?.tenantName || status?.tenantId || "연결된 학급 없음";
 }
 
-function accountLabel(status?: CloudSyncStatus | null) {
+function accountLabel(status?: Pick<CloudSyncStatus, "accountEmail" | "accountDisplayName" | "uid"> | null) {
   return status?.accountEmail || status?.accountDisplayName || status?.uid || "-";
-}
-
-function buildTeacherSettingsUrl(tenantId = "") {
-  const url = new URL(TEACHER_SETTINGS_URL);
-  const safeTenantId = tenantId.trim();
-  if (safeTenantId) url.searchParams.set("tenantId", safeTenantId);
-  url.searchParams.set("tab", "sensitive");
-  url.searchParams.set("connectLocal", "1");
-  url.searchParams.set("source", "local-sensitive-store");
-  return url.toString();
 }
 
 function normalizeStorageMode(value?: string) {
@@ -385,21 +391,23 @@ function backupPrivateDetailCount(counts?: Record<string, number>) {
   return countFrom(counts, ["student_private_details", "studentPrivateDetailCount"]);
 }
 
+function backupCounselingCount(counts?: Record<string, number>) {
+  return countFrom(counts, ["teacher_counseling_sessions", "teacherCounselingSessionCount"]);
+}
+
+function backupCareCount(counts?: Record<string, number>) {
+  return backupObservationCount(counts) + backupCounselingCount(counts) + backupPrivateDetailCount(counts);
+}
+
 function backupMathDailyCount(counts?: Record<string, number>) {
   return [
-    "math_daily_attempts",
-    "math_daily_student_profiles",
-    "math_daily_review_sessions",
-    "math_daily_assignments",
-    "math_daily_assignment_results",
-    "math_daily_cache_runs",
-    "mathDailyAttemptCount",
-    "mathDailyProfileCount",
-    "mathDailyReviewSessionCount",
-    "mathDailyAssignmentCount",
-    "mathDailyAssignmentResultCount",
-    "mathDailyCacheRunCount",
-  ].reduce((sum, key) => sum + (Number(counts?.[key] || 0) || 0), 0);
+    ["math_daily_attempts", "mathDailyAttemptCount"],
+    ["math_daily_student_profiles", "mathDailyProfileCount"],
+    ["math_daily_review_sessions", "mathDailyReviewSessionCount"],
+    ["math_daily_assignments", "mathDailyAssignmentCount"],
+    ["math_daily_assignment_results", "mathDailyAssignmentResultCount"],
+    ["math_daily_cache_runs", "mathDailyCacheRunCount"],
+  ].reduce((sum, keys) => sum + countFrom(counts, keys), 0);
 }
 
 function backupBoardSnapshotCount(counts?: Record<string, number>) {
@@ -413,50 +421,30 @@ function backupBoardMediaCount(counts?: Record<string, number>, media?: BackupIt
   return records;
 }
 
-function backupBoardTotalCount(counts?: Record<string, number>, media?: BackupItem["media"] | BackupPreview["media"]) {
-  return backupBoardSnapshotCount(counts) + backupBoardMediaCount(counts, media);
-}
-
 function backupAttendanceCount(counts?: Record<string, number>) {
   return [
-    "attendance_records",
-    "attendance_nais_checks",
-    "attendance_document_requests",
-    "attendanceRecordCount",
-    "attendanceNaisCheckCount",
-    "attendanceDocumentRequestCount",
-  ].reduce((sum, key) => sum + (Number(counts?.[key] || 0) || 0), 0);
+    ["attendance_records", "attendanceRecordCount"],
+    ["attendance_nais_checks", "attendanceNaisCheckCount"],
+    ["attendance_document_requests", "attendanceDocumentRequestCount"],
+  ].reduce((sum, keys) => sum + countFrom(counts, keys), 0);
 }
 
 function backupEvalCount(counts?: Record<string, number>) {
   return [
-    "eval_assignments",
-    "eval_results",
-    "evalAssignmentCount",
-    "evalResultCount",
-  ].reduce((sum, key) => sum + (Number(counts?.[key] || 0) || 0), 0);
+    ["eval_assignments", "evalAssignmentCount"],
+    ["eval_results", "evalResultCount"],
+  ].reduce((sum, keys) => sum + countFrom(counts, keys), 0);
 }
 
 function backupStudentRecordCount(counts?: Record<string, number>) {
   return [
-    "student_record_draft_sets",
-    "student_record_drafts",
-    "studentRecordDraftSetCount",
-    "studentRecordDraftCount",
-  ].reduce((sum, key) => sum + (Number(counts?.[key] || 0) || 0), 0);
+    ["student_record_draft_sets", "studentRecordDraftSetCount"],
+    ["student_record_drafts", "studentRecordDraftCount"],
+  ].reduce((sum, keys) => sum + countFrom(counts, keys), 0);
 }
 
-function backupHistoryCount(counts?: Record<string, number>) {
-  return [
-    "local_import_runs",
-    "cloud_sync_runs",
-    "importRunCount",
-    "cloudSyncRunCount",
-  ].reduce((sum, key) => sum + (Number(counts?.[key] || 0) || 0), 0);
-}
-
-function backupShortId(backup: BackupItem) {
-  return String(backup.backupId || "").slice(-8) || "-";
+function backupLearningCount(counts?: Record<string, number>) {
+  return backupMathDailyCount(counts) + backupEvalCount(counts);
 }
 
 function backupSourcePcName(source?: BackupSource) {
@@ -487,49 +475,33 @@ function backupSourceSummary(source?: BackupSource) {
   return `${backupSourceRelation(source)} · ${backupSourcePcName(source)} · ${backupEnvironmentText(source)}`;
 }
 
+function backupSourceListText(source?: BackupSource) {
+  const os = String(source?.os || "").trim() || "운영체제 정보 없음";
+  return `${backupSourceRelation(source)} · ${backupSourcePcName(source)} · ${os}`;
+}
+
+function backupFolderLabel(status: BackupStatus) {
+  if (!status.configured) return "-";
+  const folder = String(status.tenantBackupDir || status.backupRootDir || "").toLowerCase();
+  if (folder.includes("onedrive")) return "학교 OneDrive · OnlineClassLocalBackups";
+  if (folder.includes("google drive")) return "Google Drive · OnlineClassLocalBackups";
+  if (folder.includes("dropbox")) return "Dropbox · OnlineClassLocalBackups";
+  if (folder.includes("icloud")) return "iCloud Drive · OnlineClassLocalBackups";
+  return "선택한 백업 폴더 · OnlineClassLocalBackups";
+}
+
 function backupRowSummary(backup: BackupItem) {
   const counts = backup.counts || {};
   const media = backup.media || {};
   const parts = [
-    `관찰 ${numberText(backupObservationCount(counts))}`,
-    `학생 ${numberText(backupPrivateDetailCount(counts))}`,
-    `수학 ${numberText(backupMathDailyCount(counts))}`,
-    `게시판 ${numberText(backupBoardTotalCount(counts, media))}`,
-    `출결 ${numberText(backupAttendanceCount(counts))}`,
-    `평가 ${numberText(backupEvalCount(counts))}`,
-    `학생부 ${numberText(backupStudentRecordCount(counts))}`,
-    `이력 ${numberText(backupHistoryCount(counts))}`,
+    `관찰·상담 ${numberText(backupCareCount(counts))}건`,
+    `출결·증빙 ${numberText(backupAttendanceCount(counts))}건`,
+    `평가·학습 ${numberText(backupLearningCount(counts))}건`,
+    `학생부 ${numberText(backupStudentRecordCount(counts))}건`,
+    `게시판 ${numberText(backupBoardSnapshotCount(counts))}건`,
+    `첨부 ${numberText(backupBoardMediaCount(counts, media))}개`,
   ];
   return parts.join(" · ");
-}
-
-function backupPreviewDetails(counts: Record<string, number> | undefined, media?: BackupItem["media"] | BackupPreview["media"]) {
-  return [
-    ["관찰기록", countFrom(counts, ["lesson_observations", "observationCount"]), "건"],
-    ["학생 비공개", countFrom(counts, ["student_private_details", "studentPrivateDetailCount"]), "건"],
-    ["매일수학 시도", countFrom(counts, ["math_daily_attempts", "mathDailyAttemptCount"]), "건"],
-    ["매일수학 학생 프로필", countFrom(counts, ["math_daily_student_profiles", "mathDailyProfileCount"]), "건"],
-    ["매일수학 보충 세션", countFrom(counts, ["math_daily_review_sessions", "mathDailyReviewSessionCount"]), "건"],
-    ["매일수학 과제", countFrom(counts, ["math_daily_assignments", "mathDailyAssignmentCount"]), "건"],
-    ["매일수학 과제 결과", countFrom(counts, ["math_daily_assignment_results", "mathDailyAssignmentResultCount"]), "건"],
-    ["매일수학 캐시 이력", countFrom(counts, ["math_daily_cache_runs", "mathDailyCacheRunCount"]), "건"],
-    ["게시글 스냅샷", countFrom(counts, ["board_post_snapshots", "boardSnapshotCount"]), "건"],
-    ["보드 미디어", backupBoardMediaCount(counts, media), "개"],
-    ["출결 기록", countFrom(counts, ["attendance_records", "attendanceRecordCount"]), "건"],
-    ["출결 NEIS 확인", countFrom(counts, ["attendance_nais_checks", "attendanceNaisCheckCount"]), "건"],
-    ["출결 증빙 요청", countFrom(counts, ["attendance_document_requests", "attendanceDocumentRequestCount"]), "건"],
-    ["평가 운영", countFrom(counts, ["eval_assignments", "evalAssignmentCount"]), "건"],
-    ["평가 결과", countFrom(counts, ["eval_results", "evalResultCount"]), "건"],
-    ["학생부 초안 세트", countFrom(counts, ["student_record_draft_sets", "studentRecordDraftSetCount"]), "건"],
-    ["학생부 초안", countFrom(counts, ["student_record_drafts", "studentRecordDraftCount"]), "건"],
-    ["Firestore 가져오기 이력", countFrom(counts, ["local_import_runs", "importRunCount"]), "건"],
-    ["임시 기록 수거 이력", countFrom(counts, ["cloud_sync_runs", "cloudSyncRunCount"]), "건"],
-    ["첨부 복사", numeric(media?.copied), "개"],
-    ["첨부 유지", numeric(media?.skipped), "개"],
-    ["첨부 누락", numeric(media?.missing), "개"],
-    ["첨부 실패", numeric(media?.failed), "개"],
-    ["첨부 용량", byteText(media?.bytes), ""],
-  ] as Array<[string, number | string, string]>;
 }
 
 function normalizeBackupList(items: unknown): BackupItem[] {
@@ -554,140 +526,6 @@ function escapeHtml(value: unknown) {
     .replace(/"/g, "&quot;");
 }
 
-function sectionByKey(key: string) {
-  return (localOverview?.sections || []).find((section) => section.key === key) || null;
-}
-
-function recordDisplayTitle(record: unknown, index: number) {
-  const row = (record && typeof record === "object" ? record : {}) as Record<string, unknown>;
-  return String(
-    row.title
-      || row.planName
-      || row.studentName
-      || row.name
-      || row.dateKey
-      || row.id
-      || row.docId
-      || row.recordId
-      || row.assignmentId
-      || row.resultId
-      || `record-${index + 1}`,
-  );
-}
-
-function recordDisplayMeta(record: unknown) {
-  const row = (record && typeof record === "object" ? record : {}) as Record<string, unknown>;
-  const parts = [
-    row.studentCode || row.studentId,
-    row.dateKey || row.scheduledDate || row.linkedDateKey,
-    row.status || row.kind || row.resultMode,
-    row.updatedAtMs ? formatDateTime(Number(row.updatedAtMs)) : "",
-  ].map((item) => String(item || "").trim()).filter(Boolean);
-  return parts.join(" · ") || "-";
-}
-
-function renderDataSections() {
-  const listEl = byId<HTMLElement>("localDataSectionList");
-  const sections = localOverview?.sections || [];
-  if (!sections.length) {
-    listEl.innerHTML = `<p class="data-empty">저장 내용을 아직 불러오지 않았습니다.</p>`;
-    return;
-  }
-  listEl.innerHTML = sections.map((section) => {
-    const selected = section.key === selectedDataSectionKey;
-    return `
-      <button class="data-section-row${selected ? " is-selected" : ""}" type="button" data-data-section="${escapeHtml(section.key)}">
-        <span>${escapeHtml(section.label || section.key)}</span>
-        <strong>${numberText(section.count)}건</strong>
-        <small>${escapeHtml(formatDateTime(section.updatedAtMs))}</small>
-      </button>
-    `;
-  }).join("");
-}
-
-function renderDataRecords() {
-  const listEl = byId<HTMLElement>("localDataRecordList");
-  const detailEl = byId<HTMLElement>("localDataDetail");
-  if (!selectedDataSectionKey) {
-    listEl.innerHTML = `<p class="data-empty">왼쪽에서 데이터 종류를 선택하세요.</p>`;
-    detailEl.textContent = "섹션을 선택하면 상세 payload가 표시됩니다.";
-    return;
-  }
-  if (!localDataRecords.length) {
-    listEl.innerHTML = `<p class="data-empty">선택한 섹션에 저장된 기록이 없습니다.</p>`;
-    detailEl.textContent = "저장된 payload가 없습니다.";
-    return;
-  }
-  listEl.innerHTML = localDataRecords.map((record, index) => `
-    <button class="data-record-row${index === selectedDataRecordIndex ? " is-selected" : ""}" type="button" data-data-record-index="${index}">
-      <strong>${escapeHtml(recordDisplayTitle(record, index))}</strong>
-      <span>${escapeHtml(recordDisplayMeta(record))}</span>
-    </button>
-  `).join("");
-  const selected = localDataRecords[selectedDataRecordIndex >= 0 ? selectedDataRecordIndex : 0];
-  selectedDataRecordIndex = Math.max(0, selectedDataRecordIndex);
-  detailEl.textContent = JSON.stringify(selected, null, 2);
-}
-
-function renderDataOverview() {
-  renderDataSections();
-  renderDataRecords();
-  refreshActionStates();
-}
-
-async function loadDataSection(sectionKey: string) {
-  const tenantId = currentBackupTenantId();
-  const section = sectionByKey(sectionKey);
-  if (!tenantId || !section?.route) return;
-  selectedDataSectionKey = sectionKey;
-  selectedDataRecordIndex = -1;
-  renderDataOverview();
-  const payload = await invoke<{ ok?: boolean; records?: unknown[] }>("list_local_data_section", {
-    tenantId,
-    route: section.route,
-    limit: 10000,
-  });
-  if (payload?.ok === false) throw new Error(String((payload as { error?: string }).error || "local_data_section_failed"));
-  localDataRecords = Array.isArray(payload.records) ? payload.records : [];
-  selectedDataRecordIndex = localDataRecords.length ? 0 : -1;
-  renderDataOverview();
-}
-
-async function loadDataOverview() {
-  const tenantId = currentBackupTenantId();
-  if (!tenantId) {
-    localOverview = null;
-    selectedDataSectionKey = "";
-    localDataRecords = [];
-    selectedDataRecordIndex = -1;
-    setText("dataOverviewStatus", "학급 ID를 입력하거나 다시 연결하기로 학급을 연결해 주세요.");
-    renderDataOverview();
-    return;
-  }
-  setActionBusy("open-data-overview", true);
-  setText("dataOverviewStatus", "로컬 DB 저장 내용을 불러오는 중입니다.");
-  try {
-    localOverview = await invoke<LocalOverview>("get_local_overview", { tenantId });
-    if (localOverview?.ok === false) throw new Error(String(localOverview.error || "local_overview_failed"));
-    const firstWithRecords = (localOverview.sections || []).find((section) => numeric(section.count) > 0)
-      || (localOverview.sections || [])[0]
-      || null;
-    selectedDataSectionKey = selectedDataSectionKey || firstWithRecords?.key || "";
-    setText("dataOverviewStatus", `${tenantId} 로컬 DB 저장 내용을 확인했습니다.`);
-    renderDataOverview();
-    if (selectedDataSectionKey) {
-      await loadDataSection(selectedDataSectionKey);
-    }
-  } catch (error) {
-    setText("dataOverviewStatus", `저장 내용 조회 실패: ${String((error as Error)?.message || error)}`);
-    localDataRecords = [];
-    selectedDataRecordIndex = -1;
-    renderDataOverview();
-  } finally {
-    setActionBusy("open-data-overview", false);
-  }
-}
-
 function setBackupRestoreMessage(message: string, tone: BadgeTone = "neutral") {
   backupRestoreMessage = message;
   backupRestoreTone = tone;
@@ -697,7 +535,11 @@ function renderSummary() {
   const summaryCard = byId<HTMLElement>("summaryCard");
   const pending = numeric(cloudSyncSnapshot?.lastPending);
   const failed = numeric(cloudSyncSnapshot?.lastFailed) + numeric(cloudSyncSnapshot?.lastConflicts);
-  const backupHasError = backupSnapshot?.ok === false || Boolean(backupLoadError);
+  const backupMedia = backupSnapshot?.latestBackup?.media || backupSnapshot?.lastResult?.media;
+  const backupHasError = backupSnapshot?.ok === false
+    || numeric(backupMedia?.failed) > 0
+    || numeric(backupMedia?.missing) > 0
+    || Boolean(backupLoadError);
   const backupConfigured = backupSnapshot?.configured === true;
 
   let tone: "is-ok" | "is-warning" | "is-error" | "is-checking" = "is-checking";
@@ -708,9 +550,9 @@ function renderSummary() {
     tone = "is-error";
     title = "로컬 앱 상태를 확인해야 합니다.";
     description = "PC 설치본 DBHelper가 정상 실행 중인지 확인한 뒤 상태 확인을 눌러 주세요.";
-  } else if (!cloudSyncSnapshot && !cloudSyncLoadError) {
+  } else if ((!cloudSyncSnapshot && !deviceConnectionSnapshot && !cloudSyncLoadError) || (!backupSnapshot && !backupLoadError)) {
     tone = "is-checking";
-  } else if (!cloudSyncSnapshot?.connected || isCredentialMissing(cloudSyncSnapshot)) {
+  } else if (!deviceConnectionSnapshot?.connected && (!cloudSyncSnapshot?.connected || isCredentialMissing(cloudSyncSnapshot))) {
     tone = "is-warning";
     title = "재연결이 필요합니다.";
     description = "브라우저 로그인 정보가 만료되어 자동 수거가 멈춰 있습니다. 다시 연결하면 수거가 재개됩니다.";
@@ -724,17 +566,49 @@ function renderSummary() {
     description = "기록 저장과 자동 수거는 가능하지만 클라우드 폴더 백업은 아직 설정되지 않았습니다.";
   } else {
     tone = "is-ok";
-    title = "정상 작동 중입니다.";
-    description = "이 PC에서 민감기록을 저장하고, 임시 기록을 자동 수거하며, 백업도 준비되어 있습니다.";
+    title = "모든 기능이 정상입니다";
+    description = "민감기록 저장, 임시 기록 수거, 백업이 안전하게 작동하고 있습니다.";
   }
 
-  summaryCard.className = `summary-card ${tone}`;
+  summaryCard.className = `health-summary ${tone}`;
   setText("summaryTitle", title);
   setText("summaryDescription", description);
-  setText("summaryTenantText", tenantLabel(cloudSyncSnapshot));
+  setText("summaryTenantText", tenantLabel(deviceConnectionSnapshot?.connected ? deviceConnectionSnapshot : cloudSyncSnapshot));
   setText("summarySyncText", formatDateTime(latestSyncTime(cloudSyncSnapshot)));
   setText("summaryBackupText", formatDateTime(latestBackupTime(backupSnapshot)));
   setText("summaryPendingText", `${numberText(pending)}건`);
+  setText("healthCheckedText", tone === "is-checking" ? "확인 중" : formatDateTime(Date.now()));
+  const summaryIcon = summaryCard.querySelector<HTMLElement>(".health-summary-icon i");
+  if (summaryIcon) {
+    summaryIcon.className = tone === "is-error"
+      ? "fa-solid fa-triangle-exclamation"
+      : tone === "is-warning"
+        ? "fa-solid fa-exclamation"
+        : tone === "is-checking"
+          ? "fa-solid fa-rotate"
+          : "fa-solid fa-check";
+  }
+  renderHomeStatus({
+    connected: deviceConnectionSnapshot?.connected === true || (cloudSyncSnapshot?.connected === true && !isCredentialMissing(cloudSyncSnapshot)),
+    healthy: tone === "is-ok" || (tone === "is-warning" && backupSnapshot?.configured !== true),
+    tenantLabel: tenantLabel(deviceConnectionSnapshot?.connected ? deviceConnectionSnapshot : cloudSyncSnapshot),
+    syncAtMs: latestSyncTime(cloudSyncSnapshot),
+    backupAtMs: latestBackupTime(backupSnapshot),
+    pending,
+  });
+  const connection = deviceConnectionSnapshot?.connected ? deviceConnectionSnapshot : cloudSyncSnapshot;
+  const connected = deviceConnectionSnapshot?.connected === true || cloudSyncSnapshot?.connected === true;
+  renderSettingsDashboard({
+    connected,
+    needsReconnect: isCredentialMissing(cloudSyncSnapshot),
+    tenantLabel: tenantLabel(connection),
+    accountLabel: accountLabel(connection),
+    backupConfigured: backupSnapshot?.configured === true,
+    backupOk: !backupLoadError && backupSnapshot?.ok !== false,
+    backupLocation: backupSnapshot ? backupFolderLabel(backupSnapshot) : "확인 중",
+    backupLatest: backupSnapshot ? formatDateTime(latestBackupTime(backupSnapshot)) : "확인 중",
+    appVersion: APP_VERSION,
+  });
 }
 
 async function loadStatus() {
@@ -742,7 +616,6 @@ async function loadStatus() {
   const status = await invoke<ServiceStatus>("get_service_status");
   serviceSnapshot = status;
   const statusDot = byId<HTMLSpanElement>("statusDot");
-  const keyInput = byId<HTMLInputElement>("pairingKeyInput");
 
   statusDot.classList.toggle("is-ok", status.ok);
   statusDot.classList.toggle("is-error", !status.ok);
@@ -752,7 +625,25 @@ async function loadStatus() {
   setText("dataDirText", status.dataDir);
   setText("serviceVersionText", status.version);
   setText("servicePortText", status.port ? String(status.port) : "-");
-  keyInput.value = status.pairingKey || "";
+  renderSummary();
+}
+
+async function loadDeviceConnectionStatus() {
+  const result = await invoke<DeviceConnectionStatus>("get_device_connection_status");
+  deviceConnectionSnapshot = result;
+  if (result.connected) {
+    const tenantInput = byId<HTMLInputElement>("backupTenantInput");
+    if (!tenantInput.value.trim() && result.tenantId) tenantInput.value = result.tenantId;
+    deviceAuthorization.render({ ...result, status: "connected" });
+    setBadge("connectionBadge", "정상", "ok");
+    setText("connectionTitle", `${result.tenantName || result.tenantId || "학급"} 연결됨`);
+    setText("connectionMetaText", "교사 로그인으로 승인된 브라우저가 이 PC의 로컬 저장소를 안전하게 사용합니다.");
+    setText("connectionModeText", "웹 로그인 승인");
+    setText("connectionAccountText", result.accountEmail || result.accountDisplayName || "교사 계정");
+    setText("connectionCheckText", formatDateTime(result.connectedAtMs));
+    setHealthPanelState("connectionCard", "ok");
+    setText("healthConnectionAction", "교사 설정 열기");
+  }
   renderSummary();
 }
 
@@ -767,49 +658,38 @@ function renderServiceLoadError(error: unknown) {
 
 function renderConnectionStatus(status?: CloudSyncStatus | null) {
   if (!status?.connected) {
+    setHealthPanelState("connectionCard", "warning");
     setBadge("connectionBadge", "연결 전", "warning");
     setText("connectionTitle", "교사 설정 연결이 필요합니다.");
     setText("connectionMetaText", "교사 설정 화면에서 이 PC 자동 연결을 실행하면 수거와 백업 학급 정보가 연결됩니다.");
     setText("connectionModeText", "자동 연결 대기");
     setText("connectionAccountText", "-");
     setText("connectionCheckText", "-");
+    setText("healthConnectionAction", "PC 연결하기");
     return;
   }
 
   const tenant = tenantLabel(status);
   if (isCredentialMissing(status)) {
+    setHealthPanelState("connectionCard", "warning");
     setBadge("connectionBadge", "재연결 필요", "warning");
     setText("connectionTitle", `${tenant} 연결을 다시 해야 합니다.`);
     setText("connectionMetaText", reconnectMessage(status));
     setText("connectionModeText", "자동 연결 만료");
     setText("connectionAccountText", accountLabel(status));
     setText("connectionCheckText", formatDateTime(latestSyncTime(status)));
+    setText("healthConnectionAction", "다시 연결하기");
     return;
   }
 
+  setHealthPanelState("connectionCard", "ok");
   setBadge("connectionBadge", "정상", "ok");
   setText("connectionTitle", "정상 작동 중입니다.");
   setText("connectionMetaText", "이 PC에서 민감기록을 저장하고, 임시 기록을 자동 수거합니다.");
   setText("connectionModeText", credentialStorageLabel(status.credentialStorage));
   setText("connectionAccountText", accountLabel(status));
   setText("connectionCheckText", formatDateTime(latestSyncTime(status)));
-}
-
-async function openTeacherSettings() {
-  const tenantId = currentBackupTenantId();
-  setActionBusy("open-settings", true);
-  try {
-    const result = await invoke<CommandResult>("open_teacher_settings_url", {
-      url: buildTeacherSettingsUrl(tenantId),
-    });
-    if (!result?.ok) {
-      setText("connectionMetaText", `브라우저 열기 실패: ${result?.error || "open_failed"}`);
-    }
-  } catch (error) {
-    setText("connectionMetaText", `브라우저 열기 실패: ${String((error as Error)?.message || error)}`);
-  } finally {
-    setActionBusy("open-settings", false);
-  }
+  setText("healthConnectionAction", "교사 설정 열기");
 }
 
 function renderCloudSync(status: CloudSyncStatus | null) {
@@ -825,6 +705,8 @@ function renderCloudSync(status: CloudSyncStatus | null) {
     setText("syncFailedCount", "0");
     setText("syncServerCount", "0");
     setText("syncStatus", "자동 연결 후 임시 기록 수거가 백그라운드에서 실행됩니다.");
+    setHealthPanelState("syncCard", "warning");
+    setHidden("healthSyncSettingsAction", false);
     renderSummary();
     refreshActionStates();
     return;
@@ -852,10 +734,13 @@ function renderCloudSync(status: CloudSyncStatus | null) {
   if (!tenantInput.value.trim() && status.tenantId) tenantInput.value = status.tenantId;
 
   if (isCredentialMissing(status)) {
+    setHealthPanelState("syncCard", "warning");
     setBadge("syncBadge", "재연결 필요", "warning");
     setText("cloudSyncText", `${tenantLabel(status)} 자동 수거가 멈춰 있습니다.`);
     setText("syncStatus", reconnectMessage(status));
+    setHidden("healthSyncSettingsAction", false);
   } else if (hasFailure) {
+    setHealthPanelState("syncCard", "error");
     setBadge("syncBadge", "확인 필요", "error");
     setText("cloudSyncText", "마지막 수거에서 확인이 필요한 항목이 있습니다.");
     setText(
@@ -864,10 +749,13 @@ function renderCloudSync(status: CloudSyncStatus | null) {
         ? `문제: ${status.lastError}`
         : `실패 ${failed}건 · 충돌 ${conflicts}건을 확인하세요.`,
     );
+    setHidden("healthSyncSettingsAction", true);
   } else {
+    setHealthPanelState("syncCard", "ok");
     setBadge("syncBadge", "정상", "ok");
     setText("cloudSyncText", imported || serverProcessed || pending ? "마지막 수거 결과를 확인했습니다." : "현재 가져올 임시 기록이 없습니다.");
     setText("syncStatus", `${modeLabel} 방식으로 처리합니다.`);
+    setHidden("healthSyncSettingsAction", true);
   }
 
   renderSummary();
@@ -887,6 +775,8 @@ function renderCloudSyncLoadError(error: unknown) {
   setBadge("syncBadge", "오류", "error");
   setText("cloudSyncText", "자동 수거 상태를 확인하지 못했습니다.");
   setText("syncStatus", `문제: 자동 수거 상태 조회 실패. 원인: ${cloudSyncLoadError}. 해결: 상태 확인을 다시 눌러 주세요.`);
+  setHealthPanelState("syncCard", "error");
+  setHidden("healthSyncSettingsAction", true);
   renderSummary();
   refreshActionStates();
 }
@@ -899,8 +789,11 @@ async function runCloudSyncNow() {
     renderCloudSync(status);
     await loadBackupStatus();
   } catch (error) {
+    cloudSyncLoadError = String((error as Error)?.message || error || "cloud_sync_failed");
     setBadge("syncBadge", "오류", "error");
-    setText("syncStatus", `문제: 임시 기록 수거 실패. 원인: ${String((error as Error)?.message || error)}. 해결: 다시 연결하기 후 재시도하세요.`);
+    setText("syncStatus", `문제: 임시 기록 수거 실패. 원인: ${cloudSyncLoadError}. 해결: 다시 연결하기 후 재시도하세요.`);
+    setHealthPanelState("syncCard", "error");
+    renderSummary();
   } finally {
     setActionBusy("run-sync", false);
   }
@@ -913,15 +806,23 @@ function renderBackupStatus(status: BackupStatus) {
     selectedBackupManifestPath = "";
     backupPreview = null;
     setBadge("backupBadge", "오류", "error");
+    setBadge("healthBackupBadge", "확인 필요", "error");
+    setHealthPanelState("healthBackupCard", "error");
     setText("backupFolderText", "-");
     setText("backupLatestText", "-");
     setText("backupNextText", "-");
     setText("backupMediaText", "-");
+    setText("healthBackupText", "설정된 백업 폴더에 접근할 수 없습니다.");
+    setText("healthBackupLatestText", "-");
+    setText("healthBackupNextText", "-");
+    setText("healthBackupMediaText", "첨부 누락 여부 확인 필요");
     setText(
       "backupStatus",
       `문제: 설정된 백업 폴더에 접근할 수 없습니다. 원인: ${status?.error || "unknown"}. 해결: OneDrive 로그인 상태와 폴더 위치를 확인한 뒤 백업 폴더를 다시 선택하세요.`,
     );
-    setActionLabel("choose-backup-folder", "백업 폴더 다시 선택");
+    setBackupFolderActionLabels("백업 폴더 다시 선택");
+    setHidden("healthBackupRunAction", true);
+    setHidden("healthBackupFolderAction", false);
     renderBackupRestorePanel();
     renderSummary();
     refreshActionStates();
@@ -939,25 +840,43 @@ function renderBackupStatus(status: BackupStatus) {
   const skipped = numeric(media.skipped);
   const missing = numeric(media.missing);
   const failed = numeric(media.failed);
-  const folder = status.tenantBackupDir || status.backupRootDir || "-";
+  const folder = backupFolderLabel(status);
 
   setText("backupFolderText", folder);
   setText("backupLatestText", formatDateTime(latestBackupTime(status)));
   setText("backupNextText", status.configured ? formatDateTime(status.nextRunAtMs) : "-");
-  setText("backupMediaText", `복사 ${numberText(copied)}개 · 유지 ${numberText(skipped)}개${missing ? ` · 누락 ${numberText(missing)}개` : ""}${failed ? ` · 실패 ${numberText(failed)}개` : ""}`);
+  setText("backupMediaText", `${numberText(copied + skipped)}개 · 누락 ${numberText(missing)}개${failed ? ` · 실패 ${numberText(failed)}개` : ""}`);
+  setText("healthBackupLatestText", formatDateTime(latestBackupTime(status)));
+  setText("healthBackupNextText", status.configured ? formatDateTime(status.nextRunAtMs) : "-");
+  setText("healthBackupMediaText", `${numberText(copied + skipped)}개 · 누락 ${numberText(missing)}개${failed ? ` · 실패 ${numberText(failed)}개` : ""}`);
 
   if (!status.configured) {
-    setBadge("backupBadge", "설정 필요", "warning");
+    setHealthPanelState("healthBackupCard", "warning");
+    setBadge("backupBadge", "자동 백업 설정 필요", "warning");
+    setBadge("healthBackupBadge", "설정 필요", "warning");
     setText("backupStatus", "백업 폴더를 선택하면 하루 1회 자동 백업됩니다.");
-    setActionLabel("choose-backup-folder", "백업 폴더 선택");
-  } else if (failed > 0) {
-    setBadge("backupBadge", "확인 필요", "error");
-    setText("backupStatus", "첨부파일 일부를 백업하지 못했습니다. 백업 폴더 접근 권한과 남은 용량을 확인하세요.");
-    setActionLabel("choose-backup-folder", "백업 폴더 변경");
+    setText("healthBackupText", "학교 OneDrive 안에 백업 폴더를 선택해 주세요.");
+    setBackupFolderActionLabels("백업 폴더 선택");
+    setHidden("healthBackupRunAction", true);
+    setHidden("healthBackupFolderAction", false);
+  } else if (failed > 0 || missing > 0) {
+    setHealthPanelState("healthBackupCard", "error");
+    setBadge("backupBadge", "첨부파일 백업 확인 필요", "error");
+    setBadge("healthBackupBadge", "확인 필요", "error");
+    setText("backupStatus", "첨부파일 일부가 누락되거나 백업되지 않았습니다. 백업 폴더 접근 권한과 남은 용량을 확인하세요.");
+    setText("healthBackupText", "첨부파일 일부가 누락되거나 백업되지 않았습니다.");
+    setBackupFolderActionLabels("백업 폴더 변경");
+    setHidden("healthBackupRunAction", true);
+    setHidden("healthBackupFolderAction", false);
   } else {
-    setBadge("backupBadge", "설정됨", "ok");
-    setText("backupStatus", "DB 백업과 보드 첨부파일 폴더 미러링이 자동으로 실행됩니다.");
-    setActionLabel("choose-backup-folder", "백업 폴더 변경");
+    setHealthPanelState("healthBackupCard", "ok");
+    setBadge("backupBadge", "자동 백업 정상", "ok");
+    setBadge("healthBackupBadge", "정상", "ok");
+    setText("backupStatus", "마지막 자동 백업과 첨부파일 복사를 정상적으로 마쳤습니다.");
+    setText("healthBackupText", "학교 OneDrive에 자동 백업하고 있습니다.");
+    setBackupFolderActionLabels("백업 폴더 변경");
+    setHidden("healthBackupRunAction", false);
+    setHidden("healthBackupFolderAction", true);
   }
 
   renderBackupRestorePanel();
@@ -989,24 +908,23 @@ function renderBackupRestorePanel() {
       "backupRestoreStatus",
       backupRestoreMessage
         || (backupPreview?.ok
-          ? `${backupSourceSummary(backupPreview.source || selected?.source)} 백업입니다. 미리보기를 확인한 뒤 선택 백업 복원을 실행할 수 있습니다.`
+          ? `${formatBackupDateTime(backupPreview.createdAtMs || selected?.createdAtMs)} 백업을 선택했습니다.`
           : "복원할 백업을 선택하면 미리보기를 불러옵니다."),
     );
     listEl.innerHTML = backupList.map((backup, index) => {
       const isSelected = backup.manifestPath === selectedBackupManifestPath;
-      const failed = numeric(backup.media?.failed);
       return `
-        <button class="backup-list-row${isSelected ? " is-selected" : ""}" type="button" data-backup-manifest="${escapeHtml(backup.manifestPath)}">
+        <button class="backup-list-row${isSelected ? " is-selected" : ""}" type="button" data-backup-index="${index}" aria-pressed="${isSelected}">
           <span class="backup-list-row__radio" aria-hidden="true"></span>
+          <span class="backup-list-row__device" aria-hidden="true"><i class="fa-solid fa-desktop"></i></span>
           <span class="backup-list-row__main">
             <strong class="backup-list-row__time">
-              <span>${escapeHtml(formatDateTime(backup.createdAtMs))}</span>
+              <span>${escapeHtml(formatBackupDateTime(backup.createdAtMs))}</span>
               ${index === 0 ? `<span class="backup-list-row__badge">최신</span>` : ""}
             </strong>
-            <span class="backup-list-row__meta">${escapeHtml(backupSourceSummary(backup.source))}</span>
+            <span class="backup-list-row__meta">${escapeHtml(backupSourceListText(backup.source))}</span>
             <span class="backup-list-row__counts">${escapeHtml(backupRowSummary(backup))}</span>
           </span>
-          <span class="backup-list-row__tail">${failed ? "첨부 확인" : `#${escapeHtml(backupShortId(backup))}`}</span>
         </button>
       `;
     }).join("");
@@ -1015,30 +933,22 @@ function renderBackupRestorePanel() {
   const counts = backupPreview?.counts || selected?.counts || {};
   const media = backupPreview?.media || selected?.media || {};
   const source = backupPreview?.source || selected?.source;
-  setText("backupPreviewObservations", backupList.length ? numberText(backupObservationCount(counts)) : "-");
-  setText("backupPreviewPrivateDetails", backupList.length ? numberText(backupPrivateDetailCount(counts)) : "-");
-  setText("backupPreviewMathDaily", backupList.length ? numberText(backupMathDailyCount(counts)) : "-");
-  setText("backupPreviewBoardMedia", backupList.length ? numberText(backupBoardMediaCount(counts, media)) : "-");
+  setText("backupPreviewCare", backupList.length ? `${numberText(backupCareCount(counts))}건` : "-");
+  setText("backupPreviewAttendance", backupList.length ? `${numberText(backupAttendanceCount(counts))}건` : "-");
+  setText("backupPreviewLearning", backupList.length ? `${numberText(backupLearningCount(counts))}건` : "-");
+  setText("backupPreviewStudentRecord", backupList.length ? `${numberText(backupStudentRecordCount(counts))}건` : "-");
+  setText("backupPreviewBoard", backupList.length ? `${numberText(backupBoardSnapshotCount(counts))}건` : "-");
+  setText("backupPreviewAttachments", backupList.length ? `${numberText(backupBoardMediaCount(counts, media))}개` : "-");
   const detailsEl = byId<HTMLElement>("backupPreviewDetails");
   if (!backupList.length) {
     detailsEl.innerHTML = `<p class="restore-preview-empty">복원할 백업을 선택하면 PC 정보와 상세 건수가 표시됩니다.</p>`;
   } else {
-    const rows = backupPreviewDetails(counts, media).map(([label, value, unit]) => {
-      const displayValue = typeof value === "number" ? numberText(value) : value;
-      return `
-        <div class="restore-preview-detail-row">
-          <span>${escapeHtml(label)}</span>
-          <strong>${escapeHtml(displayValue)}${unit ? `<small>${escapeHtml(unit)}</small>` : ""}</strong>
-        </div>
-      `;
-    }).join("");
     detailsEl.innerHTML = `
       <div class="restore-preview-source">
-        <strong>${escapeHtml(backupSourcePcName(source))}</strong>
-        <span>${escapeHtml(backupSourceRelation(source))}</span>
-        <span>${escapeHtml(backupEnvironmentText(source))}</span>
+        <i class="fa-solid fa-desktop" aria-hidden="true"></i>
+        <strong>${escapeHtml(`${backupSourcePcName(source)} / ${backupSourceRelation(source)} / ${backupEnvironmentText(source)}`)}</strong>
+        <span>${escapeHtml(formatBackupDateTime(backupPreview?.createdAtMs || selected?.createdAtMs))} 백업</span>
       </div>
-      <div class="restore-preview-detail-list">${rows}</div>
     `;
   }
   refreshActionStates();
@@ -1103,9 +1013,9 @@ function applyBackupDiscovery(discovery: BackupDiscovery, selectedFolder: string
   }
   const rootDir = discovery.backupRootDir || selectedFolder;
   if (tenants.length > 1 && detected?.tenantId) {
-    setBackupRestoreMessage(`백업 폴더에서 ${tenants.length}개 학급을 찾았습니다. ${detected.tenantId} 백업을 선택했습니다.`, "warning");
+    setBackupRestoreMessage(`백업 폴더에서 ${tenants.length}개 학급을 찾았습니다. 연결된 학급의 백업을 선택했습니다.`, "warning");
   } else if (detected?.tenantId) {
-    setBackupRestoreMessage(`${detected.tenantId} 백업 폴더를 찾았습니다.`, "ok");
+    setBackupRestoreMessage("연결된 학급의 백업 폴더를 찾았습니다.", "ok");
   } else {
     setBackupRestoreMessage("백업 root 폴더를 설정했습니다. 새 백업을 만들면 이곳에 표시됩니다.", "neutral");
   }
@@ -1215,20 +1125,30 @@ async function restoreSelectedBackup() {
   }
   const selected = backupList.find((backup) => backup.manifestPath === manifestPath);
   const sourceText = backupSourceSummary(backupPreview?.source || selected?.source);
-  const ok = window.confirm(`${formatDateTime(selected?.createdAtMs)} · ${sourceText} 백업을 이 PC의 로컬 DB에 병합 복원합니다. 현재 PC의 더 최신 기록은 유지됩니다. 계속할까요?`);
+  const ok = await confirmBackupRestore({
+    date: formatBackupDateTime(selected?.createdAtMs),
+    source: sourceText,
+    summary: "선택한 백업의 자료와 첨부파일을 현재 PC에 병합합니다.",
+  });
   if (!ok) return;
   setActionBusy("restore-backup", true);
-  setBackupRestoreMessage("선택한 백업을 로컬 DB에 병합 복원하는 중입니다.", "neutral");
+  setBackupRestoreMessage("현재 상태 보호 백업을 만든 뒤 선택한 백업을 병합하는 중입니다.", "neutral");
   renderBackupRestorePanel();
   try {
-    const result = await invoke<{ ok?: boolean; imported?: number; mediaRestored?: number; mediaMissing?: number; error?: string }>("restore_local_backup", {
+    const result = await invoke<{ ok?: boolean; imported?: number; mediaRestored?: number; mediaMissing?: number; safetyBackup?: object; error?: string }>("restore_local_backup", {
       tenantId,
       manifestPath,
     });
     if (!result?.ok) {
-      setBackupRestoreMessage(`복원 실패: ${result?.error || "backup_restore_failed"}`, "error");
+      const error = String(result?.error || "backup_restore_failed");
+      setBackupRestoreMessage(
+        error.startsWith("pre_restore_backup_failed:")
+          ? "현재 상태 보호 백업을 만들지 못해 복원을 시작하지 않았습니다. OneDrive 연결과 남은 용량을 확인한 뒤 다시 시도하세요."
+          : `복원 실패: ${error}`,
+        "error",
+      );
     } else {
-      setBackupRestoreMessage(`복원 완료: DB 반영 ${numberText(result.imported)}건, 첨부 복원 ${numberText(result.mediaRestored)}개${numeric(result.mediaMissing) ? `, 누락 ${numberText(result.mediaMissing)}개` : ""}.`, "ok");
+      setBackupRestoreMessage(`보호 백업 후 복원 완료: DB 반영 ${numberText(result.imported)}건, 첨부 복원 ${numberText(result.mediaRestored)}개${numeric(result.mediaMissing) ? `, 누락 ${numberText(result.mediaMissing)}개` : ""}.`, "ok");
       await loadBackupStatus();
     }
   } catch (error) {
@@ -1244,40 +1164,49 @@ async function refreshAll() {
   try {
     await loadStatus().catch(renderServiceLoadError);
     await loadCloudSyncStatus().catch(renderCloudSyncLoadError);
+    await loadDeviceConnectionStatus().catch(() => undefined);
     await loadBackupStatus().catch(renderBackupLoadError);
+    await loadHomeOverview(currentBackupTenantId());
   } finally {
     setActionBusy("refresh-status", false);
   }
 }
 
-function bindUi() {
-  const keyInput = byId<HTMLInputElement>("pairingKeyInput");
-  byId<HTMLButtonElement>("toggleKeyBtn").addEventListener("click", () => {
-    const visible = keyInput.type === "text";
-    keyInput.type = visible ? "password" : "text";
-    byId<HTMLButtonElement>("toggleKeyBtn").textContent = visible ? "보기" : "숨기기";
-  });
+const deviceAuthorization = createDeviceAuthorizationController({
+  setText,
+  setActionBusy: (busy) => setActionBusy("open-settings", busy),
+  onConnected: refreshAll,
+  onStartFailure: (message) => setText("connectionMetaText", message),
+  showSettings: () => document.querySelector<HTMLButtonElement>('.sidebar-link[data-app-view-target="settings"]')?.click(),
+});
 
+function bindUi() {
   document.querySelectorAll<HTMLButtonElement>("button[data-copy-target]").forEach((button) => {
     button.addEventListener("click", async () => {
       const targetId = button.dataset.copyTarget || "";
       const copied = await copyText(copyTargetValue(targetId));
-      setText("copyStatus", copied ? "복사했습니다." : "클립보드 복사에 실패했습니다.");
+      const original = button.textContent || "복사";
+      button.textContent = copied ? "복사됨" : "복사 실패";
+      window.setTimeout(() => { button.textContent = original; }, 1_200);
     });
   });
 
-  actionButtons("open-settings").forEach((button) => button.addEventListener("click", openTeacherSettings));
+  actionButtons("open-settings").forEach((button) => button.addEventListener("click", () => void deviceAuthorization.start()));
+  byId<HTMLButtonElement>("healthConnectionAction").addEventListener("click", () => {
+    const connected = deviceConnectionSnapshot?.connected === true
+      || (cloudSyncSnapshot?.connected === true && !isCredentialMissing(cloudSyncSnapshot));
+    if (connected) {
+      document.querySelector<HTMLButtonElement>('.sidebar-link[data-app-view-target="settings"]')?.click();
+      return;
+    }
+    void deviceAuthorization.start();
+  });
+  byId<HTMLButtonElement>("deviceAuthStart").addEventListener("click", () => void deviceAuthorization.start());
+  byId<HTMLButtonElement>("deviceAuthReopen").addEventListener("click", () => void deviceAuthorization.reopen());
   actionButtons("refresh-status").forEach((button) => button.addEventListener("click", refreshAll));
   actionButtons("run-sync").forEach((button) => button.addEventListener("click", runCloudSyncNow));
   actionButtons("run-backup").forEach((button) => button.addEventListener("click", runBackupNow));
   actionButtons("restore-backup").forEach((button) => button.addEventListener("click", restoreSelectedBackup));
-  actionButtons("open-data-overview").forEach((button) => {
-    button.addEventListener("click", () => {
-      loadDataOverview().catch((error) => {
-        setText("dataOverviewStatus", `저장 내용 조회 실패: ${String((error as Error)?.message || error)}`);
-      });
-    });
-  });
   actionButtons("choose-backup-folder").forEach((button) => {
     button.addEventListener("click", () => {
       chooseBackupFolder().catch((error) => {
@@ -1288,46 +1217,59 @@ function bindUi() {
 
   byId<HTMLElement>("backupList").addEventListener("click", (event) => {
     const target = event.target as HTMLElement | null;
-    const row = target?.closest<HTMLButtonElement>("[data-backup-manifest]");
+    const row = target?.closest<HTMLButtonElement>("[data-backup-index]");
     if (!row) return;
-    selectBackupManifest(row.dataset.backupManifest || "");
-  });
-
-  byId<HTMLElement>("localDataSectionList").addEventListener("click", (event) => {
-    const target = event.target as HTMLElement | null;
-    const row = target?.closest<HTMLButtonElement>("[data-data-section]");
-    if (!row) return;
-    loadDataSection(row.dataset.dataSection || "").catch((error) => {
-      setText("dataOverviewStatus", `섹션 조회 실패: ${String((error as Error)?.message || error)}`);
-    });
-  });
-
-  byId<HTMLElement>("localDataRecordList").addEventListener("click", (event) => {
-    const target = event.target as HTMLElement | null;
-    const row = target?.closest<HTMLButtonElement>("[data-data-record-index]");
-    if (!row) return;
-    selectedDataRecordIndex = Number(row.dataset.dataRecordIndex || 0) || 0;
-    renderDataOverview();
+    const backup = backupList[Number(row.dataset.backupIndex || 0)];
+    selectBackupManifest(backup?.manifestPath || "");
   });
 
   byId<HTMLInputElement>("backupTenantInput").addEventListener("change", () => {
     backupList = [];
     selectedBackupManifestPath = "";
     backupPreview = null;
-    localOverview = null;
-    selectedDataSectionKey = "";
-    localDataRecords = [];
-    selectedDataRecordIndex = -1;
     setBackupRestoreMessage("", "neutral");
-    renderDataOverview();
     loadBackupStatus().catch(renderBackupLoadError);
   });
 }
 
-bindUi();
-renderAppVersion();
-renderDataOverview();
-initSharedArchive();
-refreshAll().catch((error) => {
-  renderServiceLoadError(error);
+const dataExplorer = initDataExplorer({ getTenantId: currentBackupTenantId });
+const studentTimeline = initStudentTimeline({ getTenantId: currentBackupTenantId });
+initHomeDashboard({
+  onViewChange(view, context) {
+    if (view === "data") void dataExplorer.open({ group: context.group, sectionKey: context.sectionKey });
+    if (view === "students") void studentTimeline.open();
+  },
+  onSearch(query) {
+    void dataExplorer.open({ query });
+  },
 });
+bindUi();
+if (designPreview !== "settings") {
+  initSettingsDashboard({ onDisconnected: refreshAll });
+}
+renderAppVersion();
+if (designPreview === "archive") initSharedArchivePreview();
+else initSharedArchive();
+if (designPreview === "auth") {
+  document.querySelector<HTMLButtonElement>('.sidebar-link[data-app-view-target="settings"]')?.click();
+  deviceAuthorization.render({ ok: true, status: "pending", expiresAtMs: Date.now() + 10 * 60 * 1000 });
+} else if (designPreview === "data") {
+  document.querySelector<HTMLButtonElement>('.sidebar-link[data-app-view-target="data"]')?.click();
+} else if (designPreview === "students") {
+  document.querySelector<HTMLButtonElement>('.sidebar-link[data-app-view-target="students"]')?.click();
+} else if (designPreview === "backup") {
+  document.querySelector<HTMLButtonElement>('.sidebar-link[data-app-view-target="backup"]')?.click();
+  initBackupRestorePreview();
+} else if (designPreview === "archive") {
+  document.querySelector<HTMLButtonElement>('.sidebar-link[data-app-view-target="archive"]')?.click();
+} else if (designPreview === "health") {
+  document.querySelector<HTMLButtonElement>('.sidebar-link[data-app-view-target="health"]')?.click();
+  initHealthDashboardPreview();
+} else if (designPreview === "settings") {
+  document.querySelector<HTMLButtonElement>('.sidebar-link[data-app-view-target="settings"]')?.click();
+  initSettingsDashboardPreview();
+} else {
+  refreshAll().catch((error) => {
+    renderServiceLoadError(error);
+  });
+}

@@ -1,12 +1,15 @@
-use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use base64::{engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD}, Engine as _};
 use chrono::{DateTime, Utc};
 mod backup;
 mod cloud_sync;
+mod data_explorer;
+mod desktop_preferences;
 mod shared_archive;
 use rand::{distributions::Alphanumeric, Rng};
 use rusqlite::{params, params_from_iter, Connection, ToSql};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 use std::env;
 use std::fs;
 use std::io::Read;
@@ -15,6 +18,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -29,12 +33,18 @@ const DB_FILE_NAME: &str = "onlineclass-sensitive.sqlite";
 const KEY_FILE_NAME: &str = "pairing-key.txt";
 const BROWSER_LINK_FILE_NAME: &str = "browser-link-tokens.json";
 const BROWSER_LINK_HEADER: &str = "X-OnlineClass-Local-Browser-Token";
+const DEVICE_AUTHORIZATION_API_URL: &str = "https://t.classaimate.com/api/v3/local-store-device-authorizations";
+const DEVICE_AUTHORIZATION_PAGE_URL: &str = "https://t.classaimate.com/connect-local";
+const TEACHER_DATA_SECURITY_URL: &str = "https://t.classaimate.com/admin/settings?tab=data-security";
+const DEVICE_AUTHORIZATION_TTL_MS: i64 = 10 * 60 * 1000;
+const BROWSER_LINK_PICKUP_TTL_MS: i64 = 60 * 1000;
 const HOST: &str = "127.0.0.1";
 const PORTS: [u16; 5] = [51273, 51274, 51275, 51276, 51277];
 const MAX_BODY_BYTES: u64 = 14 * 1024 * 1024;
 const LOCAL_SENSITIVE_STORE_ROUTES: &[&str] = &[
     "/v1/health",
-    "/v1/browser-link/connect",
+    "/v1/browser-link/disconnect",
+    "/v1/device-authorization/browser-link",
     "/v1/observations",
     "/v1/stats",
     "/v1/observations/import",
@@ -124,6 +134,9 @@ struct AppState {
     status: Mutex<ServiceStatus>,
     store: Mutex<Option<Arc<SqliteStore>>>,
     sync_manager: Mutex<Option<Arc<cloud_sync::CloudSyncManager>>>,
+    browser_links: Mutex<Option<Arc<BrowserLinkStore>>>,
+    pending_device_authorization: Mutex<Option<PendingDeviceAuthorization>>,
+    preferences: desktop_preferences::DesktopPreferencesStore,
 }
 
 struct StorePaths {
@@ -148,6 +161,25 @@ struct BrowserLinkToken {
 struct BrowserLinkStore {
     path: PathBuf,
     tokens: Mutex<Vec<BrowserLinkToken>>,
+    pending_requests: Mutex<Vec<PendingBrowserLink>>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PendingBrowserLink {
+    request_id: String,
+    link: BrowserLinkToken,
+    expires_at_ms: i64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PendingDeviceAuthorization {
+    request_id: String,
+    verifier: String,
+    authorization_url: String,
+    created_at_ms: i64,
+    expires_at_ms: i64,
 }
 
 pub(crate) struct SqliteStore {
@@ -802,6 +834,7 @@ impl BrowserLinkStore {
         let path = data_dir.join(BROWSER_LINK_FILE_NAME);
         Ok(Self {
             tokens: Mutex::new(Self::read_tokens(&path)),
+            pending_requests: Mutex::new(Vec::new()),
             path,
         })
     }
@@ -874,25 +907,56 @@ impl BrowserLinkStore {
         Ok(record)
     }
 
-    fn authorize(&self, request: &Request) -> bool {
+    fn issue_for_request(&self, request_id: &str, input: &Value) -> Result<BrowserLinkToken, String> {
+        let safe_request_id = normalize(request_id, 80);
+        if safe_request_id.len() != 43 {
+            return Err("device_authorization_request_invalid".to_string());
+        }
+        let link = self.issue(input)?;
+        let mut pending = self.pending_requests.lock().map_err(|_| "browser_link_lock_failed".to_string())?;
+        pending.retain(|entry| entry.request_id != safe_request_id);
+        pending.push(PendingBrowserLink {
+            request_id: safe_request_id,
+            link: link.clone(),
+            expires_at_ms: now_ms() + BROWSER_LINK_PICKUP_TTL_MS,
+        });
+        Ok(link)
+    }
+
+    fn take_for_request(&self, request_id: &str) -> Result<Option<BrowserLinkToken>, String> {
+        let safe_request_id = normalize(request_id, 80);
+        let mut pending = self.pending_requests.lock().map_err(|_| "browser_link_lock_failed".to_string())?;
+        let now = now_ms();
+        pending.retain(|entry| entry.expires_at_ms > now);
+        let Some(index) = pending.iter().position(|entry| entry.request_id == safe_request_id) else {
+            return Ok(None);
+        };
+        Ok(Some(pending.remove(index).link))
+    }
+
+    fn latest(&self) -> Option<BrowserLinkToken> {
+        self.tokens.lock().ok().and_then(|tokens| tokens.iter().max_by_key(|entry| entry.created_at_ms).cloned())
+    }
+
+    fn authorize_tenant(&self, request: &Request) -> Option<String> {
         let token = normalize(get_header(request, BROWSER_LINK_HEADER), 200);
         if token.is_empty() {
-            return false;
+            return None;
         }
         let mut changed = false;
-        let authorized = {
+        let tenant_id = {
             let mut tokens = match self.tokens.lock() {
                 Ok(tokens) => tokens,
-                Err(_) => return false,
+                Err(_) => return None,
             };
             let now = now_ms();
             let found = tokens.iter_mut().find(|entry| entry.token == token);
             if let Some(entry) = found {
                 entry.last_used_at_ms = now;
                 changed = true;
-                true
+                Some(entry.tenant_id.clone())
             } else {
-                false
+                None
             }
         };
         if changed {
@@ -900,7 +964,7 @@ impl BrowserLinkStore {
                 let _ = self.write_tokens(&tokens);
             }
         }
-        authorized
+        tenant_id
     }
 
     fn revoke_tenant(&self, tenant_id: &str) -> Result<(), String> {
@@ -918,6 +982,36 @@ impl BrowserLinkStore {
             tokens.clone()
         };
         self.write_tokens(&snapshot)
+    }
+
+    fn revoke_request_token(&self, request: &Request) -> Result<bool, String> {
+        let token = normalize(get_header(request, BROWSER_LINK_HEADER), 200);
+        if token.is_empty() {
+            return Ok(false);
+        }
+        let snapshot = {
+            let mut tokens = self.tokens.lock().map_err(|_| "browser_link_lock_failed".to_string())?;
+            let before = tokens.len();
+            tokens.retain(|entry| entry.token != token);
+            if before == tokens.len() {
+                return Ok(false);
+            }
+            tokens.clone()
+        };
+        self.write_tokens(&snapshot)?;
+        Ok(true)
+    }
+
+    fn revoke_all(&self) -> Result<(), String> {
+        {
+            let mut tokens = self.tokens.lock().map_err(|_| "browser_link_lock_failed".to_string())?;
+            tokens.clear();
+            self.write_tokens(&tokens)?;
+        }
+        if let Ok(mut pending) = self.pending_requests.lock() {
+            pending.clear();
+        }
+        Ok(())
     }
 }
 
@@ -3523,7 +3617,7 @@ fn allowed_origin(request: &Request) -> String {
         if let Some(host) = parsed.host_str() {
             if matches!(
                 host,
-                "localhost" | "127.0.0.1" | "::1" | "classaimate.pages.dev" | "classaimate.netlify.app"
+                "localhost" | "127.0.0.1" | "::1" | "classaimate.pages.dev" | "classaimate.netlify.app" | "t.classaimate.com"
             ) {
                 return origin;
             }
@@ -3532,7 +3626,11 @@ fn allowed_origin(request: &Request) -> String {
     "null".to_string()
 }
 
-fn is_authorized(request: &Request, pairing_key: &str, browser_links: &BrowserLinkStore) -> bool {
+fn request_authority(
+    request: &Request,
+    pairing_key: &str,
+    browser_links: &BrowserLinkStore,
+) -> (bool, Option<String>) {
     let header_key = get_header(request, "X-OnlineClass-Local-Store-Key");
     let auth = get_header(request, "Authorization");
     let bearer = auth
@@ -3541,8 +3639,32 @@ fn is_authorized(request: &Request, pairing_key: &str, browser_links: &BrowserLi
         .unwrap_or("")
         .trim()
         .to_string();
-    (!pairing_key.is_empty() && (header_key == pairing_key || bearer == pairing_key))
-        || browser_links.authorize(request)
+    if !pairing_key.is_empty() && (header_key == pairing_key || bearer == pairing_key) {
+        return (true, None);
+    }
+    let browser_tenant = browser_links.authorize_tenant(request);
+    (browser_tenant.is_some(), browser_tenant)
+}
+
+fn scope_tenant_id(explicit: String, browser_tenant: Option<&str>) -> Result<String, String> {
+    let Some(expected) = browser_tenant else { return Ok(explicit); };
+    if !explicit.is_empty() && explicit != expected {
+        return Err("tenant_scope_mismatch".to_string());
+    }
+    Ok(expected.to_string())
+}
+
+fn scope_body_to_tenant(mut body: Value, browser_tenant: Option<&str>) -> Result<Value, String> {
+    let Some(expected) = browser_tenant else { return Ok(body); };
+    let Value::Object(ref mut object) = body else {
+        return Err("invalid_json".to_string());
+    };
+    let explicit = normalize_json_text(object.get("tenantId"), 160);
+    if !explicit.is_empty() && explicit != expected {
+        return Err("tenant_scope_mismatch".to_string());
+    }
+    object.insert("tenantId".to_string(), Value::String(expected.to_string()));
+    Ok(body)
 }
 
 fn health_payload(store: &SqliteStore, authorized: bool) -> Value {
@@ -3604,9 +3726,12 @@ fn normalize_teacher_settings_url(url: &str) -> Result<String, String> {
     let scheme = parsed.scheme();
     let host_allowed = matches!(
         host,
-        "classaimate.pages.dev" | "classaimate.netlify.app" | "localhost" | "127.0.0.1"
+        "classaimate.pages.dev" | "classaimate.netlify.app" | "t.classaimate.com" | "localhost" | "127.0.0.1"
     );
     if !host_allowed || !(scheme == "https" || scheme == "http") {
+        return Err("url_not_allowed".to_string());
+    }
+    if host == "t.classaimate.com" && parsed.path().trim_end_matches('/') != "/connect-local" {
         return Err("url_not_allowed".to_string());
     }
     let path = parsed.path().trim_end_matches('/').to_string();
@@ -3663,30 +3788,67 @@ fn handle_request(
 
         let url = parse_request_url(&request)?;
         let path = url.path().to_string();
-        let authorized = is_authorized(&request, &pairing_key, &browser_links);
+        let (authorized, browser_tenant) = request_authority(&request, &pairing_key, &browser_links);
+        let query = |url: &Url, key: &str| -> String {
+            let value = crate::query(url, key);
+            if key != "tenantId" {
+                return value;
+            }
+            scope_tenant_id(value, browser_tenant.as_deref()).unwrap_or_default()
+        };
 
         if request.method() == &Method::Get && path == "/v1/health" {
             return Ok((200, health_payload(&store, authorized)));
         }
 
-        if request.method() == &Method::Post && path == "/v1/browser-link/connect" {
-            let body = read_body(&mut request)?;
-            let status = sync_manager.connect(body.clone())?;
-            let link = browser_links.issue(&body)?;
-            return Ok((200, json!({
-                "ok": true,
-                "tenantId": link.tenant_id,
-                "uid": link.uid,
-                "accountEmail": link.account_email,
-                "accountDisplayName": link.account_display_name,
-                "tenantName": link.tenant_name,
-                "browserToken": link.token,
-                "cloudSyncStatus": status
-            })));
+        if request.method() == &Method::Get && path == "/v1/device-authorization/browser-link" {
+            if origin == "null" || origin == "*" {
+                return Ok((403, json!({ "ok": false, "error": "origin_forbidden" })));
+            }
+            let request_id = query(&url, "requestId");
+            return match browser_links.take_for_request(&request_id)? {
+                Some(link) => Ok((200, json!({
+                    "ok": true,
+                    "requestId": request_id,
+                    "tenantId": link.tenant_id,
+                    "uid": link.uid,
+                    "accountEmail": link.account_email,
+                    "accountDisplayName": link.account_display_name,
+                    "tenantName": link.tenant_name,
+                    "browserToken": link.token
+                }))),
+                None => Ok((409, json!({ "ok": false, "error": "device_authorization_pending" }))),
+            };
         }
 
         if !authorized {
             return Ok((401, json!({ "ok": false, "error": "unauthorized" })));
+        }
+
+        if browser_tenant.is_some() {
+            let explicit_tenant = crate::query(&url, "tenantId");
+            if !explicit_tenant.is_empty() {
+                scope_tenant_id(explicit_tenant, browser_tenant.as_deref())?;
+            }
+        }
+        let read_body = |request: &mut Request| -> Result<Value, String> {
+            scope_body_to_tenant(crate::read_body(request)?, browser_tenant.as_deref())
+        };
+        let assert_sync_scope = |status: &Value| -> Result<(), String> {
+            let Some(expected) = browser_tenant.as_deref() else { return Ok(()); };
+            let connected = status.get("connected").and_then(Value::as_bool).unwrap_or(false);
+            let actual = normalize_json_text(status.get("tenantId"), 160);
+            if connected && actual != expected {
+                return Err("tenant_scope_mismatch".to_string());
+            }
+            Ok(())
+        };
+
+        if request.method() == &Method::Post && path == "/v1/browser-link/disconnect" {
+            if browser_tenant.is_none() || !browser_links.revoke_request_token(&request)? {
+                return Ok((401, json!({ "ok": false, "error": "unauthorized" })));
+            }
+            return Ok((200, json!({ "ok": true, "disconnected": true })));
         }
 
         if request.method() == &Method::Get && path == "/v1/observations" {
@@ -4170,6 +4332,7 @@ fn handle_request(
 
         if request.method() == &Method::Get && path == "/v1/cloud-sync/status" {
             let status = sync_manager.status()?;
+            assert_sync_scope(&status)?;
             return Ok((200, status));
         }
 
@@ -4186,15 +4349,18 @@ fn handle_request(
         }
 
         if request.method() == &Method::Post && path == "/v1/cloud-sync/run" {
+            assert_sync_scope(&sync_manager.status()?)?;
             let status = sync_manager.run_once()?;
             return Ok((200, status));
         }
 
         if request.method() == &Method::Post && path == "/v1/cloud-sync/disconnect" {
-            let current_tenant = sync_manager
-                .status()
-                .ok()
-                .and_then(|status| status.get("tenantId").and_then(|value| value.as_str()).map(|value| value.to_string()))
+            let current_status = sync_manager.status()?;
+            assert_sync_scope(&current_status)?;
+            let current_tenant = current_status
+                .get("tenantId")
+                .and_then(Value::as_str)
+                .map(str::to_string)
                 .unwrap_or_default();
             let status = sync_manager.disconnect()?;
             if !current_tenant.is_empty() {
@@ -4240,6 +4406,7 @@ fn handle_request(
         Err(error) => {
             let status = match error.as_str() {
                 "invalid_json" => 400,
+                "tenant_scope_mismatch" => 403,
                 "body_too_large" => 413,
                 "tenant_id_required" | "date_required" | "period_required" | "student_code_required"
                 | "doc_id_required" | "cloud_sync_session_required" | "conflict_identity_required"
@@ -4283,7 +4450,7 @@ fn bind_server() -> Result<(Server, u16), String> {
     })
 }
 
-fn start_service() -> Result<(ServiceStatus, Arc<SqliteStore>, Arc<cloud_sync::CloudSyncManager>), String> {
+fn start_service() -> Result<(ServiceStatus, Arc<SqliteStore>, Arc<cloud_sync::CloudSyncManager>, Arc<BrowserLinkStore>), String> {
     let paths = resolve_paths();
     fs::create_dir_all(&paths.data_dir).map_err(|e| format!("data_dir_create_failed:{e}"))?;
     let pairing_key = ensure_pairing_key(&paths.key_path)?;
@@ -4325,7 +4492,7 @@ fn start_service() -> Result<(ServiceStatus, Arc<SqliteStore>, Arc<cloud_sync::C
         pairing_key,
         error: None,
     };
-    Ok((status, store, sync_manager))
+    Ok((status, store, sync_manager, browser_links))
 }
 
 #[tauri::command]
@@ -4337,6 +4504,159 @@ fn get_service_status(state: tauri::State<'_, AppState>) -> ServiceStatus {
         .unwrap_or_else(|_| ServiceStatus::failed("status_lock_failed".to_string()))
 }
 
+fn device_authorization_api_url() -> String {
+    env::var("ONLINECLASS_DEVICE_AUTH_API_URL")
+        .ok()
+        .and_then(|value| {
+            let parsed = Url::parse(&value).ok()?;
+            let host = parsed.host_str()?;
+            if (parsed.scheme() == "https" && host == "t.classaimate.com")
+                || (parsed.scheme() == "http" && matches!(host, "localhost" | "127.0.0.1"))
+            {
+                Some(parsed.to_string().trim_end_matches('/').to_string())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| DEVICE_AUTHORIZATION_API_URL.to_string())
+}
+
+fn random_url_token() -> String {
+    let mut bytes = [0_u8; 32];
+    rand::thread_rng().fill(&mut bytes);
+    URL_SAFE_NO_PAD.encode(bytes)
+}
+
+fn sha256_hex(value: &str) -> String {
+    format!("{:x}", Sha256::digest(value.as_bytes()))
+}
+
+fn device_api_response(response: Result<ureq::Response, ureq::Error>) -> Result<Value, String> {
+    match response {
+        Ok(response) => response.into_json::<Value>().map_err(|e| format!("device_authorization_decode_failed:{e}")),
+        Err(ureq::Error::Status(status, response)) => {
+            let payload = response.into_json::<Value>().unwrap_or_else(|_| json!({}));
+            let code = payload.pointer("/error/code").and_then(Value::as_str).unwrap_or("request_failed");
+            Err(format!("device_authorization_http_{status}:{code}"))
+        }
+        Err(ureq::Error::Transport(error)) => Err(format!("device_authorization_network_failed:{error}")),
+    }
+}
+
+fn device_api_data(payload: Value) -> Result<Value, String> {
+    if payload.get("ok").and_then(Value::as_bool) != Some(true) {
+        return Err("device_authorization_response_invalid".to_string());
+    }
+    payload.get("data").cloned().ok_or_else(|| "device_authorization_response_invalid".to_string())
+}
+
+#[tauri::command]
+fn start_device_authorization(state: tauri::State<'_, AppState>) -> Value {
+    let status = match state.status.lock().map(|status| status.clone()) {
+        Ok(status) if status.ok => status,
+        _ => return json!({ "ok": false, "error": "local_store_unavailable" }),
+    };
+    let request_id = random_url_token();
+    let verifier = random_url_token();
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(5))
+        .timeout_read(Duration::from_secs(8))
+        .timeout_write(Duration::from_secs(8))
+        .build();
+    let payload = json!({
+        "requestId": request_id,
+        "verifierDigest": sha256_hex(&verifier),
+        "deviceName": status.pc_name,
+        "platformLabel": format!("{} {}", status.os, status.arch).trim().to_string(),
+        "appVersion": env!("CARGO_PKG_VERSION")
+    });
+    let created = match device_api_response(agent.post(&device_authorization_api_url()).send_json(payload)).and_then(device_api_data) {
+        Ok(value) => value,
+        Err(error) => return json!({ "ok": false, "error": error }),
+    };
+    let created_at_ms = created.get("createdAt").and_then(Value::as_i64).unwrap_or_else(now_ms);
+    let expires_at_ms = created.get("expiresAt").and_then(Value::as_i64)
+        .unwrap_or(created_at_ms + DEVICE_AUTHORIZATION_TTL_MS);
+    let mut page = Url::parse(DEVICE_AUTHORIZATION_PAGE_URL).expect("device authorization page URL");
+    page.query_pairs_mut().append_pair("requestId", &request_id);
+    let pending = PendingDeviceAuthorization {
+        request_id: request_id.clone(),
+        verifier,
+        authorization_url: page.to_string(),
+        created_at_ms,
+        expires_at_ms,
+    };
+    if let Ok(mut slot) = state.pending_device_authorization.lock() {
+        *slot = Some(pending.clone());
+    } else {
+        return json!({ "ok": false, "error": "device_authorization_lock_failed" });
+    }
+    let opened = open_teacher_settings_url(pending.authorization_url.clone());
+    if opened.get("ok").and_then(Value::as_bool) != Some(true) {
+        return json!({ "ok": false, "error": opened.get("error").cloned().unwrap_or(Value::String("open_url_failed".to_string())) });
+    }
+    json!({ "ok": true, "status": "pending", "requestId": request_id, "createdAtMs": created_at_ms, "expiresAtMs": expires_at_ms })
+}
+
+#[tauri::command]
+fn reopen_device_authorization(state: tauri::State<'_, AppState>) -> Value {
+    let pending = state.pending_device_authorization.lock().ok().and_then(|value| value.clone());
+    match pending {
+        Some(pending) if pending.expires_at_ms > now_ms() => open_teacher_settings_url(pending.authorization_url),
+        _ => json!({ "ok": false, "error": "device_authorization_missing" }),
+    }
+}
+
+#[tauri::command]
+fn poll_device_authorization(state: tauri::State<'_, AppState>) -> Value {
+    let pending = match state.pending_device_authorization.lock().ok().and_then(|value| value.clone()) {
+        Some(pending) => pending,
+        None => return json!({ "ok": true, "status": "idle" }),
+    };
+    if pending.expires_at_ms <= now_ms() {
+        if let Ok(mut slot) = state.pending_device_authorization.lock() { *slot = None; }
+        return json!({ "ok": true, "status": "expired" });
+    }
+    let base = device_authorization_api_url();
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(5))
+        .timeout_read(Duration::from_secs(8))
+        .timeout_write(Duration::from_secs(8))
+        .build();
+    let inspected = match device_api_response(agent.get(&format!("{base}/{}", pending.request_id)).call()).and_then(device_api_data) {
+        Ok(value) => value,
+        Err(error) => return json!({ "ok": false, "status": "pending", "error": error }),
+    };
+    let remote_status = inspected.get("status").and_then(Value::as_str).unwrap_or("pending");
+    if remote_status != "approved" {
+        if matches!(remote_status, "expired" | "canceled" | "consumed") {
+            if let Ok(mut slot) = state.pending_device_authorization.lock() { *slot = None; }
+        }
+        return json!({ "ok": true, "status": remote_status, "expiresAtMs": pending.expires_at_ms });
+    }
+    let consumed = match device_api_response(agent.post(&format!("{base}/{}/consume", pending.request_id)).send_json(json!({ "verifier": pending.verifier }))).and_then(device_api_data) {
+        Ok(value) => value,
+        Err(error) => return json!({ "ok": false, "status": "approved", "error": error }),
+    };
+    let browser_links = match state.browser_links.lock().ok().and_then(|value| value.clone()) {
+        Some(store) => store,
+        None => return json!({ "ok": false, "status": "approved", "error": "browser_link_unavailable" }),
+    };
+    let link = match browser_links.issue_for_request(&pending.request_id, &consumed) {
+        Ok(link) => link,
+        Err(error) => return json!({ "ok": false, "status": "approved", "error": error }),
+    };
+    if let Ok(mut slot) = state.pending_device_authorization.lock() { *slot = None; }
+    json!({
+        "ok": true,
+        "status": "connected",
+        "tenantId": link.tenant_id,
+        "tenantName": link.tenant_name,
+        "accountEmail": link.account_email,
+        "accountDisplayName": link.account_display_name
+    })
+}
+
 #[tauri::command]
 fn get_cloud_sync_status(state: tauri::State<'_, AppState>) -> Value {
     state
@@ -4346,6 +4666,71 @@ fn get_cloud_sync_status(state: tauri::State<'_, AppState>) -> Value {
         .and_then(|manager| manager.clone())
         .and_then(|manager| manager.status().ok())
         .unwrap_or_else(|| json!({ "ok": true, "connected": false }))
+}
+
+#[tauri::command]
+fn get_device_connection_status(state: tauri::State<'_, AppState>) -> Value {
+    state.browser_links.lock().ok().and_then(|store| store.clone()).and_then(|store| store.latest())
+        .map(|link| json!({ "ok": true, "connected": true, "tenantId": link.tenant_id, "tenantName": link.tenant_name,
+            "uid": link.uid, "accountEmail": link.account_email, "accountDisplayName": link.account_display_name,
+            "connectedAtMs": link.created_at_ms }))
+        .unwrap_or_else(|| json!({ "ok": true, "connected": false }))
+}
+
+#[tauri::command]
+fn disconnect_local_store(state: tauri::State<'_, AppState>) -> Value {
+    let sync_result = state
+        .sync_manager
+        .lock()
+        .ok()
+        .and_then(|manager| manager.clone())
+        .map(|manager| manager.disconnect())
+        .unwrap_or_else(|| Ok(json!({ "ok": true, "connected": false })));
+    let link_result = state
+        .browser_links
+        .lock()
+        .ok()
+        .and_then(|store| store.clone())
+        .map(|store| store.revoke_all())
+        .unwrap_or(Ok(()));
+    if let Ok(mut pending) = state.pending_device_authorization.lock() {
+        *pending = None;
+    }
+    match (sync_result, link_result) {
+        (Ok(_), Ok(())) => json!({ "ok": true, "connected": false, "localDataPreserved": true }),
+        (sync, links) => json!({
+            "ok": false,
+            "connected": false,
+            "localDataPreserved": true,
+            "error": sync.err().or_else(|| links.err()).unwrap_or_else(|| "disconnect_failed".to_string())
+        }),
+    }
+}
+
+#[tauri::command]
+fn get_desktop_preferences(state: tauri::State<'_, AppState>) -> Value {
+    let value = state.preferences.snapshot();
+    json!({
+        "ok": true,
+        "startWithWindows": value.start_with_windows,
+        "keepRunningOnClose": value.keep_running_on_close
+    })
+}
+
+#[tauri::command]
+fn set_desktop_preference(
+    state: tauri::State<'_, AppState>,
+    key: String,
+    enabled: bool,
+) -> Value {
+    match state.preferences.set(&key, enabled) {
+        Ok(value) => json!({
+            "ok": true,
+            "startWithWindows": value.start_with_windows,
+            "keepRunningOnClose": value.keep_running_on_close
+        }),
+        Err(error) => json!({ "ok": false, "error": error }),
+    }
 }
 
 #[tauri::command]
@@ -4420,19 +4805,17 @@ fn preview_local_backup_restore(
     tenant_id: String,
     manifest_path: String,
 ) -> Value {
-    state
-        .store
-        .lock()
-        .ok()
-        .and_then(|store| store.clone())
-        .and_then(|store| {
-            backup::restore_preview(&store, json!({
-                "tenantId": tenant_id,
-                "manifestPath": manifest_path
-            }))
-            .ok()
-        })
-        .unwrap_or_else(|| json!({ "ok": false, "error": "backup_restore_preview_failed" }))
+    let store = match state.store.lock().ok().and_then(|store| store.clone()) {
+        Some(store) => store,
+        None => return json!({ "ok": false, "error": "local_store_unavailable" }),
+    };
+    match backup::restore_preview(
+        &store,
+        json!({ "tenantId": tenant_id, "manifestPath": manifest_path }),
+    ) {
+        Ok(value) => value,
+        Err(error) => json!({ "ok": false, "error": error }),
+    }
 }
 
 #[tauri::command]
@@ -4441,19 +4824,17 @@ fn restore_local_backup(
     tenant_id: String,
     manifest_path: String,
 ) -> Value {
-    state
-        .store
-        .lock()
-        .ok()
-        .and_then(|store| store.clone())
-        .and_then(|store| {
-            backup::restore(&store, json!({
-                "tenantId": tenant_id,
-                "manifestPath": manifest_path
-            }))
-            .ok()
-        })
-        .unwrap_or_else(|| json!({ "ok": false, "error": "backup_restore_failed" }))
+    let store = match state.store.lock().ok().and_then(|store| store.clone()) {
+        Some(store) => store,
+        None => return json!({ "ok": false, "error": "local_store_unavailable" }),
+    };
+    match backup::restore(
+        &store,
+        json!({ "tenantId": tenant_id, "manifestPath": manifest_path }),
+    ) {
+        Ok(value) => value,
+        Err(error) => json!({ "ok": false, "error": error }),
+    }
 }
 
 #[tauri::command]
@@ -4487,6 +4868,7 @@ fn list_local_data_section(
     };
     let result = match safe_route.as_str() {
         "/v1/observations" => store.list_observations(tenant_id.clone(), String::new(), String::new(), String::new(), 0, String::new()),
+        "/v1/teacher-counseling-sessions" => store.list_teacher_counseling_sessions(tenant_id.clone(), String::new(), String::new(), false, safe_limit),
         "/v1/student-private-details" => store.list_student_private_details(tenant_id.clone(), String::new()),
         "/v1/math-daily/attempts" => store.list_math_daily_attempts(tenant_id.clone(), String::new(), String::new(), String::new(), String::new(), String::new()),
         "/v1/board-post-snapshots" => store.list_board_snapshots(tenant_id.clone(), String::new(), String::new()),
@@ -4514,17 +4896,26 @@ fn open_teacher_settings_url(url: String) -> Value {
         Err(error) => return json!({ "ok": false, "error": error }),
     };
 
+    open_external_url(&safe_url)
+}
+
+#[tauri::command]
+fn open_teacher_data_security_settings() -> Value {
+    open_external_url(TEACHER_DATA_SECURITY_URL)
+}
+
+fn open_external_url(url: &str) -> Value {
     #[cfg(target_os = "windows")]
     let result = Command::new("rundll32.exe")
         .arg("url.dll,FileProtocolHandler")
-        .arg(&safe_url)
+        .arg(url)
         .spawn();
 
     #[cfg(target_os = "macos")]
-    let result = Command::new("open").arg(&safe_url).spawn();
+    let result = Command::new("open").arg(url).spawn();
 
     #[cfg(all(unix, not(target_os = "macos")))]
-    let result = Command::new("xdg-open").arg(&safe_url).spawn();
+    let result = Command::new("xdg-open").arg(url).spawn();
 
     match result {
         Ok(_) => json!({ "ok": true }),
@@ -4592,24 +4983,70 @@ fn setup_tray(app: &mut tauri::App) -> Result<(), tauri::Error> {
     Ok(())
 }
 
-#[cfg(windows)]
-fn enable_autostart() -> Result<(), String> {
-    use winreg::enums::{HKEY_CURRENT_USER, KEY_SET_VALUE};
-    use winreg::RegKey;
+#[cfg(test)]
+mod device_authorization_tests {
+    use super::*;
 
-    let exe = env::current_exe().map_err(|e| format!("autostart_exe_failed:{e}"))?;
-    let command = format!("\"{}\" --background", exe.to_string_lossy());
-    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let (key, _) = hkcu
-        .create_subkey_with_flags("Software\\Microsoft\\Windows\\CurrentVersion\\Run", KEY_SET_VALUE)
-        .map_err(|e| format!("autostart_key_failed:{e}"))?;
-    key.set_value("OnlineClassLocalSensitiveStore", &command)
-        .map_err(|e| format!("autostart_set_failed:{e}"))
-}
+    #[test]
+    fn device_tokens_are_url_safe_and_digest_is_stable() {
+        let token = random_url_token();
+        assert_eq!(token.len(), 43);
+        assert!(token.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_')));
+        assert_eq!(sha256_hex("verifier"), "88c9eae68eb300b2971a2bec9e5a26ff4179fd661d6b7d861e4c6557b9aaee14");
+    }
 
-#[cfg(not(windows))]
-fn enable_autostart() -> Result<(), String> {
-    Ok(())
+    #[test]
+    fn browser_approval_url_is_restricted_to_connect_local() {
+        assert!(normalize_teacher_settings_url("https://t.classaimate.com/connect-local?requestId=abc").is_ok());
+        assert_eq!(normalize_teacher_settings_url("https://t.classaimate.com/admin/settings").unwrap_err(), "url_not_allowed");
+        assert_eq!(normalize_teacher_settings_url("https://example.com/connect-local").unwrap_err(), "url_not_allowed");
+    }
+
+    #[test]
+    fn browser_link_for_request_is_one_time() {
+        let directory = env::temp_dir().join(format!("onlineclass-device-auth-test-{}", random_url_token()));
+        let store = BrowserLinkStore::open(&directory).expect("open browser link store");
+        let request_id = random_url_token();
+        let input = json!({ "tenantId": "tenant-a", "uid": "teacher-a", "accountEmail": "teacher@example.com", "tenantName": "학급" });
+        let issued = store.issue_for_request(&request_id, &input).expect("issue browser link");
+        assert_eq!(store.take_for_request(&request_id).expect("take browser link").expect("present").token, issued.token);
+        assert!(store.take_for_request(&request_id).expect("take again").is_none());
+        fs::remove_dir_all(&directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn browser_link_revoke_all_keeps_local_data_files() {
+        let directory = env::temp_dir().join(format!("onlineclass-browser-link-revoke-test-{}", random_url_token()));
+        let store = BrowserLinkStore::open(&directory).expect("open browser link store");
+        let local_data = directory.join(DB_FILE_NAME);
+        fs::write(&local_data, b"local-data-must-remain").expect("write local data sentinel");
+        store.issue(&json!({
+            "tenantId": "tenant-a",
+            "uid": "teacher-a",
+            "accountEmail": "teacher@example.com",
+            "tenantName": "학급"
+        })).expect("issue browser link");
+        assert!(store.latest().is_some());
+        store.revoke_all().expect("revoke browser links");
+        assert!(store.latest().is_none());
+        assert_eq!(fs::read(&local_data).expect("read local data sentinel"), b"local-data-must-remain");
+        fs::remove_dir_all(&directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn browser_token_scope_overrides_missing_tenant_and_rejects_mismatch() {
+        assert_eq!(scope_tenant_id(String::new(), Some("tenant-a")).unwrap(), "tenant-a");
+        assert_eq!(
+            scope_tenant_id("tenant-b".to_string(), Some("tenant-a")).unwrap_err(),
+            "tenant_scope_mismatch"
+        );
+        let scoped = scope_body_to_tenant(json!({ "recordId": "record-a" }), Some("tenant-a")).unwrap();
+        assert_eq!(scoped.get("tenantId").and_then(Value::as_str), Some("tenant-a"));
+        assert_eq!(
+            scope_body_to_tenant(json!({ "tenantId": "tenant-b" }), Some("tenant-a")).unwrap_err(),
+            "tenant_scope_mismatch"
+        );
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -4618,30 +5055,41 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
+                let keep_running_on_close = window
+                    .app_handle()
+                    .try_state::<AppState>()
+                    .map(|state| state.preferences.snapshot().keep_running_on_close)
+                    .unwrap_or(true);
+                if keep_running_on_close {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
             }
         })
         .setup(|app| {
+            let preferences = desktop_preferences::DesktopPreferencesStore::open(&default_data_dir());
+            if let Err(error) = preferences.apply_startup_setting() {
+                eprintln!("[local-sensitive-store] autostart setup failed: {error}");
+            }
             let started = start_service();
-            let (status, store, sync_manager) = match started {
-                Ok((status, store, sync_manager)) => {
+            let (status, store, sync_manager, browser_links) = match started {
+                Ok((status, store, sync_manager, browser_links)) => {
                     sync_manager.start_background_sync();
                     backup::start_background(Arc::clone(&store));
-                    (status, Some(store), Some(sync_manager))
+                    (status, Some(store), Some(sync_manager), Some(browser_links))
                 }
-                Err(error) => (ServiceStatus::failed(error), None, None),
+                Err(error) => (ServiceStatus::failed(error), None, None, None),
             };
             app.manage(AppState {
                 status: Mutex::new(status),
                 store: Mutex::new(store),
                 sync_manager: Mutex::new(sync_manager),
+                browser_links: Mutex::new(browser_links),
+                pending_device_authorization: Mutex::new(None),
+                preferences,
             });
             if let Err(error) = setup_tray(app) {
                 eprintln!("[local-sensitive-store] tray setup failed: {error}");
-            }
-            if let Err(error) = enable_autostart() {
-                eprintln!("[local-sensitive-store] autostart setup failed: {error}");
             }
             if should_start_background() {
                 hide_main_window(&app.handle());
@@ -4651,6 +5099,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_service_status,
             get_cloud_sync_status,
+            get_device_connection_status,
+            disconnect_local_store,
+            get_desktop_preferences,
+            set_desktop_preference,
             run_cloud_sync,
             get_backup_status,
             set_backup_folder,
@@ -4661,7 +5113,14 @@ pub fn run() {
             restore_local_backup,
             get_local_overview,
             list_local_data_section,
+            data_explorer::list_local_students,
+            data_explorer::search_local_data,
+            data_explorer::open_local_data_attachment,
             open_teacher_settings_url,
+            open_teacher_data_security_settings,
+            start_device_authorization,
+            reopen_device_authorization,
+            poll_device_authorization,
             shared_archive::import_shared_archive,
             shared_archive::list_shared_archives,
             shared_archive::get_shared_archive,
