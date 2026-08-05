@@ -30,7 +30,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-08-05.1-counseling-browser-link-retry";
+pub(crate) const SERVICE_VERSION: &str = "2026-08-05.2-browser-link-safe-handoff";
 const DB_FILE_NAME: &str = "onlineclass-sensitive.sqlite";
 const KEY_FILE_NAME: &str = "pairing-key.txt";
 const BROWSER_LINK_FILE_NAME: &str = "browser-link-tokens.json";
@@ -1376,7 +1376,6 @@ impl BrowserLinkStore {
         };
         let snapshot = {
             let mut tokens = self.tokens.lock().map_err(|_| "browser_link_lock_failed".to_string())?;
-            tokens.retain(|entry| !(entry.tenant_id == record.tenant_id && entry.uid == record.uid));
             tokens.push(record.clone());
             if tokens.len() > 20 {
                 let keep_from = tokens.len().saturating_sub(20);
@@ -1419,12 +1418,16 @@ impl BrowserLinkStore {
         self.tokens.lock().ok().and_then(|tokens| tokens.iter().max_by_key(|entry| entry.created_at_ms).cloned())
     }
 
-    fn authorize_tenant(&self, request: &Request) -> Option<String> {
-        let token = normalize(get_header(request, BROWSER_LINK_HEADER), 200);
+    fn authorize_token(&self, raw_token: &str) -> Option<String> {
+        let token = normalize(raw_token, 200);
         if token.is_empty() {
             return None;
         }
+        let staged = self.pending_requests.lock().ok().map(|pending| {
+            pending.iter().any(|entry| entry.link.token == token)
+        }).unwrap_or(false);
         let mut changed = false;
+        let mut snapshot = None;
         let tenant_id = {
             let mut tokens = match self.tokens.lock() {
                 Ok(tokens) => tokens,
@@ -1435,17 +1438,31 @@ impl BrowserLinkStore {
             if let Some(entry) = found {
                 entry.last_used_at_ms = now;
                 changed = true;
-                Some(entry.tenant_id.clone())
+                let tenant_id = entry.tenant_id.clone();
+                let uid = entry.uid.clone();
+                if staged {
+                    tokens.retain(|entry| entry.token == token
+                        || entry.tenant_id != tenant_id || entry.uid != uid);
+                }
+                snapshot = Some(tokens.clone());
+                Some(tenant_id)
             } else {
                 None
             }
         };
         if changed {
-            if let Ok(tokens) = self.tokens.lock().map(|tokens| tokens.clone()) {
-                let _ = self.write_tokens(&tokens);
+            if let Some(tokens) = snapshot { let _ = self.write_tokens(&tokens); }
+        }
+        if staged && tenant_id.is_some() {
+            if let Ok(mut pending) = self.pending_requests.lock() {
+                pending.retain(|entry| entry.link.token != token);
             }
         }
         tenant_id
+    }
+
+    fn authorize_tenant(&self, request: &Request) -> Option<String> {
+        self.authorize_token(&get_header(request, BROWSER_LINK_HEADER))
     }
 
     fn revoke_tenant(&self, tenant_id: &str) -> Result<(), String> {
@@ -6067,6 +6084,23 @@ mod device_authorization_tests {
         let issued = store.issue_for_request(&request_id, &input).expect("issue browser link");
         assert_eq!(store.read_for_request(&request_id).expect("read browser link").expect("present").token, issued.token);
         assert_eq!(store.read_for_request(&request_id).expect("read again").expect("still present").token, issued.token);
+        fs::remove_dir_all(&directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn staged_browser_link_keeps_previous_token_until_first_authenticated_use() {
+        let directory = env::temp_dir().join(format!("onlineclass-device-auth-handoff-test-{}", random_url_token()));
+        let store = BrowserLinkStore::open(&directory).expect("open browser link store");
+        let input = json!({ "tenantId": "tenant-a", "uid": "teacher-a", "accountEmail": "teacher@example.com", "tenantName": "학급" });
+        let previous = store.issue(&input).expect("issue previous link");
+        let request_id = random_url_token();
+        let staged = store.issue_for_request(&request_id, &input).expect("issue staged link");
+
+        assert_eq!(store.authorize_token(&previous.token).as_deref(), Some("tenant-a"));
+        assert!(store.read_for_request(&request_id).expect("read staged link").is_some());
+        assert_eq!(store.authorize_token(&staged.token).as_deref(), Some("tenant-a"));
+        assert!(store.authorize_token(&previous.token).is_none());
+        assert_eq!(store.authorize_token(&staged.token).as_deref(), Some("tenant-a"));
         fs::remove_dir_all(&directory).expect("remove test directory");
     }
 
