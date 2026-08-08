@@ -30,7 +30,10 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-08-05.2-browser-link-safe-handoff";
+pub(crate) const SERVICE_VERSION: &str = "2026-08-08.1-work-note-atomic-reconcile";
+const WORK_MEETING_ROOT_PAGE_ID: &str = "classaimate:work-meeting-minutes";
+const WORK_MEETING_ROOT_TITLE: &str = "업무 회의록";
+const WORK_MEETING_ROOT_INTRO: &str = "모바일에서 확정한 업무 회의록이 자동으로 들어옵니다.";
 const DB_FILE_NAME: &str = "onlineclass-sensitive.sqlite";
 const KEY_FILE_NAME: &str = "pairing-key.txt";
 const BROWSER_LINK_FILE_NAME: &str = "browser-link-tokens.json";
@@ -83,6 +86,7 @@ const LOCAL_SENSITIVE_STORE_ROUTES: &[&str] = &[
     "/v1/student-record-drafts/import",
     "/v1/import-runs",
     "/v1/work-notes",
+    "/v1/work-notes/reconcile-mobile-meeting-root",
     "/v1/work-note-attachments",
     "/v1/work-notes/import",
     "/v1/work-notes/export",
@@ -1513,6 +1517,28 @@ impl BrowserLinkStore {
     }
 }
 
+fn is_bug_blanked_mobile_meeting_root(page: &Value) -> bool {
+    let blocks = page.get("blocks").and_then(Value::as_array).cloned().unwrap_or_default();
+    let meaningful = blocks.iter().any(|block| {
+        !block.get("text").and_then(Value::as_str).unwrap_or("").trim().is_empty()
+            || matches!(block.get("type").and_then(Value::as_str), Some("attachment" | "page"))
+    });
+    let markdown = page.get("markdown").and_then(Value::as_str).unwrap_or("").trim();
+    !meaningful && blocks.len() <= 1 && (markdown.is_empty() || markdown == format!("# {WORK_MEETING_ROOT_TITLE}"))
+}
+
+fn is_safe_mobile_meeting_root(page: &Value, include_canonical: bool) -> bool {
+    if !include_canonical && page.get("pageId").and_then(Value::as_str) == Some(WORK_MEETING_ROOT_PAGE_ID) { return false; }
+    if page.get("title").and_then(Value::as_str) != Some(WORK_MEETING_ROOT_TITLE)
+        || page.pointer("/properties/systemKind").and_then(Value::as_str) != Some("mobile_work_meeting_folder") { return false; }
+    let blocks = page.get("blocks").and_then(Value::as_array);
+    let untouched = blocks.and_then(|value| value.first()).and_then(|block| block.get("id")).and_then(Value::as_str) == Some("work-meeting-root-intro")
+        && blocks.and_then(|value| value.first()).and_then(|block| block.get("text")).and_then(Value::as_str) == Some(WORK_MEETING_ROOT_INTRO)
+        && blocks.and_then(|value| value.get(1)).and_then(|block| block.get("id")).and_then(Value::as_str) == Some("work-meeting-root-end")
+        && page.get("markdown").and_then(Value::as_str) == Some(&format!("# {WORK_MEETING_ROOT_TITLE}\n\n{WORK_MEETING_ROOT_INTRO}"));
+    untouched || is_bug_blanked_mobile_meeting_root(page)
+}
+
 impl SqliteStore {
     fn open(db_path: PathBuf) -> Result<Self, String> {
         if let Some(parent) = db_path.parent() {
@@ -1982,6 +2008,73 @@ impl SqliteStore {
         transaction.commit().map_err(|e|format!("db_work_note_commit_failed:{e}"))?;
         work_note_attachments::delete_local_paths(self, &attachment_paths);
         Ok(json!({"ok":true,"deleted":deleted}))
+    }
+
+    fn reconcile_mobile_meeting_root(&self, tenant_id: String, ensure_root: bool) -> Result<Value, String> {
+        let tenant = normalize_tenant_id(Some(&Value::String(tenant_id)));
+        if tenant.is_empty() { return Err("tenant_id_required".to_string()); }
+        let now = Utc::now().timestamp_millis();
+        let mut conn = self.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
+        let transaction = conn.transaction().map_err(|e| format!("db_work_note_transaction_failed:{e}"))?;
+        let pages = {
+            let mut statement = transaction.prepare("SELECT page_id,parent_id,title,emoji,position,properties_json,document_json,markdown,created_at_ms,updated_at_ms FROM work_note_pages WHERE tenant_id=?1 ORDER BY COALESCE(parent_id,''),position,updated_at_ms DESC")
+                .map_err(|e| format!("db_work_note_query_prepare_failed:{e}"))?;
+            let rows = statement.query_map(params![tenant], |row| {
+                let properties_raw: String = row.get(5)?;
+                let blocks_raw: String = row.get(6)?;
+                Ok(json!({
+                    "tenantId": tenant, "pageId": row.get::<_, String>(0)?, "parentId": row.get::<_, Option<String>>(1)?,
+                    "title": row.get::<_, String>(2)?, "emoji": row.get::<_, String>(3)?, "position": row.get::<_, i64>(4)?,
+                    "properties": serde_json::from_str::<Value>(&properties_raw).unwrap_or_else(|_| json!({})),
+                    "blocks": serde_json::from_str::<Value>(&blocks_raw).unwrap_or_else(|_| json!([])), "markdown": row.get::<_, String>(7)?,
+                    "createdAtMs": row.get::<_, i64>(8)?, "updatedAtMs": row.get::<_, i64>(9)?
+                }))
+            }).map_err(|e| format!("db_work_note_query_failed:{e}"))?;
+            let mut result = Vec::new();
+            for row in rows { result.push(row.map_err(|e| format!("db_work_note_row_failed:{e}"))?); }
+            result
+        };
+        let canonical = pages.iter().find(|page| page.get("pageId").and_then(Value::as_str) == Some(WORK_MEETING_ROOT_PAGE_ID));
+        if canonical.is_some_and(|page| page.pointer("/properties/systemKind").and_then(Value::as_str) != Some("mobile_work_meeting_folder")) {
+            return Err("work_note_mobile_meeting_root_conflict".to_string());
+        }
+        let generated = pages.iter().filter(|page| page.get("title").and_then(Value::as_str) == Some(WORK_MEETING_ROOT_TITLE)
+            && page.pointer("/properties/systemKind").and_then(Value::as_str) == Some("mobile_work_meeting_folder")).collect::<Vec<_>>();
+        let duplicates = generated.iter().filter(|page| is_safe_mobile_meeting_root(page, false)).map(|page| page.get("pageId").and_then(Value::as_str).unwrap_or("").to_string()).collect::<Vec<_>>();
+        let mut preserved = generated.iter().filter(|page| page.get("pageId").and_then(Value::as_str) != Some(WORK_MEETING_ROOT_PAGE_ID) && !is_safe_mobile_meeting_root(page, false)).count();
+        let should_have_root = canonical.is_some() || ensure_root || !duplicates.is_empty();
+        if canonical.is_none() && should_have_root || canonical.is_some_and(|page| is_safe_mobile_meeting_root(page, true) && is_bug_blanked_mobile_meeting_root(page)) {
+            let created_at = canonical.and_then(|page| page.get("createdAtMs").and_then(Value::as_i64)).unwrap_or(now);
+            let properties = json!({"systemKind":"mobile_work_meeting_folder","schemaVersion":1,"tags":[WORK_MEETING_ROOT_TITLE]}).to_string();
+            let blocks = json!([
+                {"id":"work-meeting-root-intro","type":"callout","text":WORK_MEETING_ROOT_INTRO},
+                {"id":"work-meeting-root-end","type":"text","text":""}
+            ]).to_string();
+            let markdown = format!("# {WORK_MEETING_ROOT_TITLE}\n\n{WORK_MEETING_ROOT_INTRO}");
+            transaction.execute(r#"INSERT INTO work_note_pages(tenant_id,page_id,parent_id,title,emoji,position,properties_json,document_json,markdown,created_at_ms,updated_at_ms)
+                VALUES(?1,?2,NULL,?3,'🗂️',0,?4,?5,?6,?7,?8) ON CONFLICT(tenant_id,page_id) DO UPDATE SET parent_id=NULL,title=excluded.title,emoji=excluded.emoji,position=0,properties_json=excluded.properties_json,document_json=excluded.document_json,markdown=excluded.markdown,updated_at_ms=excluded.updated_at_ms"#,
+                params![tenant,WORK_MEETING_ROOT_PAGE_ID,WORK_MEETING_ROOT_TITLE,properties,blocks,markdown,created_at,now])
+                .map_err(|e| format!("db_work_note_upsert_failed:{e}"))?;
+            transaction.execute("DELETE FROM work_note_pages_fts WHERE tenant_id=?1 AND page_id=?2", params![tenant,WORK_MEETING_ROOT_PAGE_ID]).map_err(|e| format!("db_work_note_fts_delete_failed:{e}"))?;
+            transaction.execute("INSERT INTO work_note_pages_fts(tenant_id,page_id,title,markdown) VALUES(?1,?2,?3,?4)", params![tenant,WORK_MEETING_ROOT_PAGE_ID,WORK_MEETING_ROOT_TITLE,markdown]).map_err(|e| format!("db_work_note_fts_insert_failed:{e}"))?;
+        }
+        let mut deduplicated = 0usize;
+        if should_have_root {
+            for duplicate in duplicates {
+                let attachment: i64 = transaction.query_row("SELECT COUNT(*) FROM work_note_attachments WHERE tenant_id=?1 AND page_id=?2", params![tenant,duplicate], |row| row.get(0)).map_err(|e| format!("db_work_note_attachment_query_failed:{e}"))?;
+                let unsafe_child = pages.iter().any(|page| page.get("parentId").and_then(Value::as_str) == Some(duplicate.as_str())
+                    && page.pointer("/properties/systemKind").and_then(Value::as_str) != Some("mobile_work_meeting"));
+                if attachment > 0 || unsafe_child { preserved += 1; continue; }
+                transaction.execute("UPDATE work_note_pages SET parent_id=?1,updated_at_ms=?2 WHERE tenant_id=?3 AND parent_id=?4", params![WORK_MEETING_ROOT_PAGE_ID,now,tenant,duplicate]).map_err(|e| format!("db_work_note_reparent_failed:{e}"))?;
+                transaction.execute("DELETE FROM work_note_pages_fts WHERE tenant_id=?1 AND page_id=?2", params![tenant,duplicate]).map_err(|e| format!("db_work_note_fts_delete_failed:{e}"))?;
+                let deleted = transaction.execute("DELETE FROM work_note_pages WHERE tenant_id=?1 AND page_id=?2", params![tenant,duplicate]).map_err(|e| format!("db_work_note_delete_failed:{e}"))?;
+                if deleted != 1 { return Err("work_note_mobile_meeting_reconcile_failed".to_string()); }
+                deduplicated += 1;
+            }
+        }
+        transaction.commit().map_err(|e| format!("db_work_note_commit_failed:{e}"))?;
+        drop(conn);
+        Ok(json!({"ok":true,"deduplicated":deduplicated,"preserved":preserved,"records":self.list_work_notes(tenant,String::new())?}))
     }
 
     pub(crate) fn upsert_observation(&self, input: Value) -> Result<Value, String> {
@@ -4843,6 +4936,13 @@ fn handle_request(
             return Ok((200, json!({ "ok": true, "records": records })));
         }
 
+        if request.method() == &Method::Post && path == "/v1/work-notes/reconcile-mobile-meeting-root" {
+            let body = read_body(&mut request)?;
+            let tenant_id = normalize_json_text(body.get("tenantId"), 160);
+            let ensure_root = body.get("ensureRoot").and_then(Value::as_bool).unwrap_or(false);
+            return Ok((200, store.reconcile_mobile_meeting_root(tenant_id, ensure_root)?));
+        }
+
         if request.method() == &Method::Get && path.starts_with("/v1/work-notes/") {
             let page_id = path.trim_start_matches("/v1/work-notes/").to_string();
             return match store.get_work_note(query(&url, "tenantId"), page_id)? {
@@ -6136,6 +6236,33 @@ mod device_authorization_tests {
             scope_body_to_tenant(json!({ "tenantId": "tenant-b" }), Some("tenant-a")).unwrap_err(),
             "tenant_scope_mismatch"
         );
+    }
+
+    #[test]
+    fn work_meeting_root_reconcile_is_atomic_and_preserves_user_content() {
+        let root = env::temp_dir().join(format!("onlineclass-work-note-reconcile-{}-{}", std::process::id(), now_ms()));
+        fs::create_dir_all(&root).expect("create work note test directory");
+        let store = SqliteStore::open(root.join("store.sqlite")).expect("open work note store");
+        let system_root = |page_id: &str, blocks: Value| json!({
+            "tenantId":"tenant-a","pageId":page_id,"parentId":null,"title":WORK_MEETING_ROOT_TITLE,"emoji":"🗂️","position":0,
+            "properties":{"systemKind":"mobile_work_meeting_folder","schemaVersion":1},"blocks":blocks,"markdown":format!("# {WORK_MEETING_ROOT_TITLE}")
+        });
+        store.upsert_work_note(system_root("duplicate:encoded root", json!([]))).expect("save blank duplicate");
+        store.upsert_work_note(system_root("duplicate:user root", json!([{"id":"user","type":"text","text":"보존할 메모"}]))).expect("save modified duplicate");
+        store.upsert_work_note(json!({
+            "tenantId":"tenant-a","pageId":"classaimate:work-meeting:draft-1","parentId":"duplicate:encoded root","title":"회의","emoji":"📝","position":1,
+            "properties":{"systemKind":"mobile_work_meeting"},"blocks":[{"id":"body","type":"text","text":"회의 내용"}],"markdown":"# 회의"
+        })).expect("save meeting child");
+        let result = store.reconcile_mobile_meeting_root("tenant-a".to_string(), true).expect("reconcile roots");
+        assert_eq!(result["deduplicated"], 1);
+        assert_eq!(result["preserved"], 1);
+        let records = result["records"].as_array().expect("records");
+        assert!(records.iter().any(|page| page["pageId"] == WORK_MEETING_ROOT_PAGE_ID));
+        assert!(records.iter().any(|page| page["pageId"] == "duplicate:user root"));
+        assert!(!records.iter().any(|page| page["pageId"] == "duplicate:encoded root"));
+        assert_eq!(records.iter().find(|page| page["pageId"] == "classaimate:work-meeting:draft-1").expect("moved child")["parentId"], WORK_MEETING_ROOT_PAGE_ID);
+        drop(store);
+        fs::remove_dir_all(root).expect("remove work note test directory");
     }
 
     #[test]
