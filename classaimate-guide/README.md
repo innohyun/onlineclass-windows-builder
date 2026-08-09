@@ -1,0 +1,1 @@
+ClassAiMate user-guide screenshot assets. All visible school/student data are fictional guide fixtures.
