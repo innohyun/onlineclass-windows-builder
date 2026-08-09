@@ -194,13 +194,17 @@ fn manifest_hash(manifest: &Value) -> Result<String, String> {
 
 #[tauri::command]
 pub(crate) fn import_shared_archive(base_url: String, code: String) -> Value {
-    match import_archive(&base_url, &code) {
+    match import_archive(&base_url, &code, "") {
         Ok(value) => value,
         Err(error) => json!({"ok":false,"error":error}),
     }
 }
 
-fn import_archive(base_url: &str, code: &str) -> Result<Value, String> {
+pub(crate) fn import_archive_for_tenant(base_url: &str, code: &str, tenant_id: &str) -> Result<Value, String> {
+    import_archive(base_url, code, tenant_id)
+}
+
+fn import_archive(base_url: &str, code: &str, expected_tenant_id: &str) -> Result<Value, String> {
     let root = api_root(base_url)?;
     let safe_code = code.trim();
     if safe_code.len() != 43 || !safe_code.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-')) {
@@ -212,6 +216,10 @@ fn import_archive(base_url: &str, code: &str) -> Result<Value, String> {
     let auth = || format!("Archive {capability}");
     let manifest = get_json(agent.get(&format!("{root}/api/v3/archive-export/manifest")).set("Authorization", &auth()))?;
     let archive = manifest.get("archive").ok_or("archive_manifest_invalid")?;
+    let archive_tenant_id = archive.get("tenantId").and_then(Value::as_str).ok_or("archive_tenant_missing")?;
+    if !expected_tenant_id.is_empty() && archive_tenant_id != expected_tenant_id {
+        return Err("archive_tenant_mismatch".to_string());
+    }
     let archive_id = archive.get("id").and_then(Value::as_str).ok_or("archive_id_missing")?;
     if archive_id.is_empty() || archive_id.len() > 128 || !archive_id.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | ':' | '.')) {
         return Err("archive_id_invalid".to_string());
@@ -289,7 +297,7 @@ fn import_archive(base_url: &str, code: &str) -> Result<Value, String> {
         tx.commit().map_err(|e| format!("archive_db_commit_failed:{e}"))?;
     }
     send_json(agent.post(&format!("{root}/api/v3/archive-export/complete")).set("Authorization", &auth()), json!({"manifestSha256":expected_manifest}))?;
-    Ok(json!({"ok":true,"archiveId":archive_id,"title":archive.get("title"),"recordCount":record_rows.len(),"fileCount":local_files.len()}))
+    Ok(json!({"ok":true,"archiveId":archive_id,"tenantId":archive_tenant_id,"title":archive.get("title"),"recordCount":record_rows.len(),"fileCount":local_files.len()}))
 }
 
 #[tauri::command]

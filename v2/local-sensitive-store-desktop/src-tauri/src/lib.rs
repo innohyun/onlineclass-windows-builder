@@ -30,7 +30,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-08-08.1-work-note-atomic-reconcile";
+pub(crate) const SERVICE_VERSION: &str = "2026-08-10.1-automatic-shared-archive";
 const WORK_MEETING_ROOT_PAGE_ID: &str = "classaimate:work-meeting-minutes";
 const WORK_MEETING_ROOT_TITLE: &str = "업무 회의록";
 const WORK_MEETING_ROOT_INTRO: &str = "모바일에서 확정한 업무 회의록이 자동으로 들어옵니다.";
@@ -101,6 +101,8 @@ const LOCAL_SENSITIVE_STORE_ROUTES: &[&str] = &[
     "/v1/backups/list",
     "/v1/backups/restore-preview",
     "/v1/backups/restore",
+    "/v1/shared-archives/import",
+    "/v1/shared-archives/import-jobs",
 ];
 const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 4] = [
     "non_lesson_observations",
@@ -4903,6 +4905,42 @@ fn handle_request(
                 return Ok((401, json!({ "ok": false, "error": "unauthorized" })));
             }
             return Ok((200, json!({ "ok": true, "disconnected": true })));
+        }
+
+        if request.method() == &Method::Post && path == "/v1/shared-archives/import" {
+            let body = read_body(&mut request)?;
+            let tenant_id = normalize_json_text(body.get("tenantId"), 160);
+            let code = normalize_json_text(body.get("code"), 80);
+            if tenant_id.is_empty() { return Err("tenant_id_required".to_string()); }
+            if code.is_empty() { return Err("archive_code_invalid".to_string()); }
+            let job_id = format!("shared-archive-{}", random_url_token());
+            let base_url = env::var("ONLINECLASS_ARCHIVE_API_URL")
+                .unwrap_or_else(|_| "https://t.classaimate.com".to_string());
+            let started_at = now_ms();
+            let imported = shared_archive::import_archive_for_tenant(&base_url, &code, &tenant_id);
+            let (status, result, error) = match imported {
+                Ok(value) => ("completed", value, Value::Null),
+                Err(message) => ("failed", Value::Null, Value::String(message)),
+            };
+            let job = json!({
+                "tenantId": tenant_id, "id": job_id, "jobId": job_id,
+                "kind": "shared_archive", "status": status, "result": result,
+                "error": error, "startedAtMs": started_at, "finishedAtMs": now_ms()
+            });
+            store.record_import_run(job.clone())?;
+            return Ok((200, json!({ "ok": true, "job": job })));
+        }
+
+        if request.method() == &Method::Get && path.starts_with("/v1/shared-archives/import-jobs/") {
+            let job_id = normalize(path.trim_start_matches("/v1/shared-archives/import-jobs/"), 128);
+            let tenant_id = query(&url, "tenantId");
+            if job_id.is_empty() || tenant_id.is_empty() { return Err("tenant_id_required".to_string()); }
+            let jobs = store.list_import_runs(tenant_id, "shared_archive".to_string(), String::new(), 100)?;
+            let job = jobs.into_iter().find(|item| item.get("jobId").and_then(Value::as_str) == Some(job_id.as_str()));
+            return match job {
+                Some(value) => Ok((200, json!({ "ok": true, "job": value }))),
+                None => Ok((404, json!({ "ok": false, "error": "archive_import_job_not_found" }))),
+            };
         }
 
         if request.method() == &Method::Get && path == "/v1/observations" {
