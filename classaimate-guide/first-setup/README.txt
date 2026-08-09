@@ -1,0 +1,1 @@
+ClassAiMate user-guide screenshot assets. Fake demo data only.
