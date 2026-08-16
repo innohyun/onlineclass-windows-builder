@@ -30,7 +30,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-08-10.1-automatic-shared-archive";
+pub(crate) const SERVICE_VERSION: &str = "2026-08-16.1-work-note-tree-move";
 const WORK_MEETING_ROOT_PAGE_ID: &str = "classaimate:work-meeting-minutes";
 const WORK_MEETING_ROOT_TITLE: &str = "업무 회의록";
 const WORK_MEETING_ROOT_INTRO: &str = "모바일에서 확정한 업무 회의록이 자동으로 들어옵니다.";
@@ -86,6 +86,7 @@ const LOCAL_SENSITIVE_STORE_ROUTES: &[&str] = &[
     "/v1/student-record-drafts/import",
     "/v1/import-runs",
     "/v1/work-notes",
+    "/v1/work-notes/move",
     "/v1/work-notes/reconcile-mobile-meeting-root",
     "/v1/work-note-attachments",
     "/v1/work-notes/import",
@@ -104,10 +105,11 @@ const LOCAL_SENSITIVE_STORE_ROUTES: &[&str] = &[
     "/v1/shared-archives/import",
     "/v1/shared-archives/import-jobs",
 ];
-const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 4] = [
+const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 5] = [
     "non_lesson_observations",
     "teacher_local_records",
     "work_notes",
+    "work_note_tree_move",
     "counseling_local_authority",
 ];
 
@@ -1965,7 +1967,7 @@ impl SqliteStore {
         let search = normalize(&query, 200);
         let conn = self.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
         let (sql, values): (&str, Vec<String>) = if search.is_empty() {
-            ("SELECT p.tenant_id,p.page_id,p.parent_id,p.title,p.emoji,p.position,p.properties_json,p.document_json,p.markdown,p.created_at_ms,p.updated_at_ms FROM work_note_pages p WHERE p.tenant_id=?1 ORDER BY COALESCE(p.parent_id,''),p.position,p.updated_at_ms DESC", vec![tenant])
+            ("SELECT p.tenant_id,p.page_id,p.parent_id,p.title,p.emoji,p.position,p.properties_json,p.document_json,p.markdown,p.created_at_ms,p.updated_at_ms FROM work_note_pages p WHERE p.tenant_id=?1 ORDER BY COALESCE(p.parent_id,''),p.position,p.page_id", vec![tenant])
         } else {
             let terms = search.split_whitespace().map(|term| format!("\"{}\"*", term.replace('"', "\"\""))).collect::<Vec<_>>().join(" AND ");
             ("SELECT p.tenant_id,p.page_id,p.parent_id,p.title,p.emoji,p.position,p.properties_json,p.document_json,p.markdown,p.created_at_ms,p.updated_at_ms FROM work_note_pages_fts f JOIN work_note_pages p ON p.tenant_id=f.tenant_id AND p.page_id=f.page_id WHERE f.tenant_id=?1 AND work_note_pages_fts MATCH ?2 ORDER BY rank,p.updated_at_ms DESC LIMIT 100", vec![tenant, terms])
@@ -2010,6 +2012,40 @@ impl SqliteStore {
         transaction.commit().map_err(|e|format!("db_work_note_commit_failed:{e}"))?;
         work_note_attachments::delete_local_paths(self, &attachment_paths);
         Ok(json!({"ok":true,"deleted":deleted}))
+    }
+
+    fn move_work_note(&self, input: Value) -> Result<Value, String> {
+        #[derive(Clone)] struct Page { id: String, parent: Option<String>, position: i64 }
+        let tenant = normalize_tenant_id(input.get("tenantId"));
+        let source_id = normalize_id_segment(input.get("pageId"), 180);
+        let target_id = normalize_id_segment(input.get("targetPageId"), 180);
+        let placement = normalize_json_text(input.get("placement"), 16);
+        if tenant.is_empty() { return Err("tenant_id_required".to_string()); }
+        if source_id.is_empty() || target_id.is_empty() { return Err("work_note_page_id_required".to_string()); }
+        if !["before", "inside", "after"].contains(&placement.as_str()) { return Err("work_note_move_placement_invalid".to_string()); }
+        if source_id == target_id || source_id == "root" { return Err("work_note_root_move_forbidden".to_string()); }
+        if placement != "inside" && target_id == "root" { return Err("work_note_root_sibling_forbidden".to_string()); }
+        let records = self.list_work_notes(tenant.clone(), String::new())?;
+        let pages = records.iter().map(|value| Page {
+            id: value.get("pageId").and_then(Value::as_str).unwrap_or("").to_string(),
+            parent: value.get("parentId").and_then(Value::as_str).map(str::to_string),
+            position: value.get("position").and_then(Value::as_i64).unwrap_or(0),
+        }).collect::<Vec<_>>();
+        let source = pages.iter().find(|page| page.id == source_id).cloned().ok_or_else(|| "work_note_not_found".to_string())?;
+        let target = pages.iter().find(|page| page.id == target_id).cloned().ok_or_else(|| "work_note_not_found".to_string())?;
+        let destination_parent = if placement == "inside" { Some(target_id.clone()) } else { target.parent.clone() };
+        let mut cursor = destination_parent.clone();
+        while let Some(parent_id) = cursor { if parent_id == source_id { return Err("work_note_parent_cycle".to_string()); } cursor = pages.iter().find(|page| page.id == parent_id).and_then(|page| page.parent.clone()); }
+        let mut parent_ids = vec![source.parent.clone()];if source.parent != destination_parent { parent_ids.push(destination_parent.clone()); }
+        let mut groups = parent_ids.into_iter().map(|parent| { let mut group=pages.iter().filter(|page| page.id!=source_id&&page.parent==parent).cloned().collect::<Vec<_>>();group.sort_by(|a,b|a.position.cmp(&b.position).then(a.id.cmp(&b.id)));(parent,group) }).collect::<Vec<_>>();
+        let destination = groups.iter_mut().find(|(parent,_)| *parent == destination_parent).ok_or_else(|| "work_note_move_target_changed".to_string())?;
+        let index = if placement == "inside" { destination.1.len() } else { destination.1.iter().position(|page|page.id==target_id).ok_or_else(|| "work_note_move_target_changed".to_string())? + if placement == "after" {1}else{0} };
+        let mut moved=source.clone();moved.parent=destination_parent.clone();destination.1.insert(index,moved);
+        let mut changed=Vec::new();for(parent,group) in groups { for(position,page) in group.into_iter().enumerate(){if page.parent!=parent||page.position!=position as i64{changed.push((page.id,parent.clone(),position as i64));}} }
+        let now=Utc::now().timestamp_millis();let mut conn=self.conn.lock().map_err(|_|"db_lock_failed".to_string())?;let transaction=conn.transaction().map_err(|e|format!("db_work_note_transaction_failed:{e}"))?;
+        for(page_id,parent,position) in &changed { transaction.execute("UPDATE work_note_pages SET parent_id=?1,position=?2,updated_at_ms=?3 WHERE tenant_id=?4 AND page_id=?5",params![parent,position,now,tenant,page_id]).map_err(|e|format!("db_work_note_move_failed:{e}"))?; }
+        transaction.commit().map_err(|e|format!("db_work_note_commit_failed:{e}"))?;drop(conn);
+        Ok(json!({"ok":true,"records":self.list_work_notes(tenant,String::new())?,"changed":changed.iter().map(|(page_id,parent_id,position)|json!({"pageId":page_id,"parentId":parent_id,"position":position})).collect::<Vec<_>>()}))
     }
 
     fn reconcile_mobile_meeting_root(&self, tenant_id: String, ensure_root: bool) -> Result<Value, String> {
@@ -4726,11 +4762,12 @@ fn request_error_status(error: &str) -> u16 {
         | "counseling_content_required" | "counseling_reply_content_required"
         | "counseling_source_hash_mismatch" | "counseling_duplicate_request_id"
         | "counseling_duplicate_teacher_note_id"
-        | "work_note_page_id_required" | "work_note_parent_cycle"
+        | "work_note_page_id_required" | "work_note_parent_cycle" | "work_note_move_placement_invalid"
         | "work_note_attachment_id_required" | "work_note_attachment_path_invalid"
         | "backup_root_required" | "backup_root_inside_local_store"
         | "backup_manifest_required" | "backup_manifest_outside_configured_root" | "backup_db_required" => 400,
-        "work_note_has_children" | "counseling_import_run_conflict" => 409,
+        "work_note_has_children" | "work_note_root_move_forbidden" | "work_note_root_sibling_forbidden"
+        | "work_note_move_target_changed" | "counseling_import_run_conflict" => 409,
         "student_photo_content_type_invalid" | "student_photo_data_invalid"
         | "student_photo_size_invalid" | "student_photo_digest_mismatch" => 400,
         "media_not_found" | "media_file_missing" | "work_note_not_found"
@@ -4979,6 +5016,11 @@ fn handle_request(
             let tenant_id = normalize_json_text(body.get("tenantId"), 160);
             let ensure_root = body.get("ensureRoot").and_then(Value::as_bool).unwrap_or(false);
             return Ok((200, store.reconcile_mobile_meeting_root(tenant_id, ensure_root)?));
+        }
+
+        if request.method() == &Method::Post && path == "/v1/work-notes/move" {
+            let body = read_body(&mut request)?;
+            return Ok((200, store.move_work_note(body)?));
         }
 
         if request.method() == &Method::Get && path.starts_with("/v1/work-notes/") {
@@ -6301,6 +6343,23 @@ mod device_authorization_tests {
         assert_eq!(records.iter().find(|page| page["pageId"] == "classaimate:work-meeting:draft-1").expect("moved child")["parentId"], WORK_MEETING_ROOT_PAGE_ID);
         drop(store);
         fs::remove_dir_all(root).expect("remove work note test directory");
+    }
+
+    #[test]
+    fn work_note_tree_move_reindexes_siblings_and_rejects_cycles() {
+        let root = env::temp_dir().join(format!("onlineclass-work-note-move-{}-{}", std::process::id(), now_ms()));
+        fs::create_dir_all(&root).expect("create work note move directory");
+        let store = SqliteStore::open(root.join("store.sqlite")).expect("open work note store");
+        for (page_id,parent_id,position) in [("root",None,0),("a",Some("root"),2),("b",Some("root"),2),("c",Some("root"),2),("d",Some("a"),0)] {
+            store.upsert_work_note(json!({"tenantId":"tenant-a","pageId":page_id,"parentId":parent_id,"title":page_id,"blocks":[],"markdown":"","position":position})).expect("save page");
+        }
+        store.move_work_note(json!({"tenantId":"tenant-a","pageId":"c","targetPageId":"a","placement":"before"})).expect("move before");
+        store.move_work_note(json!({"tenantId":"tenant-a","pageId":"b","targetPageId":"a","placement":"inside"})).expect("move inside");
+        let result=store.move_work_note(json!({"tenantId":"tenant-a","pageId":"c","targetPageId":"b","placement":"after"})).expect("move after");
+        let children=result["records"].as_array().expect("records").iter().filter(|page|page["parentId"]=="a").map(|page|(page["pageId"].as_str().unwrap().to_string(),page["position"].as_i64().unwrap())).collect::<Vec<_>>();
+        assert_eq!(children,vec![("d".to_string(),0),("b".to_string(),1),("c".to_string(),2)]);
+        assert_eq!(store.move_work_note(json!({"tenantId":"tenant-a","pageId":"a","targetPageId":"d","placement":"inside"})).unwrap_err(),"work_note_parent_cycle");
+        drop(store);fs::remove_dir_all(root).expect("remove work note move directory");
     }
 
     #[test]
