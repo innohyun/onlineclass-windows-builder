@@ -1,5 +1,6 @@
 use super::*;
-use std::collections::HashMap;
+use rusqlite::{params_from_iter, types::Value as SqlValue, OptionalExtension};
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug)]
 struct RestoreMediaPlan {
@@ -85,6 +86,9 @@ fn stage_restore_media(
     tenant_id: &str,
     manifest_path: &Path,
     manifest: &Value,
+    allowed_media: Option<&HashSet<String>>,
+    allowed_attachments: Option<&HashSet<String>>,
+    force: bool,
 ) -> Result<(PathBuf, Vec<RestoreMediaPlan>, i64, i64), String> {
     let backup_id = manifest.get("backupId").and_then(Value::as_str).unwrap_or("backup");
     let staging_root = store
@@ -122,7 +126,8 @@ fn stage_restore_media(
         let local_path_text = normalize_json_text(record.get("localPath"), 600);
         let archived_at_ms = record.get("archivedAtMs").and_then(Value::as_i64).unwrap_or(0);
         if media_id.is_empty()
-            || current_media_timestamps.get(&media_id).copied().unwrap_or(i64::MIN) > archived_at_ms
+            || allowed_media.is_some_and(|allowed| !allowed.contains(&media_id))
+            || (!force && current_media_timestamps.get(&media_id).copied().unwrap_or(i64::MIN) > archived_at_ms)
         {
             continue;
         }
@@ -177,7 +182,10 @@ fn stage_restore_media(
         let backup_relative = normalize_json_text(record.get("backupRelativePath"), 600);
         let local_path_text = normalize_json_text(record.get("localPath"), 600);
         let updated_at_ms = record.get("updatedAtMs").and_then(Value::as_i64).unwrap_or(0);
-        if attachment_id.is_empty() || current_attachment_timestamps.get(&attachment_id).copied().unwrap_or(i64::MIN) > updated_at_ms { continue; }
+        if attachment_id.is_empty()
+            || allowed_attachments.is_some_and(|allowed| !allowed.contains(&attachment_id))
+            || (!force && current_attachment_timestamps.get(&attachment_id).copied().unwrap_or(i64::MIN) > updated_at_ms)
+        { continue; }
         let Some(backup_relative_path) = safe_relative_path(&backup_relative) else { continue; };
         let Some(local_path) = safe_relative_path(&local_path_text) else { continue; };
         let source_path = manifest_path.parent().unwrap_or_else(|| Path::new(".")).join(backup_relative_path);
@@ -222,7 +230,8 @@ where
         .and_then(|value| value.as_str())
         .ok_or_else(|| "backup_db_required".to_string())?;
     let db_path = manifest_path.parent().unwrap_or_else(|| Path::new(".")).join(db_relative);
-    let (staging_root, media_plans, media_missing, work_note_attachments_missing) = stage_restore_media(store, &tenant_id, &manifest_path, &manifest)?;
+    let (staging_root, media_plans, media_missing, work_note_attachments_missing) =
+        stage_restore_media(store, &tenant_id, &manifest_path, &manifest, None, None, false)?;
     let applied_media = match apply_staged_media(&media_plans) {
         Ok(applied) => applied,
         Err(error) => {
@@ -331,7 +340,479 @@ where
 }
 
 pub(super) fn restore(store: &SqliteStore, body: Value) -> Result<Value, String> {
-    restore_with_prebackup(store, body, |store, tenant_id| run_now(store, tenant_id))
+    restore_with_prebackup(store, body, |store, tenant_id| {
+        run_with_kind(store, tenant_id, "pre_restore", None)
+    })
+}
+
+#[derive(Clone, Debug)]
+struct SyncRecord {
+    table_name: String,
+    record_key: String,
+    key_values: Vec<SqlValue>,
+    changed_generation: i64,
+    record_version: i64,
+    tombstone: bool,
+}
+
+fn json_key_value(value: &Value) -> Result<SqlValue, String> {
+    match value {
+        Value::String(value) => Ok(SqlValue::Text(value.clone())),
+        Value::Number(value) if value.is_i64() => Ok(SqlValue::Integer(value.as_i64().unwrap_or(0))),
+        Value::Number(value) if value.is_u64() && value.as_u64().unwrap_or(0) <= i64::MAX as u64 => {
+            Ok(SqlValue::Integer(value.as_u64().unwrap_or(0) as i64))
+        }
+        _ => Err("backup_sync_record_key_invalid".to_string()),
+    }
+}
+
+fn parse_sync_records(manifest: &Value, generation: i64) -> Result<Vec<SyncRecord>, String> {
+    let records = manifest
+        .get("sync")
+        .and_then(|sync| sync.get("records"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| "backup_sync_records_required".to_string())?;
+    let mut parsed = Vec::with_capacity(records.len());
+    for record in records {
+        let table_name = normalize_json_text(record.get("table"), 120);
+        let table = BACKUP_TABLES
+            .iter()
+            .find(|table| table.name == table_name && table.name != "cloud_sync_runs")
+            .ok_or_else(|| "backup_sync_table_invalid".to_string())?;
+        let key = record
+            .get("recordKey")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "backup_sync_record_key_invalid".to_string())?;
+        let expected = table
+            .key_columns
+            .iter()
+            .filter(|column| **column != "tenant_id")
+            .count();
+        if key.len() != expected {
+            return Err("backup_sync_record_key_invalid".to_string());
+        }
+        let changed_generation = record.get("changedGeneration").and_then(Value::as_i64).unwrap_or(0);
+        if changed_generation < 1 || changed_generation > generation {
+            return Err("backup_sync_changed_generation_invalid".to_string());
+        }
+        parsed.push(SyncRecord {
+            table_name,
+            record_key: serde_json::to_string(key)
+                .map_err(|e| format!("backup_sync_record_key_encode_failed:{e}"))?,
+            key_values: key.iter().map(json_key_value).collect::<Result<Vec<_>, _>>()?,
+            changed_generation,
+            record_version: record.get("recordVersion").and_then(Value::as_i64).unwrap_or(1).max(1),
+            tombstone: record.get("tombstone").and_then(Value::as_bool).unwrap_or(false),
+        });
+    }
+    Ok(parsed)
+}
+
+fn record_where(table: &BackupTable) -> String {
+    table
+        .key_columns
+        .iter()
+        .copied()
+        .filter(|column| *column != "tenant_id")
+        .enumerate()
+        .map(|(index, column)| format!("{column} = ?{}", index + 2))
+        .collect::<Vec<_>>()
+        .join(" AND ")
+}
+
+fn record_params(tenant_id: &str, record: &SyncRecord) -> Vec<SqlValue> {
+    let mut values = Vec::with_capacity(record.key_values.len() + 1);
+    values.push(SqlValue::Text(tenant_id.to_string()));
+    values.extend(record.key_values.iter().cloned());
+    values
+}
+
+fn row_json_expression(table: &BackupTable, alias: &str) -> String {
+    table
+        .columns
+        .iter()
+        .flat_map(|column| [format!("'{column}'"), format!("{alias}.{column}")])
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn current_record_json(
+    transaction: &rusqlite::Transaction<'_>,
+    table: &BackupTable,
+    tenant_id: &str,
+    record: &SyncRecord,
+) -> Result<Option<String>, String> {
+    let sql = format!(
+        "SELECT json_object({json}) FROM main.{name} AS current
+         WHERE current.tenant_id = ?1 AND {where_clause}",
+        json = row_json_expression(table, "current"),
+        name = table.name,
+        where_clause = record_where(table),
+    );
+    transaction
+        .query_row(&sql, params_from_iter(record_params(tenant_id, record)), |row| row.get(0))
+        .optional()
+        .map_err(|e| format!("restore_sync_current_record_failed:{}:{e}", table.name))
+}
+
+fn attached_record_json(
+    transaction: &rusqlite::Transaction<'_>,
+    table: &BackupTable,
+    tenant_id: &str,
+    record: &SyncRecord,
+) -> Result<Option<String>, String> {
+    let sql = format!(
+        "SELECT json_object({json}) FROM restore.{name} AS incoming
+         WHERE incoming.tenant_id = ?1 AND {where_clause}",
+        json = row_json_expression(table, "incoming"),
+        name = table.name,
+        where_clause = record_where(table),
+    );
+    transaction
+        .query_row(&sql, params_from_iter(record_params(tenant_id, record)), |row| row.get(0))
+        .optional()
+        .map_err(|e| format!("restore_sync_attached_record_failed:{}:{e}", table.name))
+}
+
+fn local_record_is_dirty(
+    transaction: &rusqlite::Transaction<'_>,
+    tenant_id: &str,
+    record: &SyncRecord,
+) -> Result<bool, String> {
+    transaction
+        .query_row(
+            "SELECT changed_generation = 0 FROM local_store_device_sync_records
+             WHERE tenant_id = ?1 AND table_name = ?2 AND record_key = ?3",
+            params![tenant_id, record.table_name, record.record_key],
+            |row| row.get::<_, bool>(0),
+        )
+        .optional()
+        .map(|value| value.unwrap_or(false))
+        .map_err(|e| format!("restore_sync_dirty_check_failed:{e}"))
+}
+
+fn archive_conflict(
+    transaction: &rusqlite::Transaction<'_>,
+    tenant_id: &str,
+    record: &SyncRecord,
+    losing_generation: i64,
+    winning_generation: i64,
+    payload_json: &str,
+) -> Result<(), String> {
+    transaction
+        .execute(
+            "INSERT INTO local_store_device_sync_conflicts (
+               conflict_id, tenant_id, table_name, record_key, losing_generation,
+               winning_generation, payload_json, captured_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                crate::random_url_token(),
+                tenant_id,
+                record.table_name,
+                record.record_key,
+                losing_generation,
+                winning_generation,
+                payload_json,
+                now_ms(),
+            ],
+        )
+        .map_err(|e| format!("restore_sync_conflict_archive_failed:{e}"))?;
+    Ok(())
+}
+
+fn upsert_sync_record(
+    transaction: &rusqlite::Transaction<'_>,
+    tenant_id: &str,
+    record: &SyncRecord,
+) -> Result<(), String> {
+    transaction
+        .execute(
+            "INSERT INTO local_store_device_sync_records (
+               tenant_id, table_name, record_key, dirty_base_generation,
+               record_version, changed_generation, tombstone, changed_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?4, ?6, ?7)
+             ON CONFLICT(tenant_id, table_name, record_key) DO UPDATE SET
+               dirty_base_generation = excluded.dirty_base_generation,
+               record_version = MAX(record_version, excluded.record_version),
+               changed_generation = excluded.changed_generation,
+               tombstone = excluded.tombstone,
+               changed_at_ms = excluded.changed_at_ms",
+            params![
+                tenant_id,
+                record.table_name,
+                record.record_key,
+                record.changed_generation,
+                record.record_version,
+                i64::from(record.tombstone),
+                now_ms(),
+            ],
+        )
+        .map_err(|e| format!("restore_sync_record_state_failed:{e}"))?;
+    Ok(())
+}
+
+pub(super) fn restore_generation(
+    store: &SqliteStore,
+    tenant_id: &str,
+    manifest_path: &Path,
+    generation: i64,
+    latest_status: &str,
+    force_all: bool,
+) -> Result<Value, String> {
+    let manifest = read_manifest(manifest_path)?;
+    if manifest.get("version").and_then(Value::as_i64) != Some(3)
+        || manifest.get("tenantId").and_then(Value::as_str) != Some(tenant_id)
+        || generation < 1
+    {
+        return Err("backup_sync_manifest_invalid".to_string());
+    }
+    seed_sync_records(store, tenant_id)?;
+    let state = local_sync_state(store, tenant_id)?;
+    if generation <= state.applied_generation {
+        return Ok(json!({ "ok": true, "applied": false, "generation": state.applied_generation }));
+    }
+    let records = parse_sync_records(&manifest, generation)?;
+    let applicable = records
+        .iter()
+        .filter(|record| force_all || state.applied_generation == 0 || record.changed_generation > state.applied_generation)
+        .cloned()
+        .collect::<Vec<_>>();
+    let allowed_media = applicable
+        .iter()
+        .filter(|record| record.table_name == "board_media_files" && !record.tombstone)
+        .filter_map(|record| record.key_values.first())
+        .filter_map(|value| match value { SqlValue::Text(value) => Some(value.clone()), _ => None })
+        .collect::<HashSet<_>>();
+    let allowed_attachments = applicable
+        .iter()
+        .filter(|record| record.table_name == "work_note_attachments" && !record.tombstone)
+        .filter_map(|record| record.key_values.first())
+        .filter_map(|value| match value { SqlValue::Text(value) => Some(value.clone()), _ => None })
+        .collect::<HashSet<_>>();
+    let safety_backup = run_with_kind(store, tenant_id.to_string(), "pre_restore", None)
+        .map_err(|error| format!("pre_restore_backup_failed:{error}"))?;
+    let safety_media = safety_backup.get("media").cloned().unwrap_or_else(|| json!({}));
+    let safety_attachments = safety_backup
+        .get("workNoteAttachments")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    if safety_backup.get("ok").and_then(Value::as_bool) != Some(true)
+        || safety_media.get("missing").and_then(Value::as_i64).unwrap_or(0) > 0
+        || safety_media.get("failed").and_then(Value::as_i64).unwrap_or(0) > 0
+        || safety_attachments.get("missing").and_then(Value::as_i64).unwrap_or(0) > 0
+        || safety_attachments.get("failed").and_then(Value::as_i64).unwrap_or(0) > 0
+    {
+        return Err("pre_restore_backup_failed:safety_backup_incomplete".to_string());
+    }
+    let db_relative = manifest
+        .get("db")
+        .and_then(|db| db.get("relativePath"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| "backup_db_required".to_string())?;
+    let db_path = manifest_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(db_relative);
+    let (staging_root, media_plans, media_missing, attachment_missing) = stage_restore_media(
+        store,
+        tenant_id,
+        manifest_path,
+        &manifest,
+        Some(&allowed_media),
+        Some(&allowed_attachments),
+        true,
+    )?;
+    if media_missing > 0 || attachment_missing > 0 {
+        let _ = fs::remove_dir_all(&staging_root);
+        return Err("backup_sync_artifact_missing".to_string());
+    }
+    let applied_media = match apply_staged_media(&media_plans) {
+        Ok(applied) => applied,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&staging_root);
+            return Err(error);
+        }
+    };
+    let mut conn = store.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
+    if let Err(error) = conn.execute(
+        "ATTACH DATABASE ?1 AS restore",
+        params![db_path.to_string_lossy().to_string()],
+    ) {
+        rollback_applied_media(&applied_media);
+        let _ = fs::remove_dir_all(&staging_root);
+        return Err(format!("restore_db_attach_failed:{error}"));
+    }
+    let result = (|| -> Result<(i64, i64, Vec<PathBuf>), String> {
+        let transaction = conn
+            .transaction()
+            .map_err(|e| format!("restore_transaction_begin_failed:{e}"))?;
+        transaction
+            .execute(
+                "UPDATE local_store_device_sync_state SET applying = 1 WHERE tenant_id = ?1",
+                params![tenant_id],
+            )
+            .map_err(|e| format!("restore_sync_applying_failed:{e}"))?;
+        let mut imported = 0i64;
+        let mut conflicts = 0i64;
+        let mut deleted_files = Vec::new();
+        for record in &applicable {
+            let table = BACKUP_TABLES
+                .iter()
+                .find(|table| table.name == record.table_name)
+                .ok_or_else(|| "backup_sync_table_invalid".to_string())?;
+            if !table_exists(&transaction, table.name)?
+                || !attached_table_exists(&transaction, "restore", table.name)?
+            {
+                continue;
+            }
+            let current = current_record_json(&transaction, table, tenant_id, record)?;
+            let incoming = if record.tombstone {
+                None
+            } else {
+                Some(
+                    attached_record_json(&transaction, table, tenant_id, record)?
+                        .ok_or_else(|| "backup_sync_record_missing".to_string())?,
+                )
+            };
+            if local_record_is_dirty(&transaction, tenant_id, record)?
+                && current.is_some()
+                && current.as_ref() != incoming.as_ref()
+            {
+                archive_conflict(
+                    &transaction,
+                    tenant_id,
+                    record,
+                    state.applied_generation,
+                    generation,
+                    current.as_deref().unwrap_or("{}"),
+                )?;
+                conflicts += 1;
+            }
+            let values = record_params(tenant_id, record);
+            let where_clause = record_where(table);
+            if record.tombstone {
+                if matches!(table.name, "board_media_files" | "work_note_attachments") {
+                    let path_sql = format!(
+                        "SELECT local_path FROM main.{name} WHERE tenant_id = ?1 AND {where_clause}",
+                        name = table.name,
+                    );
+                    if let Some(relative) = transaction
+                        .query_row(&path_sql, params_from_iter(values.clone()), |row| row.get::<_, String>(0))
+                        .optional()
+                        .map_err(|e| format!("restore_sync_deleted_path_failed:{e}"))?
+                    {
+                        if let Some(relative) = safe_relative_path(&relative) {
+                            deleted_files.push(store.data_dir.join(relative));
+                        }
+                    }
+                }
+                let sql = format!(
+                    "DELETE FROM main.{name} WHERE tenant_id = ?1 AND {where_clause}",
+                    name = table.name,
+                );
+                imported += transaction
+                    .execute(&sql, params_from_iter(values))
+                    .map_err(|e| format!("restore_sync_delete_failed:{}:{e}", table.name))?
+                    as i64;
+            } else {
+                let columns = table.columns.join(", ");
+                let update_set = table
+                    .columns
+                    .iter()
+                    .copied()
+                    .filter(|column| !table.key_columns.contains(column))
+                    .map(|column| format!("{column} = excluded.{column}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let sql = format!(
+                    "INSERT INTO main.{name} ({columns})
+                     SELECT {columns} FROM restore.{name} WHERE tenant_id = ?1 AND {where_clause}
+                     ON CONFLICT({keys}) DO UPDATE SET {update_set}",
+                    name = table.name,
+                    keys = table.key_columns.join(", "),
+                );
+                imported += transaction
+                    .execute(&sql, params_from_iter(values))
+                    .map_err(|e| format!("restore_sync_merge_failed:{}:{e}", table.name))?
+                    as i64;
+            }
+            upsert_sync_record(&transaction, tenant_id, record)?;
+        }
+        for plan in &media_plans {
+            let relative = plan
+                .target_path
+                .strip_prefix(&store.data_dir)
+                .map_err(|_| "restore_media_target_outside_store".to_string())?
+                .to_string_lossy()
+                .to_string();
+            let sql = if plan.kind == "work_note_attachment" {
+                "UPDATE work_note_attachments SET local_path = ?1 WHERE tenant_id = ?2 AND attachment_id = ?3"
+            } else {
+                "UPDATE board_media_files SET local_path = ?1 WHERE tenant_id = ?2 AND media_id = ?3"
+            };
+            transaction
+                .execute(sql, params![relative, tenant_id, plan.record_id])
+                .map_err(|e| format!("restore_media_path_update_failed:{e}"))?;
+        }
+        transaction
+            .execute("DELETE FROM work_note_pages_fts WHERE tenant_id = ?1", params![tenant_id])
+            .map_err(|e| format!("restore_work_note_fts_delete_failed:{e}"))?;
+        transaction
+            .execute(
+                "INSERT INTO work_note_pages_fts (tenant_id, page_id, title, markdown)
+                 SELECT tenant_id, page_id, title, markdown FROM work_note_pages WHERE tenant_id = ?1",
+                params![tenant_id],
+            )
+            .map_err(|e| format!("restore_work_note_fts_insert_failed:{e}"))?;
+        let remaining_dirty: i64 = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM local_store_device_sync_records
+                 WHERE tenant_id = ?1 AND changed_generation = 0",
+                params![tenant_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| format!("restore_sync_dirty_count_failed:{e}"))?;
+        transaction
+            .execute(
+                "UPDATE local_store_device_sync_state SET
+                   applied_generation = ?2,
+                   latest_generation = MAX(latest_generation, ?2),
+                   latest_status = ?3,
+                   first_dirty_at_ms = CASE WHEN ?4 = 0 THEN NULL ELSE first_dirty_at_ms END,
+                   last_dirty_at_ms = CASE WHEN ?4 = 0 THEN NULL ELSE last_dirty_at_ms END,
+                   last_success_at_ms = ?5,
+                   last_error = '',
+                   applying = 0
+                 WHERE tenant_id = ?1",
+                params![tenant_id, generation, latest_status, remaining_dirty, now_ms()],
+            )
+            .map_err(|e| format!("restore_sync_state_update_failed:{e}"))?;
+        transaction
+            .commit()
+            .map_err(|e| format!("restore_sync_commit_failed:{e}"))?;
+        Ok((imported, conflicts, deleted_files))
+    })();
+    let _ = conn.execute_batch("DETACH DATABASE restore");
+    let (imported, conflicts, deleted_files) = match result {
+        Ok(value) => value,
+        Err(error) => {
+            rollback_applied_media(&applied_media);
+            let _ = fs::remove_dir_all(&staging_root);
+            return Err(error);
+        }
+    };
+    for path in deleted_files {
+        let _ = fs::remove_file(path);
+    }
+    let _ = fs::remove_dir_all(&staging_root);
+    Ok(json!({
+        "ok": true,
+        "applied": true,
+        "generation": generation,
+        "imported": imported,
+        "conflicts": conflicts,
+        "safetyBackup": safety_backup,
+    }))
 }
 
 #[cfg(test)]
@@ -364,6 +845,173 @@ mod tests {
             params![doc_id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         ).ok()
+    }
+
+    #[test]
+    fn generation_merge_keeps_other_keys_archives_same_key_and_applies_tombstone() {
+        let base = std::env::temp_dir().join(format!(
+            "onlineclass-generation-merge-test-{}",
+            random_url_token()
+        ));
+        let source_dir = base.join("source");
+        let target_dir = base.join("target");
+        let backup_root = base.join("onedrive");
+        fs::create_dir_all(&source_dir).expect("create source directory");
+        fs::create_dir_all(&target_dir).expect("create target directory");
+        fs::create_dir_all(&backup_root).expect("create backup root");
+        let source = SqliteStore::open(source_dir.join("source.sqlite")).expect("open source store");
+        let target = SqliteStore::open(target_dir.join("target.sqlite")).expect("open target store");
+        set_folder(
+            &source,
+            "tenant-a".to_string(),
+            backup_root.to_string_lossy().to_string(),
+        )
+        .expect("configure source backup");
+        set_folder(
+            &target,
+            "tenant-a".to_string(),
+            backup_root.to_string_lossy().to_string(),
+        )
+        .expect("configure target backup");
+
+        observation(&source, "shared", "source generation one", 100);
+        let generation_one = run_with_kind(&source, "tenant-a".to_string(), "auto_sync", Some(1))
+            .expect("create generation one");
+        let content_one = tenant_content_sha256(&source, "tenant-a").expect("source content root");
+        mark_sync_published(
+            &source,
+            "tenant-a",
+            1,
+            Path::new(generation_one["manifestPath"].as_str().expect("manifest path")),
+            &content_one,
+            "announced",
+        )
+            .expect("mark generation one published");
+
+        observation(&target, "shared", "target unsynced edit", 200);
+        observation(&target, "target-only", "preserve me", 200);
+        let applied = restore_generation(
+            &target,
+            "tenant-a",
+            Path::new(generation_one["manifestPath"].as_str().expect("manifest path")),
+            1,
+            "announced",
+            false,
+        )
+        .expect("apply generation one");
+        assert_eq!(applied["conflicts"], 1);
+        assert!(observation_row(&target, "shared")
+            .expect("shared target row")
+            .0
+            .contains("source generation one"));
+        assert!(observation_row(&target, "target-only")
+            .expect("target-only row")
+            .0
+            .contains("preserve me"));
+
+        source
+            .conn
+            .lock()
+            .expect("lock source")
+            .execute(
+                "DELETE FROM lesson_observations WHERE tenant_id = 'tenant-a' AND doc_id = 'shared'",
+                [],
+            )
+            .expect("delete source shared row");
+        let generation_two = run_with_kind(&source, "tenant-a".to_string(), "auto_sync", Some(2))
+            .expect("create generation two");
+        restore_generation(
+            &target,
+            "tenant-a",
+            Path::new(generation_two["manifestPath"].as_str().expect("manifest path")),
+            2,
+            "announced",
+            false,
+        )
+        .expect("apply generation two tombstone");
+        assert!(observation_row(&target, "shared").is_none());
+        assert!(observation_row(&target, "target-only").is_some());
+        let tombstone: i64 = target
+            .conn
+            .lock()
+            .expect("lock target")
+            .query_row(
+                "SELECT tombstone FROM local_store_device_sync_records
+                 WHERE tenant_id = 'tenant-a' AND table_name = 'lesson_observations'
+                   AND record_key = '[\"shared\"]'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read tombstone");
+        assert_eq!(tombstone, 1);
+        restore_generation(
+            &target,
+            "tenant-a",
+            Path::new(generation_one["manifestPath"].as_str().expect("generation one path")),
+            3,
+            "verified",
+            true,
+        )
+        .expect("apply verified recovery generation");
+        assert!(observation_row(&target, "shared")
+            .expect("recovered shared row")
+            .0
+            .contains("source generation one"));
+        assert!(observation_row(&target, "target-only").is_some());
+        drop(source);
+        drop(target);
+        fs::remove_dir_all(base).expect("remove generation merge test directory");
+    }
+
+    #[test]
+    fn generation_snapshot_is_atomic_relative_and_rejects_tampered_artifact() {
+        let (base, backup_root, store) = test_store();
+        set_folder(&store, "tenant-a".to_string(), backup_root.to_string_lossy().to_string())
+            .expect("set backup folder");
+        observation(&store, "digest", "verify me", 100);
+        let snapshot = run_with_kind(&store, "tenant-a".to_string(), "auto_sync", Some(1))
+            .expect("create generation snapshot");
+        let manifest_path = PathBuf::from(snapshot["manifestPath"].as_str().expect("manifest path"));
+        let manifest = read_manifest(&manifest_path).expect("read manifest");
+        assert_eq!(manifest["version"], 3);
+        assert_eq!(manifest["db"]["relativePath"], "db/local-sensitive.sqlite");
+        assert!(manifest["db"].get("absolutePath").is_none());
+        assert!(manifest_path.parent().expect("snapshot directory").join("commit.json").is_file());
+        let artifact_root = snapshot["artifactSetSha256"].as_str().expect("artifact root");
+        assert!(find_and_verify_generation(&store, "tenant-a", 1, artifact_root)
+            .expect("verify snapshot").is_some());
+
+        let database_path = manifest_path.parent().expect("snapshot directory").join("db/local-sensitive.sqlite");
+        fs::write(database_path, b"tampered").expect("tamper snapshot database");
+        assert_eq!(
+            find_and_verify_generation(&store, "tenant-a", 1, artifact_root).expect_err("tamper must fail"),
+            "backup_artifact_digest_mismatch"
+        );
+        drop(store);
+        fs::remove_dir_all(base).expect("remove digest test directory");
+    }
+
+    #[test]
+    fn auto_sync_retention_keeps_recent_ten_and_never_prunes_manual_backup() {
+        let (base, backup_root, store) = test_store();
+        set_folder(&store, "tenant-a".to_string(), backup_root.to_string_lossy().to_string())
+            .expect("set backup folder");
+        observation(&store, "retention", "keep snapshots", 100);
+        run_now(&store, "tenant-a".to_string()).expect("create manual backup");
+        for generation in 1..=12 {
+            run_with_kind(&store, "tenant-a".to_string(), "auto_sync", Some(generation))
+                .expect("create auto sync snapshot");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let tenant_dir = tenant_backup_dir(&backup_root, "tenant-a");
+        let manifests = manifest_paths_in_dir(&tenant_dir).expect("list manifests");
+        let kinds = manifests.iter().map(|path| {
+            read_manifest(path).expect("read retained manifest")["kind"].as_str().unwrap_or("").to_string()
+        }).collect::<Vec<_>>();
+        assert_eq!(kinds.iter().filter(|kind| kind.as_str() == "manual").count(), 1);
+        assert_eq!(kinds.iter().filter(|kind| kind.as_str() == "auto_sync").count(), 10);
+        drop(store);
+        fs::remove_dir_all(base).expect("remove retention test directory");
     }
 
     #[test]

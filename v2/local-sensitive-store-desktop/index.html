@@ -220,6 +220,15 @@
               <div class="backup-health-actions"><button class="primary-action" data-action="run-backup" type="button">지금 백업</button><button class="secondary-action" data-action="choose-backup-folder" type="button">백업 폴더 변경</button></div>
             </section>
 
+            <section class="backup-device-sync-strip" id="deviceSyncCard" aria-labelledby="deviceSyncTitle">
+              <div class="backup-device-sync-primary">
+                <span class="backup-device-sync-icon" aria-hidden="true"><i class="fa-solid fa-arrows-rotate"></i></span>
+                <div><h2 id="deviceSyncTitle">기기 간 최신 내용 동기화 <span class="status-badge badge-warning" id="deviceSyncBadge">확인 중</span></h2><p id="deviceSyncStatus" role="status">OneDrive와 서버 검증 상태를 확인하고 있습니다.</p></div>
+              </div>
+              <dl class="backup-device-sync-metrics"><div><dt>서버 최신 세대</dt><dd id="deviceSyncLatestText">-</dd></div><div><dt>이 PC 반영 세대</dt><dd id="deviceSyncAppliedText">-</dd></div><div><dt>검증 상태</dt><dd id="deviceSyncVerifiedText">-</dd></div><div><dt>보존된 충돌</dt><dd id="deviceSyncConflictText">-</dd></div></dl>
+              <div class="backup-device-sync-actions"><button class="primary-action" data-action="run-device-sync" type="button">지금 동기화</button></div>
+            </section>
+
             <section class="backup-restore-panel" id="backupRestorePanel" aria-label="백업 복원 작업대">
               <section class="backup-history-column" aria-labelledby="backupHistoryTitle">
                 <header><h2 id="backupHistoryTitle">복원할 백업 선택</h2><span class="status-badge badge-neutral" id="backupRestoreBadge">대기</span></header>

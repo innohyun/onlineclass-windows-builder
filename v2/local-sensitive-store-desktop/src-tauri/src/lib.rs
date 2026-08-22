@@ -3,6 +3,7 @@ use chrono::{DateTime, Utc};
 mod backup;
 mod cloud_sync;
 mod data_explorer;
+mod device_sync;
 mod desktop_preferences;
 mod shared_archive;
 mod student_private_photos;
@@ -30,7 +31,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-08-16.1-work-note-tree-move";
+pub(crate) const SERVICE_VERSION: &str = "2026-08-22.1-onedrive-device-sync";
 const WORK_MEETING_ROOT_PAGE_ID: &str = "classaimate:work-meeting-minutes";
 const WORK_MEETING_ROOT_TITLE: &str = "업무 회의록";
 const WORK_MEETING_ROOT_INTRO: &str = "모바일에서 확정한 업무 회의록이 자동으로 들어옵니다.";
@@ -97,6 +98,8 @@ const LOCAL_SENSITIVE_STORE_ROUTES: &[&str] = &[
     "/v1/cloud-sync/connect",
     "/v1/cloud-sync/run",
     "/v1/cloud-sync/disconnect",
+    "/v1/device-sync/status",
+    "/v1/device-sync/run",
     "/v1/backups/status",
     "/v1/backups/run",
     "/v1/backups/list",
@@ -105,12 +108,13 @@ const LOCAL_SENSITIVE_STORE_ROUTES: &[&str] = &[
     "/v1/shared-archives/import",
     "/v1/shared-archives/import-jobs",
 ];
-const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 5] = [
+const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 6] = [
     "non_lesson_observations",
     "teacher_local_records",
     "work_notes",
     "work_note_tree_move",
     "counseling_local_authority",
+    "onedrive_device_sync",
 ];
 
 #[derive(Clone, Debug, Serialize)]
@@ -157,6 +161,7 @@ struct AppState {
     status: Mutex<ServiceStatus>,
     store: Mutex<Option<Arc<SqliteStore>>>,
     sync_manager: Mutex<Option<Arc<cloud_sync::CloudSyncManager>>>,
+    device_sync_manager: Mutex<Option<Arc<device_sync::DeviceSyncManager>>>,
     browser_links: Mutex<Option<Arc<BrowserLinkStore>>>,
     pending_device_authorization: Mutex<Option<PendingDeviceAuthorization>>,
     preferences: desktop_preferences::DesktopPreferencesStore,
@@ -1876,6 +1881,7 @@ impl SqliteStore {
         )
         .map_err(|e| format!("db_schema_failed:{e}"))?;
         work_note_attachments::ensure_schema(&conn)?;
+        backup::install_sync_tracking(&conn)?;
         let data_dir = db_path
             .parent()
             .unwrap_or_else(|| Path::new("."))
@@ -4849,6 +4855,7 @@ fn handle_request(
     mut request: Request,
     store: Arc<SqliteStore>,
     sync_manager: Arc<cloud_sync::CloudSyncManager>,
+    device_sync_manager: Arc<device_sync::DeviceSyncManager>,
     browser_links: Arc<BrowserLinkStore>,
     pairing_key: String,
 ) {
@@ -4941,7 +4948,11 @@ fn handle_request(
             if browser_tenant.is_none() || !browser_links.revoke_request_token(&request)? {
                 return Ok((401, json!({ "ok": false, "error": "unauthorized" })));
             }
-            return Ok((200, json!({ "ok": true, "disconnected": true })));
+            let device_sync = device_sync_manager.disconnect();
+            return match device_sync {
+                Ok(_) => Ok((200, json!({ "ok": true, "disconnected": true, "deviceCredentialRevoked": true }))),
+                Err(error) => Err(error),
+            };
         }
 
         if request.method() == &Method::Post && path == "/v1/shared-archives/import" {
@@ -5639,6 +5650,18 @@ fn handle_request(
             return Ok((200, status));
         }
 
+        if request.method() == &Method::Get && path == "/v1/device-sync/status" {
+            let status = device_sync_manager.status()?;
+            assert_sync_scope(&status)?;
+            return Ok((200, status));
+        }
+
+        if request.method() == &Method::Post && path == "/v1/device-sync/run" {
+            assert_sync_scope(&device_sync_manager.status()?)?;
+            let status = device_sync_manager.run_once(true)?;
+            return Ok((200, status));
+        }
+
         if request.method() == &Method::Get && path == "/v1/backups/status" {
             let status = backup::status(&store, query(&url, "tenantId"))?;
             return Ok((200, status));
@@ -5706,17 +5729,28 @@ fn bind_server() -> Result<(Server, u16), String> {
     })
 }
 
-fn start_service() -> Result<(ServiceStatus, Arc<SqliteStore>, Arc<cloud_sync::CloudSyncManager>, Arc<BrowserLinkStore>), String> {
+fn start_service() -> Result<(
+    ServiceStatus,
+    Arc<SqliteStore>,
+    Arc<cloud_sync::CloudSyncManager>,
+    Arc<device_sync::DeviceSyncManager>,
+    Arc<BrowserLinkStore>,
+), String> {
     let paths = resolve_paths();
     fs::create_dir_all(&paths.data_dir).map_err(|e| format!("data_dir_create_failed:{e}"))?;
     let pairing_key = ensure_pairing_key(&paths.key_path)?;
     let store = Arc::new(SqliteStore::open(paths.db_path.clone())?);
     let sync_manager = Arc::new(cloud_sync::CloudSyncManager::new(paths.data_dir.clone(), Arc::clone(&store)));
+    let device_sync_manager = Arc::new(device_sync::DeviceSyncManager::new(
+        paths.data_dir.clone(),
+        Arc::clone(&store),
+    ));
     let browser_links = Arc::new(BrowserLinkStore::open(&paths.data_dir)?);
     let (server, port) = bind_server()?;
     let endpoint = format!("http://{HOST}:{port}");
     let thread_store = Arc::clone(&store);
     let thread_sync_manager = Arc::clone(&sync_manager);
+    let thread_device_sync_manager = Arc::clone(&device_sync_manager);
     let thread_browser_links = Arc::clone(&browser_links);
     let thread_key = pairing_key.clone();
 
@@ -5726,6 +5760,7 @@ fn start_service() -> Result<(ServiceStatus, Arc<SqliteStore>, Arc<cloud_sync::C
                 request,
                 Arc::clone(&thread_store),
                 Arc::clone(&thread_sync_manager),
+                Arc::clone(&thread_device_sync_manager),
                 Arc::clone(&thread_browser_links),
                 thread_key.clone(),
             );
@@ -5748,7 +5783,7 @@ fn start_service() -> Result<(ServiceStatus, Arc<SqliteStore>, Arc<cloud_sync::C
         pairing_key,
         error: None,
     };
-    Ok((status, store, sync_manager, browser_links))
+    Ok((status, store, sync_manager, device_sync_manager, browser_links))
 }
 
 #[tauri::command]
@@ -5890,7 +5925,10 @@ fn poll_device_authorization(state: tauri::State<'_, AppState>) -> Value {
         }
         return json!({ "ok": true, "status": remote_status, "expiresAtMs": pending.expires_at_ms });
     }
-    let consumed = match device_api_response(agent.post(&format!("{base}/{}/consume", pending.request_id)).send_json(json!({ "verifier": pending.verifier }))).and_then(device_api_data) {
+    let consumed = match device_api_response(agent.post(&format!("{base}/{}/consume", pending.request_id)).send_json(json!({
+        "verifier": pending.verifier,
+        "deviceSync": true
+    }))).and_then(device_api_data) {
         Ok(value) => value,
         Err(error) => return json!({ "ok": false, "status": "approved", "error": error }),
     };
@@ -5902,6 +5940,20 @@ fn poll_device_authorization(state: tauri::State<'_, AppState>) -> Value {
         Ok(link) => link,
         Err(error) => return json!({ "ok": false, "status": "approved", "error": error }),
     };
+    let device_sync = state
+        .device_sync_manager
+        .lock()
+        .ok()
+        .and_then(|manager| manager.clone())
+        .ok_or_else(|| "device_sync_unavailable".to_string())
+        .and_then(|manager| {
+            let status = manager.connect_from_authorization(&consumed)?;
+            let background = Arc::clone(&manager);
+            thread::spawn(move || {
+                let _ = background.run_once(false);
+            });
+            Ok(status)
+        });
     if let Ok(mut slot) = state.pending_device_authorization.lock() { *slot = None; }
     json!({
         "ok": true,
@@ -5909,7 +5961,10 @@ fn poll_device_authorization(state: tauri::State<'_, AppState>) -> Value {
         "tenantId": link.tenant_id,
         "tenantName": link.tenant_name,
         "accountEmail": link.account_email,
-        "accountDisplayName": link.account_display_name
+        "accountDisplayName": link.account_display_name,
+        "deviceSyncConnected": device_sync.is_ok(),
+        "deviceSync": device_sync.as_ref().ok(),
+        "deviceSyncError": device_sync.err()
     })
 }
 
@@ -5934,9 +5989,44 @@ fn get_device_connection_status(state: tauri::State<'_, AppState>) -> Value {
 }
 
 #[tauri::command]
+fn get_device_sync_status(state: tauri::State<'_, AppState>) -> Value {
+    let manager = state
+        .device_sync_manager
+        .lock()
+        .ok()
+        .and_then(|manager| manager.clone())
+        .ok_or_else(|| "device_sync_unavailable".to_string());
+    match manager.and_then(|manager| manager.status()) {
+        Ok(status) => status,
+        Err(error) => json!({ "ok": false, "connected": false, "error": error }),
+    }
+}
+
+#[tauri::command]
+fn run_device_sync_now(state: tauri::State<'_, AppState>) -> Value {
+    let manager = state
+        .device_sync_manager
+        .lock()
+        .ok()
+        .and_then(|manager| manager.clone())
+        .ok_or_else(|| "device_sync_unavailable".to_string());
+    match manager.and_then(|manager| manager.run_once(true)) {
+        Ok(status) => status,
+        Err(error) => json!({ "ok": false, "error": error }),
+    }
+}
+
+#[tauri::command]
 fn disconnect_local_store(state: tauri::State<'_, AppState>) -> Value {
-    let sync_result = state
+    let cloud_sync_result = state
         .sync_manager
+        .lock()
+        .ok()
+        .and_then(|manager| manager.clone())
+        .map(|manager| manager.disconnect())
+        .unwrap_or_else(|| Ok(json!({ "ok": true, "connected": false })));
+    let device_sync_result = state
+        .device_sync_manager
         .lock()
         .ok()
         .and_then(|manager| manager.clone())
@@ -5952,13 +6042,16 @@ fn disconnect_local_store(state: tauri::State<'_, AppState>) -> Value {
     if let Ok(mut pending) = state.pending_device_authorization.lock() {
         *pending = None;
     }
-    match (sync_result, link_result) {
-        (Ok(_), Ok(())) => json!({ "ok": true, "connected": false, "localDataPreserved": true }),
-        (sync, links) => json!({
+    match (cloud_sync_result, device_sync_result, link_result) {
+        (Ok(_), Ok(_), Ok(())) => json!({ "ok": true, "connected": false, "localDataPreserved": true }),
+        (cloud_sync, device_sync, links) => json!({
             "ok": false,
             "connected": false,
             "localDataPreserved": true,
-            "error": sync.err().or_else(|| links.err()).unwrap_or_else(|| "disconnect_failed".to_string())
+            "error": device_sync.err()
+                .or_else(|| cloud_sync.err())
+                .or_else(|| links.err())
+                .unwrap_or_else(|| "disconnect_failed".to_string())
         }),
     }
 }
@@ -6524,18 +6617,26 @@ pub fn run() {
                 eprintln!("[local-sensitive-store] autostart setup failed: {error}");
             }
             let started = start_service();
-            let (status, store, sync_manager, browser_links) = match started {
-                Ok((status, store, sync_manager, browser_links)) => {
+            let (status, store, sync_manager, device_sync_manager, browser_links) = match started {
+                Ok((status, store, sync_manager, device_sync_manager, browser_links)) => {
                     sync_manager.start_background_sync();
+                    device_sync_manager.start_background();
                     backup::start_background(Arc::clone(&store));
-                    (status, Some(store), Some(sync_manager), Some(browser_links))
+                    (
+                        status,
+                        Some(store),
+                        Some(sync_manager),
+                        Some(device_sync_manager),
+                        Some(browser_links),
+                    )
                 }
-                Err(error) => (ServiceStatus::failed(error), None, None, None),
+                Err(error) => (ServiceStatus::failed(error), None, None, None, None),
             };
             app.manage(AppState {
                 status: Mutex::new(status),
                 store: Mutex::new(store),
                 sync_manager: Mutex::new(sync_manager),
+                device_sync_manager: Mutex::new(device_sync_manager),
                 browser_links: Mutex::new(browser_links),
                 pending_device_authorization: Mutex::new(None),
                 preferences,
@@ -6552,6 +6653,8 @@ pub fn run() {
             get_service_status,
             get_cloud_sync_status,
             get_device_connection_status,
+            get_device_sync_status,
+            run_device_sync_now,
             disconnect_local_store,
             get_desktop_preferences,
             set_desktop_preference,

@@ -3,7 +3,10 @@ use chrono::Utc;
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 use std::fs;
+use std::fs::File;
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -14,6 +17,60 @@ mod restore_runtime;
 const BACKUP_CONFIG_FILE: &str = "backup-config.json";
 const BACKUP_NAMESPACE_DIR: &str = "OnlineClassLocalBackups";
 const BACKUP_INTERVAL_MS: i64 = 24 * 60 * 60 * 1000;
+const AUTO_SYNC_RECENT_KEEP: usize = 10;
+const AUTO_SYNC_DAILY_KEEP_DAYS: i64 = 30;
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct LocalSyncState {
+    pub(crate) applied_generation: i64,
+    pub(crate) published_generation: i64,
+    pub(crate) latest_generation: i64,
+    pub(crate) latest_status: String,
+    pub(crate) last_content_sha256: String,
+    pub(crate) first_dirty_at_ms: i64,
+    pub(crate) last_dirty_at_ms: i64,
+    pub(crate) last_checked_at_ms: i64,
+    pub(crate) last_success_at_ms: i64,
+    pub(crate) last_error: String,
+    pub(crate) conflict_count: i64,
+}
+
+#[derive(Clone)]
+struct ArtifactDigest {
+    relative_path: String,
+    size: u64,
+    sha256: String,
+}
+
+fn sha256_file(path: &Path) -> Result<(u64, String), String> {
+    use sha2::{Digest, Sha256};
+    let mut file = File::open(path).map_err(|e| format!("backup_hash_open_failed:{e}"))?;
+    let mut hasher = Sha256::new();
+    let mut size = 0u64;
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer).map_err(|e| format!("backup_hash_read_failed:{e}"))?;
+        if read == 0 { break; }
+        hasher.update(&buffer[..read]);
+        size = size.saturating_add(read as u64);
+    }
+    Ok((size, format!("{:x}", hasher.finalize())))
+}
+
+fn artifact_set_sha256(artifacts: &mut [ArtifactDigest]) -> String {
+    use sha2::{Digest, Sha256};
+    artifacts.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    let mut hasher = Sha256::new();
+    for artifact in artifacts {
+        hasher.update(artifact.relative_path.as_bytes());
+        hasher.update([0]);
+        hasher.update(artifact.size.to_string().as_bytes());
+        hasher.update([0]);
+        hasher.update(artifact.sha256.as_bytes());
+        hasher.update([b'\n']);
+    }
+    format!("{:x}", hasher.finalize())
+}
 
 struct BackupTable {
     name: &'static str,
@@ -212,6 +269,485 @@ const BACKUP_TABLES: &[BackupTable] = &[
         optional: true,
     },
 ];
+
+fn syncable_tables() -> impl Iterator<Item = &'static BackupTable> {
+    BACKUP_TABLES
+        .iter()
+        .filter(|table| table.name != "cloud_sync_runs")
+}
+
+fn record_key_expression(prefix: &str, table: &BackupTable) -> String {
+    let columns = table
+        .key_columns
+        .iter()
+        .copied()
+        .filter(|column| *column != "tenant_id")
+        .map(|column| format!("{prefix}.{column}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("json_array({columns})")
+}
+
+pub(crate) fn install_sync_tracking(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS local_store_device_sync_state (
+          tenant_id TEXT PRIMARY KEY,
+          applied_generation INTEGER NOT NULL DEFAULT 0,
+          published_generation INTEGER NOT NULL DEFAULT 0,
+          latest_generation INTEGER NOT NULL DEFAULT 0,
+          latest_status TEXT NOT NULL DEFAULT '',
+          last_content_sha256 TEXT NOT NULL DEFAULT '',
+          first_dirty_at_ms INTEGER,
+          last_dirty_at_ms INTEGER,
+          last_checked_at_ms INTEGER NOT NULL DEFAULT 0,
+          last_success_at_ms INTEGER NOT NULL DEFAULT 0,
+          last_error TEXT NOT NULL DEFAULT '',
+          applying INTEGER NOT NULL DEFAULT 0 CHECK (applying IN (0, 1))
+        );
+        CREATE TABLE IF NOT EXISTS local_store_device_sync_records (
+          tenant_id TEXT NOT NULL,
+          table_name TEXT NOT NULL,
+          record_key TEXT NOT NULL,
+          dirty_base_generation INTEGER NOT NULL DEFAULT 0,
+          record_version INTEGER NOT NULL DEFAULT 1,
+          changed_generation INTEGER NOT NULL DEFAULT 0,
+          tombstone INTEGER NOT NULL DEFAULT 0 CHECK (tombstone IN (0, 1)),
+          changed_at_ms INTEGER NOT NULL,
+          PRIMARY KEY (tenant_id, table_name, record_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_local_store_device_sync_records_dirty
+          ON local_store_device_sync_records (tenant_id, changed_generation, changed_at_ms);
+        CREATE TABLE IF NOT EXISTS local_store_device_sync_conflicts (
+          conflict_id TEXT PRIMARY KEY,
+          tenant_id TEXT NOT NULL,
+          table_name TEXT NOT NULL,
+          record_key TEXT NOT NULL,
+          losing_generation INTEGER NOT NULL,
+          winning_generation INTEGER NOT NULL,
+          payload_json TEXT NOT NULL,
+          captured_at_ms INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_local_store_device_sync_conflicts_tenant
+          ON local_store_device_sync_conflicts (tenant_id, captured_at_ms DESC);
+        "#,
+    )
+    .map_err(|e| format!("db_sync_tracking_schema_failed:{e}"))?;
+
+    for table in syncable_tables() {
+        if !table_exists(conn, table.name)? {
+            continue;
+        }
+        let insert_key = record_key_expression("NEW", table);
+        let delete_key = record_key_expression("OLD", table);
+        let timestamp = "CAST(strftime('%s', 'now') AS INTEGER) * 1000";
+        let trigger_sql = format!(
+            r#"
+            CREATE TRIGGER IF NOT EXISTS local_store_sync_{name}_insert
+            AFTER INSERT ON {name}
+            WHEN COALESCE((SELECT applying FROM local_store_device_sync_state WHERE tenant_id = NEW.tenant_id), 0) = 0
+            BEGIN
+              INSERT INTO local_store_device_sync_state (tenant_id, first_dirty_at_ms, last_dirty_at_ms)
+              VALUES (NEW.tenant_id, {timestamp}, {timestamp})
+              ON CONFLICT(tenant_id) DO UPDATE SET
+                first_dirty_at_ms = COALESCE(first_dirty_at_ms, {timestamp}),
+                last_dirty_at_ms = {timestamp};
+              INSERT INTO local_store_device_sync_records (
+                tenant_id, table_name, record_key, dirty_base_generation,
+                record_version, changed_generation, tombstone, changed_at_ms
+              ) VALUES (
+                NEW.tenant_id, '{name}', {insert_key},
+                COALESCE((SELECT applied_generation FROM local_store_device_sync_state WHERE tenant_id = NEW.tenant_id), 0),
+                1, 0, 0, {timestamp}
+              )
+              ON CONFLICT(tenant_id, table_name, record_key) DO UPDATE SET
+                dirty_base_generation = COALESCE((SELECT applied_generation FROM local_store_device_sync_state WHERE tenant_id = NEW.tenant_id), 0),
+                record_version = record_version + 1,
+                changed_generation = 0,
+                tombstone = 0,
+                changed_at_ms = {timestamp};
+            END;
+            CREATE TRIGGER IF NOT EXISTS local_store_sync_{name}_update
+            AFTER UPDATE ON {name}
+            WHEN COALESCE((SELECT applying FROM local_store_device_sync_state WHERE tenant_id = NEW.tenant_id), 0) = 0
+            BEGIN
+              INSERT INTO local_store_device_sync_state (tenant_id, first_dirty_at_ms, last_dirty_at_ms)
+              VALUES (NEW.tenant_id, {timestamp}, {timestamp})
+              ON CONFLICT(tenant_id) DO UPDATE SET
+                first_dirty_at_ms = COALESCE(first_dirty_at_ms, {timestamp}),
+                last_dirty_at_ms = {timestamp};
+              INSERT INTO local_store_device_sync_records (
+                tenant_id, table_name, record_key, dirty_base_generation,
+                record_version, changed_generation, tombstone, changed_at_ms
+              ) VALUES (
+                NEW.tenant_id, '{name}', {insert_key},
+                COALESCE((SELECT applied_generation FROM local_store_device_sync_state WHERE tenant_id = NEW.tenant_id), 0),
+                1, 0, 0, {timestamp}
+              )
+              ON CONFLICT(tenant_id, table_name, record_key) DO UPDATE SET
+                dirty_base_generation = MIN(dirty_base_generation, COALESCE((SELECT applied_generation FROM local_store_device_sync_state WHERE tenant_id = NEW.tenant_id), 0)),
+                record_version = record_version + 1,
+                changed_generation = 0,
+                tombstone = 0,
+                changed_at_ms = {timestamp};
+            END;
+            CREATE TRIGGER IF NOT EXISTS local_store_sync_{name}_delete
+            AFTER DELETE ON {name}
+            WHEN COALESCE((SELECT applying FROM local_store_device_sync_state WHERE tenant_id = OLD.tenant_id), 0) = 0
+            BEGIN
+              INSERT INTO local_store_device_sync_state (tenant_id, first_dirty_at_ms, last_dirty_at_ms)
+              VALUES (OLD.tenant_id, {timestamp}, {timestamp})
+              ON CONFLICT(tenant_id) DO UPDATE SET
+                first_dirty_at_ms = COALESCE(first_dirty_at_ms, {timestamp}),
+                last_dirty_at_ms = {timestamp};
+              INSERT INTO local_store_device_sync_records (
+                tenant_id, table_name, record_key, dirty_base_generation,
+                record_version, changed_generation, tombstone, changed_at_ms
+              ) VALUES (
+                OLD.tenant_id, '{name}', {delete_key},
+                COALESCE((SELECT applied_generation FROM local_store_device_sync_state WHERE tenant_id = OLD.tenant_id), 0),
+                1, 0, 1, {timestamp}
+              )
+              ON CONFLICT(tenant_id, table_name, record_key) DO UPDATE SET
+                dirty_base_generation = MIN(dirty_base_generation, COALESCE((SELECT applied_generation FROM local_store_device_sync_state WHERE tenant_id = OLD.tenant_id), 0)),
+                record_version = record_version + 1,
+                changed_generation = 0,
+                tombstone = 1,
+                changed_at_ms = {timestamp};
+            END;
+            "#,
+            name = table.name,
+        );
+        conn.execute_batch(&trigger_sql)
+            .map_err(|e| format!("db_sync_tracking_trigger_failed:{}:{e}", table.name))?;
+    }
+    Ok(())
+}
+
+fn seed_sync_records(store: &SqliteStore, tenant_id: &str) -> Result<(), String> {
+    let conn = store.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
+    install_sync_tracking(&conn)?;
+    let timestamp = now_ms();
+    let mut inserted = 0i64;
+    for table in syncable_tables() {
+        if !table_exists(&conn, table.name)? {
+            continue;
+        }
+        let key = record_key_expression(table.name, table);
+        let sql = format!(
+            "INSERT OR IGNORE INTO local_store_device_sync_records (
+               tenant_id, table_name, record_key, dirty_base_generation,
+               record_version, changed_generation, tombstone, changed_at_ms
+             )
+             SELECT tenant_id, '{name}', {key},
+               COALESCE((SELECT applied_generation FROM local_store_device_sync_state WHERE tenant_id = ?1), 0),
+               1, 0, 0, ?2
+             FROM {name} WHERE tenant_id = ?1",
+            name = table.name,
+        );
+        inserted += conn
+            .execute(&sql, params![tenant_id, timestamp])
+            .map_err(|e| format!("db_sync_tracking_seed_failed:{}:{e}", table.name))? as i64;
+    }
+    if inserted > 0 {
+        conn.execute(
+            "INSERT INTO local_store_device_sync_state (tenant_id, first_dirty_at_ms, last_dirty_at_ms)
+             VALUES (?1, ?2, ?2)
+             ON CONFLICT(tenant_id) DO UPDATE SET
+               first_dirty_at_ms = COALESCE(first_dirty_at_ms, ?2),
+               last_dirty_at_ms = ?2",
+            params![tenant_id, timestamp],
+        )
+        .map_err(|e| format!("db_sync_tracking_seed_state_failed:{e}"))?;
+    } else {
+        conn.execute(
+            "INSERT OR IGNORE INTO local_store_device_sync_state (tenant_id) VALUES (?1)",
+            params![tenant_id],
+        )
+        .map_err(|e| format!("db_sync_tracking_state_failed:{e}"))?;
+    }
+    Ok(())
+}
+
+fn sync_manifest(store: &SqliteStore, tenant_id: &str, generation: i64) -> Result<Value, String> {
+    seed_sync_records(store, tenant_id)?;
+    let conn = store.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
+    let mut statement = conn
+        .prepare(
+            "SELECT table_name, record_key, dirty_base_generation, record_version,
+                    changed_generation, tombstone, changed_at_ms
+             FROM local_store_device_sync_records WHERE tenant_id = ?1
+             ORDER BY table_name, record_key",
+        )
+        .map_err(|e| format!("db_sync_manifest_prepare_failed:{e}"))?;
+    let rows = statement
+        .query_map(params![tenant_id], |row| {
+            let record_key: String = row.get(1)?;
+            let changed_generation: i64 = row.get(4)?;
+            Ok(json!({
+                "table": row.get::<_, String>(0)?,
+                "recordKey": serde_json::from_str::<Value>(&record_key).unwrap_or_else(|_| json!([])),
+                "dirtyBaseGeneration": row.get::<_, i64>(2)?,
+                "recordVersion": row.get::<_, i64>(3)?,
+                "changedGeneration": if changed_generation > 0 { changed_generation } else { generation },
+                "tombstone": row.get::<_, i64>(5)? == 1,
+                "changedAtMs": row.get::<_, i64>(6)?,
+            }))
+        })
+        .map_err(|e| format!("db_sync_manifest_query_failed:{e}"))?;
+    let mut records = Vec::new();
+    for row in rows {
+        records.push(row.map_err(|e| format!("db_sync_manifest_row_failed:{e}"))?);
+    }
+    drop(statement);
+    drop(conn);
+    Ok(json!({
+        "baseGeneration": generation - 1,
+        "contentSha256": tenant_content_sha256(store, tenant_id)?,
+        "records": records,
+    }))
+}
+
+pub(crate) fn local_sync_state(store: &SqliteStore, tenant_id: &str) -> Result<LocalSyncState, String> {
+    seed_sync_records(store, tenant_id)?;
+    let conn = store.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
+    conn.query_row(
+        "SELECT applied_generation, published_generation, latest_generation, latest_status,
+                last_content_sha256, COALESCE(first_dirty_at_ms, 0), COALESCE(last_dirty_at_ms, 0),
+                last_checked_at_ms, last_success_at_ms, last_error,
+                (SELECT COUNT(*) FROM local_store_device_sync_conflicts c WHERE c.tenant_id = s.tenant_id)
+         FROM local_store_device_sync_state s WHERE tenant_id = ?1",
+        params![tenant_id],
+        |row| Ok(LocalSyncState {
+            applied_generation: row.get(0)?,
+            published_generation: row.get(1)?,
+            latest_generation: row.get(2)?,
+            latest_status: row.get(3)?,
+            last_content_sha256: row.get(4)?,
+            first_dirty_at_ms: row.get(5)?,
+            last_dirty_at_ms: row.get(6)?,
+            last_checked_at_ms: row.get(7)?,
+            last_success_at_ms: row.get(8)?,
+            last_error: row.get(9)?,
+            conflict_count: row.get(10)?,
+        }),
+    )
+    .map_err(|e| format!("db_sync_state_read_failed:{e}"))
+}
+
+pub(crate) fn tenant_content_sha256(store: &SqliteStore, tenant_id: &str) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    seed_sync_records(store, tenant_id)?;
+    let mut hasher = Sha256::new();
+    let conn = store.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
+    for table in syncable_tables() {
+        if !table_exists(&conn, table.name)? {
+            continue;
+        }
+        let columns = table
+            .columns
+            .iter()
+            .map(|column| format!("{name}.{column}", name = table.name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT json_array({columns}) FROM {name} WHERE tenant_id = ?1 ORDER BY {keys}",
+            name = table.name,
+            keys = table.key_columns.join(", "),
+        );
+        let mut statement = conn
+            .prepare(&sql)
+            .map_err(|e| format!("db_sync_content_prepare_failed:{}:{e}", table.name))?;
+        let rows = statement
+            .query_map(params![tenant_id], |row| row.get::<_, String>(0))
+            .map_err(|e| format!("db_sync_content_query_failed:{}:{e}", table.name))?;
+        hasher.update(table.name.as_bytes());
+        hasher.update([0]);
+        for row in rows {
+            hasher.update(
+                row.map_err(|e| format!("db_sync_content_row_failed:{}:{e}", table.name))?
+                    .as_bytes(),
+            );
+            hasher.update([b'\n']);
+        }
+    }
+    let mut tombstones = conn
+        .prepare(
+            "SELECT table_name, record_key FROM local_store_device_sync_records
+             WHERE tenant_id = ?1 AND tombstone = 1 ORDER BY table_name, record_key",
+        )
+        .map_err(|e| format!("db_sync_tombstone_prepare_failed:{e}"))?;
+    let rows = tombstones
+        .query_map(params![tenant_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+        .map_err(|e| format!("db_sync_tombstone_query_failed:{e}"))?;
+    for row in rows {
+        let (table, key) = row.map_err(|e| format!("db_sync_tombstone_row_failed:{e}"))?;
+        hasher.update(b"tombstone\0");
+        hasher.update(table.as_bytes());
+        hasher.update([0]);
+        hasher.update(key.as_bytes());
+        hasher.update([b'\n']);
+    }
+    drop(tombstones);
+    drop(conn);
+    for row in list_media_rows(store, tenant_id)? {
+        let path = store.data_dir.join(row.local_path);
+        if path.is_file() {
+            let (size, sha256) = sha256_file(&path)?;
+            hasher.update(b"board-media\0");
+            hasher.update(row.media_id.as_bytes());
+            hasher.update([0]);
+            hasher.update(size.to_string().as_bytes());
+            hasher.update([0]);
+            hasher.update(sha256.as_bytes());
+            hasher.update([b'\n']);
+        }
+    }
+    for row in list_work_note_attachment_rows(store, tenant_id)? {
+        let path = store.data_dir.join(row.local_path);
+        if path.is_file() {
+            let (size, sha256) = sha256_file(&path)?;
+            hasher.update(b"work-note-attachment\0");
+            hasher.update(row.attachment_id.as_bytes());
+            hasher.update([0]);
+            hasher.update(size.to_string().as_bytes());
+            hasher.update([0]);
+            hasher.update(sha256.as_bytes());
+            hasher.update([b'\n']);
+        }
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+pub(crate) fn mark_sync_published(
+    store: &SqliteStore,
+    tenant_id: &str,
+    generation: i64,
+    manifest_path: &Path,
+    content_sha256: &str,
+    latest_status: &str,
+) -> Result<(), String> {
+    let manifest = read_manifest(manifest_path)?;
+    let records = manifest
+        .get("sync")
+        .and_then(|sync| sync.get("records"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| "backup_sync_records_required".to_string())?;
+    let conn = store.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
+    let transaction = conn.unchecked_transaction()
+        .map_err(|e| format!("db_sync_publish_transaction_failed:{e}"))?;
+    for record in records {
+        let table_name = normalize_json_text(record.get("table"), 120);
+        let record_key = serde_json::to_string(
+            record.get("recordKey").and_then(Value::as_array)
+                .ok_or_else(|| "backup_sync_record_key_invalid".to_string())?,
+        ).map_err(|e| format!("backup_sync_record_key_encode_failed:{e}"))?;
+        let record_version = record.get("recordVersion").and_then(Value::as_i64).unwrap_or(0);
+        let changed_generation = record.get("changedGeneration").and_then(Value::as_i64).unwrap_or(0);
+        if changed_generation != generation || record_version < 1 {
+            continue;
+        }
+        transaction.execute(
+            "UPDATE local_store_device_sync_records SET changed_generation = ?4
+             WHERE tenant_id = ?1 AND table_name = ?2 AND record_key = ?3
+               AND changed_generation = 0 AND record_version = ?5",
+            params![tenant_id, table_name, record_key, generation, record_version],
+        ).map_err(|e| format!("db_sync_publish_records_failed:{e}"))?;
+    }
+    let remaining_dirty: i64 = transaction.query_row(
+        "SELECT COUNT(*) FROM local_store_device_sync_records
+         WHERE tenant_id = ?1 AND changed_generation = 0",
+        params![tenant_id],
+        |row| row.get(0),
+    ).map_err(|e| format!("db_sync_publish_dirty_count_failed:{e}"))?;
+    transaction.execute(
+        "INSERT INTO local_store_device_sync_state (
+           tenant_id, applied_generation, published_generation, latest_generation,
+           latest_status, last_content_sha256, last_success_at_ms, last_error
+         ) VALUES (?1, ?2, ?2, ?2, ?3, ?4, ?5, '')
+         ON CONFLICT(tenant_id) DO UPDATE SET
+           applied_generation = MAX(applied_generation, excluded.applied_generation),
+           published_generation = MAX(published_generation, excluded.published_generation),
+           latest_generation = MAX(latest_generation, excluded.latest_generation),
+           latest_status = excluded.latest_status,
+           last_content_sha256 = CASE WHEN excluded.last_content_sha256 = '' THEN last_content_sha256 ELSE excluded.last_content_sha256 END,
+           first_dirty_at_ms = CASE WHEN ?6 = 0 THEN NULL ELSE first_dirty_at_ms END,
+           last_dirty_at_ms = CASE WHEN ?6 = 0 THEN NULL ELSE last_dirty_at_ms END,
+           last_success_at_ms = excluded.last_success_at_ms,
+           last_error = ''",
+        params![tenant_id, generation, latest_status, content_sha256, now_ms(), remaining_dirty],
+    ).map_err(|e| format!("db_sync_publish_state_failed:{e}"))?;
+    transaction.commit().map_err(|e| format!("db_sync_publish_commit_failed:{e}"))
+}
+
+pub(crate) fn mark_sync_applied_content(
+    store: &SqliteStore,
+    tenant_id: &str,
+    content_sha256: &str,
+) -> Result<(), String> {
+    let conn = store.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
+    conn.execute(
+        "UPDATE local_store_device_sync_state
+         SET last_content_sha256 = ?2, last_success_at_ms = ?3, last_error = ''
+         WHERE tenant_id = ?1",
+        params![tenant_id, content_sha256, now_ms()],
+    ).map_err(|e| format!("db_sync_applied_content_failed:{e}"))?;
+    Ok(())
+}
+
+pub(crate) fn mark_sync_unchanged(
+    store: &SqliteStore,
+    tenant_id: &str,
+    generation: i64,
+) -> Result<(), String> {
+    let conn = store.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
+    let transaction = conn.unchecked_transaction()
+        .map_err(|e| format!("db_sync_unchanged_transaction_failed:{e}"))?;
+    transaction.execute(
+        "UPDATE local_store_device_sync_records SET changed_generation = ?2
+         WHERE tenant_id = ?1 AND changed_generation = 0",
+        params![tenant_id, generation],
+    ).map_err(|e| format!("db_sync_unchanged_records_failed:{e}"))?;
+    transaction.execute(
+        "UPDATE local_store_device_sync_state
+         SET first_dirty_at_ms = NULL, last_dirty_at_ms = NULL, last_success_at_ms = ?2, last_error = ''
+         WHERE tenant_id = ?1",
+        params![tenant_id, now_ms()],
+    ).map_err(|e| format!("db_sync_unchanged_state_failed:{e}"))?;
+    transaction.commit().map_err(|e| format!("db_sync_unchanged_commit_failed:{e}"))
+}
+
+pub(crate) fn mark_sync_latest(
+    store: &SqliteStore,
+    tenant_id: &str,
+    generation: i64,
+    status: &str,
+) -> Result<(), String> {
+    let conn = store.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
+    conn.execute(
+        "INSERT INTO local_store_device_sync_state (
+           tenant_id, latest_generation, latest_status, last_checked_at_ms, last_error
+         ) VALUES (?1, ?2, ?3, ?4, '')
+         ON CONFLICT(tenant_id) DO UPDATE SET
+           latest_generation = excluded.latest_generation,
+           latest_status = excluded.latest_status,
+           last_checked_at_ms = excluded.last_checked_at_ms,
+           last_error = ''",
+        params![tenant_id, generation, status, now_ms()],
+    )
+    .map_err(|e| format!("db_sync_latest_state_failed:{e}"))?;
+    Ok(())
+}
+
+pub(crate) fn mark_sync_error(store: &SqliteStore, tenant_id: &str, error: &str) {
+    if let Ok(conn) = store.conn.lock() {
+        let _ = conn.execute(
+            "INSERT INTO local_store_device_sync_state (tenant_id, last_error) VALUES (?1, ?2)
+             ON CONFLICT(tenant_id) DO UPDATE SET last_error = excluded.last_error",
+            params![tenant_id, normalize(error, 800)],
+        );
+    }
+}
 
 #[derive(Clone)]
 struct MediaRow {
@@ -580,7 +1116,7 @@ fn list_media_rows(store: &SqliteStore, tenant_id: &str) -> Result<Vec<MediaRow>
     let mut stmt = conn
         .prepare(
             "SELECT board_id, post_id, media_id, local_path, content_type, file_name, size, archived_at_ms
-             FROM board_media_files WHERE tenant_id = ?1",
+             FROM board_media_files WHERE tenant_id = ?1 ORDER BY media_id",
         )
         .map_err(|e| format!("db_backup_media_prepare_failed:{e}"))?;
     let rows = stmt
@@ -608,7 +1144,7 @@ fn list_work_note_attachment_rows(store: &SqliteStore, tenant_id: &str) -> Resul
     let conn = store.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
     if !table_exists(&conn, "work_note_attachments")? { return Ok(Vec::new()); }
     let mut statement = conn.prepare(
-        "SELECT attachment_id,page_id,block_id,file_name,content_type,byte_size,sha256,local_path,created_at_ms,updated_at_ms FROM work_note_attachments WHERE tenant_id=?1",
+        "SELECT attachment_id,page_id,block_id,file_name,content_type,byte_size,sha256,local_path,created_at_ms,updated_at_ms FROM work_note_attachments WHERE tenant_id=?1 ORDER BY attachment_id",
     ).map_err(|e| format!("db_backup_work_note_attachment_prepare_failed:{e}"))?;
     let rows = statement.query_map(params![tenant_id], |row| Ok(WorkNoteAttachmentRow {
         attachment_id: row.get(0)?, page_id: row.get(1)?, block_id: row.get(2)?, file_name: row.get(3)?,
@@ -637,7 +1173,7 @@ fn read_manifest(path: &Path) -> Result<Value, String> {
     serde_json::from_str::<Value>(&raw).map_err(|e| format!("backup_manifest_decode_failed:{e}"))
 }
 
-fn backup_source(store: &SqliteStore, created_at_ms: i64) -> Value {
+fn backup_source(_store: &SqliteStore, created_at_ms: i64) -> Value {
     json!({
         "service": "onlineclass-local-sensitive-store",
         "serviceVersion": SERVICE_VERSION,
@@ -645,8 +1181,7 @@ fn backup_source(store: &SqliteStore, created_at_ms: i64) -> Value {
         "pcName": local_pc_name(),
         "os": local_os_name(),
         "arch": local_arch(),
-        "createdAtMs": created_at_ms,
-        "dbPath": store.db_path.to_string_lossy()
+        "createdAtMs": created_at_ms
     })
 }
 
@@ -754,6 +1289,33 @@ pub(crate) fn status(store: &SqliteStore, tenant_id: String) -> Result<Value, St
     }))
 }
 
+fn manifest_paths_in_dir(dir: &Path) -> Result<Vec<PathBuf>, String> {
+    if !dir.exists() { return Ok(Vec::new()); }
+    let mut paths = Vec::new();
+    for entry in fs::read_dir(dir).map_err(|e| format!("backup_list_dir_failed:{e}"))? {
+        let entry = entry.map_err(|e| format!("backup_list_entry_failed:{e}"))?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with("manifest-") && name.ends_with(".json") {
+            paths.push(entry.path());
+        }
+    }
+    let snapshots = dir.join("snapshots");
+    if snapshots.exists() {
+        for entry in fs::read_dir(&snapshots).map_err(|e| format!("backup_snapshot_list_failed:{e}"))? {
+            let entry = entry.map_err(|e| format!("backup_snapshot_entry_failed:{e}"))?;
+            let snapshot = entry.path();
+            if !snapshot.is_dir() || entry.file_name().to_string_lossy().ends_with(".staging") {
+                continue;
+            }
+            let manifest = snapshot.join("manifest.json");
+            if manifest.is_file() && snapshot.join("commit.json").is_file() {
+                paths.push(manifest);
+            }
+        }
+    }
+    Ok(paths)
+}
+
 pub(crate) fn list_backups(store: &SqliteStore, tenant_id: String, limit: i64) -> Result<Value, String> {
     let tenant_id = normalize_tenant_id(Some(&Value::String(tenant_id)));
     if tenant_id.is_empty() {
@@ -775,21 +1337,25 @@ pub(crate) fn list_backups(store: &SqliteStore, tenant_id: String, limit: i64) -
     }
     let max = limit.clamp(1, 50) as usize;
     let mut backups = Vec::new();
-    for entry in fs::read_dir(&dir).map_err(|e| format!("backup_list_dir_failed:{e}"))? {
-        let entry = entry.map_err(|e| format!("backup_list_entry_failed:{e}"))?;
-        let path = entry.path();
-        let name = entry.file_name().to_string_lossy().to_string();
-        if !name.starts_with("manifest-") || !name.ends_with(".json") {
-            continue;
-        }
+    for path in manifest_paths_in_dir(&dir)? {
         if let Ok(manifest) = read_manifest(&path) {
+            let db_path = manifest.get("db")
+                .and_then(|db| db.get("absolutePath"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| manifest.get("db").and_then(|db| db.get("relativePath")).and_then(Value::as_str)
+                    .map(|relative| path.parent().unwrap_or_else(|| Path::new(".")).join(relative).to_string_lossy().to_string()))
+                .unwrap_or_default();
             backups.push(json!({
                 "ok": manifest.get("ok").and_then(|value| value.as_bool()).unwrap_or(true),
                 "tenantId": manifest.get("tenantId").and_then(|value| value.as_str()).unwrap_or(&tenant_id),
                 "backupId": manifest.get("backupId").and_then(|value| value.as_str()).unwrap_or(""),
                 "createdAtMs": manifest.get("createdAtMs").and_then(|value| value.as_i64()).unwrap_or(0),
                 "manifestPath": path.to_string_lossy(),
-                "dbPath": manifest.get("db").and_then(|db| db.get("absolutePath")).and_then(|value| value.as_str()).unwrap_or(""),
+                "dbPath": db_path,
+                "kind": manifest.get("kind").and_then(Value::as_str).unwrap_or("legacy"),
+                "generation": manifest.get("generation").and_then(Value::as_i64),
+                "artifactSetSha256": manifest.get("artifactSetSha256").and_then(Value::as_str).unwrap_or(""),
                 "source": manifest.get("source").cloned().unwrap_or_else(|| json!({})),
                 "counts": manifest.get("counts").cloned().unwrap_or_else(|| json!({})),
                 "media": manifest.get("media").cloned().unwrap_or_else(|| json!({})),
@@ -814,14 +1380,7 @@ fn file_name_is(path: &Path, expected: &str) -> bool {
 }
 
 fn has_backup_manifest(dir: &Path) -> bool {
-    fs::read_dir(dir)
-        .map(|entries| {
-            entries.flatten().any(|entry| {
-                let name = entry.file_name().to_string_lossy().to_string();
-                name.starts_with("manifest-") && name.ends_with(".json")
-            })
-        })
-        .unwrap_or(false)
+    manifest_paths_in_dir(dir).map(|paths| !paths.is_empty()).unwrap_or(false)
 }
 
 fn selected_backup_root_and_tenant(selected: &Path) -> (PathBuf, String) {
@@ -903,13 +1462,7 @@ fn list_backup_manifests_in_dir(dir: &Path, fallback_tenant_id: &str, limit: usi
         return Ok(Vec::new());
     }
     let mut backups = Vec::new();
-    for entry in fs::read_dir(dir).map_err(|e| format!("backup_discover_dir_failed:{e}"))? {
-        let entry = entry.map_err(|e| format!("backup_discover_entry_failed:{e}"))?;
-        let path = entry.path();
-        let name = entry.file_name().to_string_lossy().to_string();
-        if !name.starts_with("manifest-") || !name.ends_with(".json") {
-            continue;
-        }
+    for path in manifest_paths_in_dir(dir)? {
         if let Some(summary) = backup_manifest_summary(&path, fallback_tenant_id) {
             backups.push(summary);
         }
@@ -1018,10 +1571,21 @@ fn export_tenant_db(store: &SqliteStore, tenant_id: &str, db_path: &Path) -> Res
     result
 }
 
-pub(crate) fn run_now(store: &SqliteStore, tenant_id: String) -> Result<Value, String> {
+pub(crate) fn run_with_kind(
+    store: &SqliteStore,
+    tenant_id: String,
+    kind: &str,
+    generation: Option<i64>,
+) -> Result<Value, String> {
     let tenant_id = normalize_tenant_id(Some(&Value::String(tenant_id)));
     if tenant_id.is_empty() {
         return Err("tenant_id_required".to_string());
+    }
+    if !matches!(kind, "manual" | "scheduled" | "pre_restore" | "auto_sync") {
+        return Err("backup_kind_invalid".to_string());
+    }
+    if generation.is_some_and(|value| value < 1) {
+        return Err("backup_generation_invalid".to_string());
     }
     let config = read_config(store);
     let root_text = config
@@ -1032,14 +1596,29 @@ pub(crate) fn run_now(store: &SqliteStore, tenant_id: String) -> Result<Value, S
         .unwrap_or("");
     let root = assert_backup_root_allowed(store, backup_root_dir(root_text))?;
     let out_dir = tenant_backup_dir(&root, &tenant_id);
-    fs::create_dir_all(out_dir.join("db")).map_err(|e| format!("backup_dir_failed:{e}"))?;
-    fs::create_dir_all(out_dir.join("board-media")).map_err(|e| format!("backup_media_dir_failed:{e}"))?;
-    fs::create_dir_all(out_dir.join("work-note-attachments")).map_err(|e| format!("backup_work_note_attachment_dir_failed:{e}"))?;
     let created_at_ms = now_ms();
     let backup_id = format!("{}", Utc::now().format("%Y%m%d%H%M%S%3f"));
-    let db_relative_path = PathBuf::from("db").join(format!("local-sensitive-{backup_id}.sqlite"));
-    let db_path = out_dir.join(&db_relative_path);
+    let snapshots_dir = out_dir.join("snapshots");
+    fs::create_dir_all(&snapshots_dir).map_err(|e| format!("backup_dir_failed:{e}"))?;
+    let staging_dir = snapshots_dir.join(format!("{backup_id}.staging"));
+    let snapshot_dir = snapshots_dir.join(&backup_id);
+    if staging_dir.exists() { fs::remove_dir_all(&staging_dir).map_err(|e| format!("backup_staging_cleanup_failed:{e}"))?; }
+    fs::create_dir_all(staging_dir.join("db")).map_err(|e| format!("backup_dir_failed:{e}"))?;
+    fs::create_dir_all(staging_dir.join("board-media")).map_err(|e| format!("backup_media_dir_failed:{e}"))?;
+    fs::create_dir_all(staging_dir.join("work-note-attachments")).map_err(|e| format!("backup_work_note_attachment_dir_failed:{e}"))?;
+    let sync = match generation {
+        Some(value) => sync_manifest(store, &tenant_id, value)?,
+        None => Value::Null,
+    };
+    let db_relative_path = PathBuf::from("db").join("local-sensitive.sqlite");
+    let db_path = staging_dir.join(&db_relative_path);
     export_tenant_db(store, &tenant_id, &db_path)?;
+    let (database_size, database_sha256) = sha256_file(&db_path)?;
+    let mut artifacts = vec![ArtifactDigest {
+        relative_path: db_relative_path.to_string_lossy().replace('\\', "/"),
+        size: database_size,
+        sha256: database_sha256.clone(),
+    }];
 
     let media_rows = list_media_rows(store, &tenant_id)?;
     let mut media_records = Vec::new();
@@ -1055,7 +1634,7 @@ pub(crate) fn run_now(store: &SqliteStore, tenant_id: String) -> Result<Value, S
             .join(safe_segment(&row.board_id, "board"))
             .join(format!("{}.{}", safe_segment(&row.media_id, "media"), ext));
         let source_path = store.data_dir.join(&row.local_path);
-        let target_path = out_dir.join(&backup_relative_path);
+        let target_path = staging_dir.join(&backup_relative_path);
         let mut status = "copied";
         match fs::metadata(&source_path) {
             Ok(source_meta) => {
@@ -1081,6 +1660,15 @@ pub(crate) fn run_now(store: &SqliteStore, tenant_id: String) -> Result<Value, S
                 status = "missing";
             }
         }
+        let (artifact_size, artifact_sha256) = if matches!(status, "copied" | "skipped") {
+            let digest = sha256_file(&target_path)?;
+            artifacts.push(ArtifactDigest {
+                relative_path: backup_relative_path.to_string_lossy().replace('\\', "/"),
+                size: digest.0,
+                sha256: digest.1.clone(),
+            });
+            (digest.0 as i64, digest.1)
+        } else { (0, String::new()) };
         media_records.push(json!({
             "boardId": row.board_id,
             "postId": row.post_id,
@@ -1089,7 +1677,8 @@ pub(crate) fn run_now(store: &SqliteStore, tenant_id: String) -> Result<Value, S
             "backupRelativePath": backup_relative_path.to_string_lossy().replace('\\', "/"),
             "contentType": row.content_type,
             "fileName": row.file_name,
-            "size": row.size,
+            "size": if artifact_size > 0 { artifact_size } else { row.size },
+            "sha256": artifact_sha256,
             "archivedAtMs": row.archived_at_ms,
             "status": status
         }));
@@ -1108,7 +1697,7 @@ pub(crate) fn run_now(store: &SqliteStore, tenant_id: String) -> Result<Value, S
             .join(safe_segment(&row.attachment_id, "attachment"))
             .join(safe_segment(&row.file_name, "attachment.bin"));
         let source_path = store.data_dir.join(&row.local_path);
-        let target_path = out_dir.join(&backup_relative_path);
+        let target_path = staging_dir.join(&backup_relative_path);
         let mut status = "copied";
         match fs::metadata(&source_path) {
             Ok(source_meta) => {
@@ -1132,14 +1721,23 @@ pub(crate) fn run_now(store: &SqliteStore, tenant_id: String) -> Result<Value, S
                 status = "missing";
             }
         }
+        let (artifact_size, artifact_sha256) = if matches!(status, "copied" | "skipped") {
+            let digest = sha256_file(&target_path)?;
+            artifacts.push(ArtifactDigest {
+                relative_path: backup_relative_path.to_string_lossy().replace('\\', "/"),
+                size: digest.0,
+                sha256: digest.1.clone(),
+            });
+            (digest.0 as i64, digest.1)
+        } else { (0, String::new()) };
         attachment_records.push(json!({
             "attachmentId": row.attachment_id,
             "pageId": row.page_id,
             "blockId": row.block_id,
             "fileName": row.file_name,
             "contentType": row.content_type,
-            "size": row.size,
-            "sha256": row.sha256,
+            "size": if artifact_size > 0 { artifact_size } else { row.size },
+            "sha256": if artifact_sha256.is_empty() { row.sha256 } else { artifact_sha256 },
             "localPath": row.local_path,
             "backupRelativePath": backup_relative_path.to_string_lossy().replace('\\', "/"),
             "createdAtMs": row.created_at_ms,
@@ -1148,17 +1746,30 @@ pub(crate) fn run_now(store: &SqliteStore, tenant_id: String) -> Result<Value, S
         }));
     }
     let stats = store.stats(tenant_id.clone())?;
+    let artifact_set_sha256 = artifact_set_sha256(&mut artifacts);
+    let artifact_records = artifacts.iter().map(|artifact| json!({
+        "relativePath": artifact.relative_path,
+        "size": artifact.size,
+        "sha256": artifact.sha256
+    })).collect::<Vec<_>>();
+    let snapshot_ok = failed == 0 && missing == 0 && attachments_failed == 0 && attachments_missing == 0;
     let manifest = json!({
-        "ok": failed == 0 && attachments_failed == 0,
-        "version": 2,
+        "ok": snapshot_ok,
+        "version": 3,
+        "kind": kind,
+        "generation": generation,
         "tenantId": tenant_id,
         "backupId": backup_id,
         "createdAtMs": created_at_ms,
         "source": backup_source(store, created_at_ms),
         "db": {
             "relativePath": db_relative_path.to_string_lossy().replace('\\', "/"),
-            "absolutePath": db_path.to_string_lossy()
+            "size": database_size,
+            "sha256": database_sha256
         },
+        "artifactSetSha256": artifact_set_sha256,
+        "artifacts": artifact_records,
+        "sync": sync,
         "counts": {
             "observationCount": stats.get("observationCount").and_then(|value| value.as_i64()).unwrap_or(0),
             "teacherCounselingSessionCount": stats.get("teacherCounselingSessionCount").and_then(|value| value.as_i64()).unwrap_or(0),
@@ -1205,15 +1816,33 @@ pub(crate) fn run_now(store: &SqliteStore, tenant_id: String) -> Result<Value, S
         },
         "securityMode": "plain_warning"
     });
-    let manifest_path = out_dir.join(format!("manifest-{backup_id}.json"));
+    let manifest_path = staging_dir.join("manifest.json");
     let manifest_raw = serde_json::to_string_pretty(&manifest).map_err(|e| format!("backup_manifest_encode_failed:{e}"))?;
     fs::write(&manifest_path, format!("{manifest_raw}\n")).map_err(|e| format!("backup_manifest_write_failed:{e}"))?;
+    let commit = json!({
+        "version": 1,
+        "tenantId": tenant_id,
+        "backupId": backup_id,
+        "generation": generation,
+        "artifactSetSha256": artifact_set_sha256,
+        "committedAtMs": now_ms()
+    });
+    let commit_raw = serde_json::to_string_pretty(&commit).map_err(|e| format!("backup_commit_encode_failed:{e}"))?;
+    fs::write(staging_dir.join("commit.json"), format!("{commit_raw}\n"))
+        .map_err(|e| format!("backup_commit_write_failed:{e}"))?;
+    fs::rename(&staging_dir, &snapshot_dir).map_err(|e| format!("backup_snapshot_commit_failed:{e}"))?;
+    let manifest_path = snapshot_dir.join("manifest.json");
+    let final_db_path = snapshot_dir.join(&db_relative_path);
     let result = json!({
-        "ok": failed == 0 && attachments_failed == 0,
+        "ok": snapshot_ok,
         "tenantId": tenant_id,
         "backupId": backup_id,
         "manifestPath": manifest_path.to_string_lossy(),
-        "dbPath": db_path.to_string_lossy(),
+        "dbPath": final_db_path.to_string_lossy(),
+        "kind": kind,
+        "generation": generation,
+        "artifactSetSha256": artifact_set_sha256,
+        "databaseSha256": database_sha256,
         "createdAtMs": created_at_ms,
         "source": manifest.get("source").cloned().unwrap_or_else(|| json!({})),
         "counts": manifest.get("counts").cloned().unwrap_or_else(|| json!({})),
@@ -1231,7 +1860,151 @@ pub(crate) fn run_now(store: &SqliteStore, tenant_id: String) -> Result<Value, S
         "lastResult": result
     });
     write_config(store, config)?;
+    if kind == "auto_sync" { prune_auto_sync_snapshots(&out_dir, created_at_ms)?; }
     Ok(result)
+}
+
+pub(crate) fn run_now(store: &SqliteStore, tenant_id: String) -> Result<Value, String> {
+    run_with_kind(store, tenant_id, "manual", None)
+}
+
+fn prune_auto_sync_snapshots(tenant_dir: &Path, now: i64) -> Result<(), String> {
+    let snapshots_root = tenant_dir.join("snapshots");
+    let mut snapshots = manifest_paths_in_dir(tenant_dir)?.into_iter().filter_map(|path| {
+        let manifest = read_manifest(&path).ok()?;
+        if manifest.get("version").and_then(Value::as_i64) != Some(3)
+            || manifest.get("kind").and_then(Value::as_str) != Some("auto_sync") {
+            return None;
+        }
+        Some((path, manifest.get("createdAtMs").and_then(Value::as_i64).unwrap_or(0)))
+    }).collect::<Vec<_>>();
+    snapshots.sort_by(|left, right| right.1.cmp(&left.1));
+    let mut keep = HashSet::new();
+    let mut days = HashSet::new();
+    for (index, (path, created_at)) in snapshots.iter().enumerate() {
+        if index < AUTO_SYNC_RECENT_KEEP { keep.insert(path.clone()); }
+        let age = now.saturating_sub(*created_at);
+        if age >= 0 && age <= AUTO_SYNC_DAILY_KEEP_DAYS * 24 * 60 * 60 * 1000 {
+            let day_key = created_at.div_euclid(24 * 60 * 60 * 1000);
+            if days.insert(day_key) { keep.insert(path.clone()); }
+        }
+    }
+    for (path, _) in snapshots {
+        if keep.contains(&path) { continue; }
+        let snapshot = path.parent().ok_or_else(|| "backup_snapshot_parent_missing".to_string())?;
+        if snapshot.parent() != Some(snapshots_root.as_path()) {
+            return Err("backup_snapshot_prune_scope_invalid".to_string());
+        }
+        fs::remove_dir_all(snapshot).map_err(|e| format!("backup_snapshot_prune_failed:{e}"))?;
+    }
+    Ok(())
+}
+
+pub(crate) fn auto_configure_onedrive(store: &SqliteStore, tenant_id: &str) -> Result<Value, String> {
+    let current = status(store, tenant_id.to_string())?;
+    if current.get("configured").and_then(Value::as_bool) == Some(true) { return Ok(current); }
+    let mut roots = Vec::new();
+    for key in ["OneDriveCommercial", "OneDriveConsumer", "OneDrive"] {
+        let Ok(value) = std::env::var(key) else { continue };
+        let root = PathBuf::from(value).canonicalize().unwrap_or_else(|_| PathBuf::from(std::env::var(key).unwrap_or_default()));
+        if root.as_os_str().is_empty() { continue; }
+        let mut candidates = vec![root.clone()];
+        if let Ok(entries) = fs::read_dir(&root) {
+            candidates.extend(entries.filter_map(Result::ok).filter_map(|entry| {
+                entry.file_type().ok().filter(|kind| kind.is_dir()).map(|_| entry.path())
+            }));
+        }
+        for candidate in candidates {
+            if roots.contains(&candidate) { continue; }
+            if has_backup_manifest(&tenant_backup_dir(&candidate, tenant_id)) { roots.push(candidate); }
+        }
+    }
+    if roots.len() != 1 { return Ok(current); }
+    set_folder(store, tenant_id.to_string(), roots.remove(0).to_string_lossy().to_string())
+}
+
+fn verify_v3_manifest_path(path: &Path, tenant_id: &str, expected_generation: i64, expected_root: &str) -> Result<Value, String> {
+    let manifest = read_manifest(path)?;
+    if manifest.get("version").and_then(Value::as_i64) != Some(3)
+        || manifest.get("tenantId").and_then(Value::as_str) != Some(tenant_id)
+        || manifest.get("generation").and_then(Value::as_i64) != Some(expected_generation)
+        || manifest.get("artifactSetSha256").and_then(Value::as_str) != Some(expected_root) {
+        return Err("backup_manifest_checkpoint_mismatch".to_string());
+    }
+    let base = path.parent().ok_or_else(|| "backup_manifest_parent_missing".to_string())?;
+    let commit = read_manifest(&base.join("commit.json"))?;
+    if commit.get("tenantId").and_then(Value::as_str) != Some(tenant_id)
+        || commit.get("generation").and_then(Value::as_i64) != Some(expected_generation)
+        || commit.get("artifactSetSha256").and_then(Value::as_str) != Some(expected_root) {
+        return Err("backup_commit_checkpoint_mismatch".to_string());
+    }
+    let mut verified = Vec::new();
+    for artifact in manifest.get("artifacts").and_then(Value::as_array).ok_or_else(|| "backup_artifacts_required".to_string())? {
+        let relative = artifact.get("relativePath").and_then(Value::as_str).ok_or_else(|| "backup_artifact_path_required".to_string())?;
+        let safe = safe_relative_path(relative).ok_or_else(|| "backup_artifact_path_invalid".to_string())?;
+        let expected_size = artifact.get("size").and_then(Value::as_u64).ok_or_else(|| "backup_artifact_size_required".to_string())?;
+        let expected_sha = artifact.get("sha256").and_then(Value::as_str).ok_or_else(|| "backup_artifact_hash_required".to_string())?;
+        let (size, sha256) = sha256_file(&base.join(safe))?;
+        if size != expected_size || sha256 != expected_sha { return Err("backup_artifact_digest_mismatch".to_string()); }
+        verified.push(ArtifactDigest { relative_path: relative.to_string(), size, sha256 });
+    }
+    if artifact_set_sha256(&mut verified) != expected_root { return Err("backup_artifact_set_mismatch".to_string()); }
+    Ok(json!({
+        "ok": true,
+        "tenantId": tenant_id,
+        "generation": expected_generation,
+        "artifactSetSha256": expected_root,
+        "manifestPath": path.to_string_lossy(),
+        "databaseSha256": manifest.get("db").and_then(|db| db.get("sha256")).and_then(Value::as_str).unwrap_or(""),
+        "contentSha256": manifest.get("sync").and_then(|sync| sync.get("contentSha256")).and_then(Value::as_str).unwrap_or("")
+    }))
+}
+
+pub(crate) fn find_and_verify_generation(
+    store: &SqliteStore,
+    tenant_id: &str,
+    generation: i64,
+    artifact_set_sha256: &str,
+) -> Result<Option<Value>, String> {
+    let configured = auto_configure_onedrive(store, tenant_id)?;
+    let root_text = configured.get("backupRootDir").and_then(Value::as_str).unwrap_or("");
+    if root_text.is_empty() { return Ok(None); }
+    let tenant_dir = tenant_backup_dir(&backup_root_dir(root_text), tenant_id);
+    let mut mismatch = None;
+    for path in manifest_paths_in_dir(&tenant_dir)? {
+        let manifest = match read_manifest(&path) { Ok(value) => value, Err(_) => continue };
+        if manifest.get("version").and_then(Value::as_i64) != Some(3)
+            || manifest.get("generation").and_then(Value::as_i64) != Some(generation) {
+            continue;
+        }
+        match verify_v3_manifest_path(&path, tenant_id, generation, artifact_set_sha256) {
+            Ok(value) => return Ok(Some(value)),
+            Err(error) => mismatch = Some(error),
+        }
+    }
+    if let Some(error) = mismatch { return Err(error); }
+    Ok(None)
+}
+
+pub(crate) fn highest_local_generation(store: &SqliteStore, tenant_id: &str) -> Result<i64, String> {
+    let configured = auto_configure_onedrive(store, tenant_id)?;
+    let root_text = configured.get("backupRootDir").and_then(Value::as_str).unwrap_or("");
+    if root_text.is_empty() {
+        return Ok(0);
+    }
+    let tenant_dir = tenant_backup_dir(&backup_root_dir(root_text), tenant_id);
+    let mut highest = 0i64;
+    for path in manifest_paths_in_dir(&tenant_dir)? {
+        let manifest = match read_manifest(&path) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        if manifest.get("version").and_then(Value::as_i64) != Some(3) {
+            continue;
+        }
+        highest = highest.max(manifest.get("generation").and_then(Value::as_i64).unwrap_or(0));
+    }
+    Ok(highest)
 }
 
 pub(crate) fn run_from_body(store: &SqliteStore, body: Value) -> Result<Value, String> {
@@ -1288,6 +2061,17 @@ pub(crate) fn restore(store: &SqliteStore, body: Value) -> Result<Value, String>
     restore_runtime::restore(store, body)
 }
 
+pub(crate) fn restore_generation(
+    store: &SqliteStore,
+    tenant_id: &str,
+    manifest_path: &Path,
+    generation: i64,
+    latest_status: &str,
+    force_all: bool,
+) -> Result<Value, String> {
+    restore_runtime::restore_generation(store, tenant_id, manifest_path, generation, latest_status, force_all)
+}
+
 pub(crate) fn start_background(store: Arc<SqliteStore>) {
     thread::spawn(move || loop {
         thread::sleep(Duration::from_secs(90));
@@ -1300,7 +2084,7 @@ pub(crate) fn start_background(store: Arc<SqliteStore>) {
             let last = tenant.get("lastRunAtMs").and_then(|value| value.as_i64()).unwrap_or(0);
             let interval = tenant.get("intervalMs").and_then(|value| value.as_i64()).unwrap_or(BACKUP_INTERVAL_MS);
             if now_ms() >= last + interval {
-                let _ = run_now(&store, tenant_id);
+                let _ = run_with_kind(&store, tenant_id, "scheduled", None);
             }
         }
         thread::sleep(Duration::from_secs(15 * 60));

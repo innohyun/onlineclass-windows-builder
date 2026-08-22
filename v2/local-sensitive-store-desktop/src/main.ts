@@ -21,6 +21,8 @@ import { initSharedArchivePreview } from "./shared-archive-preview";
 import { initHealthDashboardPreview } from "./health-dashboard-preview";
 import { initSettingsDashboard, renderSettingsDashboard } from "./settings-dashboard";
 import { initSettingsDashboardPreview } from "./settings-dashboard-preview";
+import { loadDeviceSyncStatus, renderDeviceSyncStatus, runDeviceSyncNow } from "./device-sync-ui";
+import type { BackupDiscovery, BackupItem, BackupPreview, BackupSource, BackupStatus, CommandResult } from "./backup-types";
 
 declare const __APP_VERSION__: string;
 
@@ -75,113 +77,8 @@ type DeviceConnectionStatus = DeviceAuthorizationResult & {
   connectedAtMs?: number;
 };
 
-type BackupSource = {
-  service?: string;
-  serviceVersion?: string;
-  appVersion?: string;
-  pcName?: string;
-  os?: string;
-  arch?: string;
-  createdAtMs?: number;
-  dbPath?: string;
-};
-
-type BackupStatus = {
-  ok: boolean;
-  configured: boolean;
-  tenantId?: string;
-  backupRootDir?: string;
-  tenantBackupDir?: string;
-  lastRunAtMs?: number;
-  nextRunAtMs?: number;
-  latestBackup?: {
-    backupId?: string;
-    createdAtMs?: number;
-    manifestPath?: string;
-    source?: BackupSource;
-    counts?: Record<string, number>;
-    media?: {
-      copied?: number;
-      skipped?: number;
-      missing?: number;
-      failed?: number;
-      bytes?: number;
-    };
-  } | null;
-  lastResult?: {
-    ok?: boolean;
-    media?: {
-      copied?: number;
-      skipped?: number;
-      missing?: number;
-      failed?: number;
-      bytes?: number;
-    };
-  } | null;
-  backups?: BackupItem[];
-  error?: string;
-};
-
-type BackupItem = {
-  ok?: boolean;
-  tenantId?: string;
-  backupId?: string;
-  createdAtMs?: number;
-  manifestPath?: string;
-  dbPath?: string;
-  source?: BackupSource;
-  counts?: Record<string, number>;
-  media?: {
-    records?: unknown[];
-    copied?: number;
-    skipped?: number;
-    missing?: number;
-    failed?: number;
-    bytes?: number;
-  };
-};
-
-type BackupPreview = {
-  ok: boolean;
-  tenantId?: string;
-  backupId?: string;
-  manifestPath?: string;
-  createdAtMs?: number;
-  source?: BackupSource;
-  counts?: Record<string, number>;
-  media?: {
-    records?: unknown[];
-    copied?: number;
-    skipped?: number;
-    missing?: number;
-    failed?: number;
-    bytes?: number;
-  };
-  error?: string;
-};
-
-type BackupDiscovery = {
-  ok: boolean;
-  selectedPath?: string;
-  backupRootDir?: string;
-  namespaceDir?: string;
-  tenantCount?: number;
-  tenants?: Array<{
-    tenantId?: string;
-    tenantBackupDir?: string;
-    latestBackup?: BackupItem;
-    backups?: BackupItem[];
-  }>;
-  error?: string;
-};
-
-type CommandResult = {
-  ok: boolean;
-  error?: string;
-};
-
 type BadgeTone = "ok" | "warning" | "error" | "neutral";
-type ActionName = "open-settings" | "refresh-status" | "run-sync" | "run-backup" | "choose-backup-folder" | "restore-backup";
+type ActionName = "open-settings" | "refresh-status" | "run-sync" | "run-device-sync" | "run-backup" | "choose-backup-folder" | "restore-backup";
 
 let serviceSnapshot: ServiceStatus | null = null;
 let serviceLoadError = "";
@@ -1050,6 +947,7 @@ async function chooseBackupFolder() {
     await waitForPaint();
     await loadBackupList(tenantId).catch(() => undefined);
     renderBackupStatus(status);
+    await loadDeviceSyncStatus().catch(() => undefined);
     if (status?.ok) {
       setText("backupStatus", "백업 폴더 설정을 완료했습니다. 필요하면 지금 백업을 눌러 새 백업을 만들 수 있습니다.");
     }
@@ -1150,6 +1048,7 @@ async function restoreSelectedBackup() {
     } else {
       setBackupRestoreMessage(`보호 백업 후 복원 완료: DB 반영 ${numberText(result.imported)}건, 첨부 복원 ${numberText(result.mediaRestored)}개${numeric(result.mediaMissing) ? `, 누락 ${numberText(result.mediaMissing)}개` : ""}.`, "ok");
       await loadBackupStatus();
+      await loadDeviceSyncStatus().catch(() => undefined);
     }
   } catch (error) {
     setBackupRestoreMessage(`복원 실패: ${String((error as Error)?.message || error)}`, "error");
@@ -1166,6 +1065,7 @@ async function refreshAll() {
     await loadCloudSyncStatus().catch(renderCloudSyncLoadError);
     await loadDeviceConnectionStatus().catch(() => undefined);
     await loadBackupStatus().catch(renderBackupLoadError);
+    await loadDeviceSyncStatus().catch(() => renderDeviceSyncStatus(null));
     await loadHomeOverview(currentBackupTenantId());
   } finally {
     setActionBusy("refresh-status", false);
@@ -1205,6 +1105,7 @@ function bindUi() {
   byId<HTMLButtonElement>("deviceAuthReopen").addEventListener("click", () => void deviceAuthorization.reopen());
   actionButtons("refresh-status").forEach((button) => button.addEventListener("click", refreshAll));
   actionButtons("run-sync").forEach((button) => button.addEventListener("click", runCloudSyncNow));
+  actionButtons("run-device-sync").forEach((button) => button.addEventListener("click", () => void runDeviceSyncNow(loadBackupStatus)));
   actionButtons("run-backup").forEach((button) => button.addEventListener("click", runBackupNow));
   actionButtons("restore-backup").forEach((button) => button.addEventListener("click", restoreSelectedBackup));
   actionButtons("choose-backup-folder").forEach((button) => {
