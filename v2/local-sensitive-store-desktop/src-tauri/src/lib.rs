@@ -20,7 +20,7 @@ use std::io::Read;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Arc, Mutex};
+use std::sync::{atomic::{AtomicU64, Ordering}, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use tauri::{
@@ -32,7 +32,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-08-22.4-tauri-child-webview";
+pub(crate) const SERVICE_VERSION: &str = "2026-08-22.5-teacher-popup-windows";
 const WORK_MEETING_ROOT_PAGE_ID: &str = "classaimate:work-meeting-minutes";
 const WORK_MEETING_ROOT_TITLE: &str = "업무 회의록";
 const WORK_MEETING_ROOT_INTRO: &str = "모바일에서 확정한 업무 회의록이 자동으로 들어옵니다.";
@@ -46,6 +46,8 @@ const DEVICE_AUTHORIZATION_TTL_MS: i64 = 10 * 60 * 1000;
 const BROWSER_LINK_PICKUP_TTL_MS: i64 = 60 * 1000;
 const DESKTOP_BROWSER_LINK_PICKUP_TTL_MS: i64 = 10 * 60 * 1000;
 const DESKTOP_BROWSER_LINK_AUDIENCE: &str = "teacher-home-webview";
+const TEACHER_WEBVIEW_LABEL: &str = "teacher-home";
+static TEACHER_POPUP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 const HOST: &str = "127.0.0.1";
 const PORTS: [u16; 5] = [51273, 51274, 51275, 51276, 51277];
 const MAX_BODY_BYTES: u64 = 14 * 1024 * 1024;
@@ -6099,6 +6101,94 @@ fn prepare_teacher_home_bridge(state: tauri::State<'_, AppState>) -> Value {
     }
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TeacherHomeWebviewOptions {
+    url: String,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+fn is_teacher_home_url(url: &Url) -> bool {
+    url.scheme() == "https"
+        && url.host_str() == Some("t.classaimate.com")
+        && url.port().is_none()
+        && (url.path() == "/admin" || url.path().starts_with("/admin/"))
+}
+
+fn is_classaimate_popup_url(url: &Url) -> bool {
+    if url.scheme() == "about" && url.path() == "blank" { return true; }
+    url.scheme() == "https"
+        && url.port().is_none()
+        && matches!(url.host_str(), Some("t.classaimate.com" | "home.classaimate.com" | "classaimate-v3.pages.dev"))
+}
+
+fn create_teacher_popup(
+    app: tauri::AppHandle,
+    url: Url,
+    features: tauri::webview::NewWindowFeatures,
+) -> tauri::webview::NewWindowResponse<tauri::Wry> {
+    if !is_classaimate_popup_url(&url) {
+        return match url.scheme() {
+            "http" | "https" | "mailto" => tauri::webview::NewWindowResponse::Allow,
+            _ => tauri::webview::NewWindowResponse::Deny,
+        };
+    }
+    let label = format!("teacher-popup-{}", TEACHER_POPUP_SEQUENCE.fetch_add(1, Ordering::Relaxed));
+    let nested_app = app.clone();
+    let builder = tauri::WebviewWindowBuilder::new(
+        &app,
+        label,
+        tauri::WebviewUrl::External("about:blank".parse().expect("valid popup URL")),
+    )
+    .title("ClassAiMate")
+    .window_features(features)
+    .on_document_title_changed(|window, title| {
+        let title = title.trim();
+        if !title.is_empty() { let _ = window.set_title(title); }
+    })
+    .on_new_window(move |nested_url, nested_features| {
+        create_teacher_popup(nested_app.clone(), nested_url, nested_features)
+    });
+    match builder.build() {
+        Ok(window) => tauri::webview::NewWindowResponse::Create { window },
+        Err(error) => {
+            eprintln!("[local-sensitive-store] teacher popup failed: {error}");
+            tauri::webview::NewWindowResponse::Deny
+        }
+    }
+}
+
+#[tauri::command]
+async fn create_teacher_home_webview(app: tauri::AppHandle, options: TeacherHomeWebviewOptions) -> Result<(), String> {
+    if app.get_webview(TEACHER_WEBVIEW_LABEL).is_some() { return Ok(()); }
+    let url = Url::parse(&options.url).map_err(|_| "teacher_home_url_invalid".to_string())?;
+    if !is_teacher_home_url(&url) { return Err("teacher_home_url_not_allowed".to_string()); }
+    if ![options.x, options.y, options.width, options.height].iter().all(|value| value.is_finite())
+        || options.x < 0.0 || options.y < 0.0 || options.width < 320.0 || options.height < 180.0
+    {
+        return Err("teacher_home_bounds_invalid".to_string());
+    }
+    let window = app.get_window("main").ok_or_else(|| "main_window_missing".to_string())?;
+    let data_directory = app.path().local_data_dir()
+        .map_err(|error| format!("teacher_home_data_directory_failed:{error}"))?
+        .join(TEACHER_WEBVIEW_LABEL).join("teacher-home");
+    let popup_app = app.clone();
+    let builder = tauri::webview::WebviewBuilder::new(TEACHER_WEBVIEW_LABEL, tauri::WebviewUrl::External(url))
+        .data_directory(data_directory)
+        .focused(true)
+        .disable_drag_drop_handler()
+        .devtools(false)
+        .on_new_window(move |popup_url, features| create_teacher_popup(popup_app.clone(), popup_url, features));
+    window.add_child(
+        builder,
+        tauri::LogicalPosition::new(options.x, options.y),
+        tauri::LogicalSize::new(options.width, options.height),
+    ).map(|_| ()).map_err(|error| format!("teacher_home_webview_create_failed:{error}"))
+}
+
 #[tauri::command]
 fn get_device_sync_status(state: tauri::State<'_, AppState>) -> Value {
     let manager = state
@@ -6757,11 +6847,26 @@ mod device_authorization_tests {
     }
 }
 
+#[cfg(test)]
+mod teacher_popup_tests {
+    use super::*;
+
+    #[test]
+    fn teacher_home_and_popup_urls_keep_the_remote_authority_bounded() {
+        assert!(is_teacher_home_url(&Url::parse("https://t.classaimate.com/admin/?view=overview").unwrap()));
+        assert!(!is_teacher_home_url(&Url::parse("https://example.com/admin/").unwrap()));
+        assert!(is_classaimate_popup_url(&Url::parse("https://t.classaimate.com/admin/quests/tv?tenantId=tenant-a").unwrap()));
+        assert!(is_classaimate_popup_url(&Url::parse("about:blank").unwrap()));
+        assert!(!is_classaimate_popup_url(&Url::parse("https://developers.openai.com/api/docs/pricing").unwrap()));
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .on_window_event(|window, event| {
+            if window.label() != "main" { return; }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let keep_running_on_close = window
                     .app_handle()
@@ -6817,6 +6922,7 @@ pub fn run() {
             get_cloud_sync_status,
             get_device_connection_status,
             prepare_teacher_home_bridge,
+            create_teacher_home_webview,
             get_device_sync_status,
             run_device_sync_now,
             disconnect_local_store,

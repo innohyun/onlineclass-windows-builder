@@ -6,7 +6,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 const SHELL_HEIGHT = 56;
 const TEACHER_WEBVIEW_LABEL = "teacher-home";
 const TEACHER_HOME_URL = "https://t.classaimate.com/admin/";
-const TUTORIAL_KEY = "classaimateDesktopShellTutorial:v2";
+const TUTORIAL_KEY = "classaimateDesktopShellTutorial:v3";
 
 type ShellMode = "teacher" | "local";
 
@@ -117,21 +117,17 @@ export function initDesktopShell() {
 
   async function createTeacherWebview(url: string) {
     const bounds = await webviewBounds();
-    const webview = new Webview(appWindow, TEACHER_WEBVIEW_LABEL, {
-      url,
-      x: 0,
-      y: SHELL_HEIGHT,
-      width: bounds.width,
-      height: bounds.height,
-      focus: true,
-      dragDropEnabled: false,
-      devtools: false,
-      dataDirectory: "teacher-home",
+    await invoke<void>("create_teacher_home_webview", {
+      options: {
+        url,
+        x: 0,
+        y: SHELL_HEIGHT,
+        width: bounds.width,
+        height: bounds.height,
+      },
     });
-    await new Promise<void>((resolve, reject) => {
-      void webview.once("tauri://created", () => resolve());
-      void webview.once("tauri://error", (event) => reject(new Error(String(event.payload || "teacher_webview_create_failed"))));
-    });
+    const webview = await Webview.getByLabel(TEACHER_WEBVIEW_LABEL);
+    if (!webview) throw new Error("teacher_webview_create_failed");
     return webview;
   }
 
@@ -201,7 +197,7 @@ export function initDesktopShell() {
   const tutorialSteps = [
     {
       target: teacherButton,
-      text: "교사 홈은 현재 사용 중인 웹 화면을 그대로 엽니다. 별도 주소를 찾거나 로컬 연결 절차를 다시 배울 필요가 없습니다.",
+      text: "교사 홈은 현재 사용 중인 웹 화면을 그대로 엽니다. TV 현황판·발표 화면처럼 독립 실행이 필요한 기능은 로그인 상태를 유지한 별도 앱 창으로 열립니다.",
     },
     {
       target: localButton,
