@@ -33,6 +33,7 @@ export type SearchResult = {
 
 export type Attachment = {
   mediaId: string;
+  attachmentKind: string;
   fileName: string;
   contentType: string;
   size: number;
@@ -46,16 +47,18 @@ export type ExplorerOpenOptions = {
   query?: string;
   group?: string;
   sectionKey?: string;
+  hasAttachment?: boolean;
 };
 
 const PAGE_SIZE = 40;
 const DESIGN_PREVIEW = new URLSearchParams(window.location.search).get("designPreview") === "data";
-const GROUP_KEYS = ["care", "attendance", "learning", "student-record"] as const;
+const GROUP_KEYS = ["care", "attendance", "learning", "student-record", "work-notes"] as const;
 const GROUP_SECTIONS = {
   care: ["observations", "teacher-counseling-sessions", "student-private-details"],
   attendance: ["attendance-records", "attendance-nais-checks", "attendance-document-requests"],
   learning: ["eval-assignments", "eval-results", "math-daily-attempts", "board-post-snapshots", "board-media"],
   "student-record": ["student-record-drafts", "student-record-draft-sets"],
+  "work-notes": ["work-notes"],
 } as const;
 const SECTION_LABELS: Record<string, string> = {
   observations: "관찰 기록",
@@ -71,6 +74,7 @@ const SECTION_LABELS: Record<string, string> = {
   "board-media": "게시판 첨부파일",
   "student-record-draft-sets": "학생부 초안 세트",
   "student-record-drafts": "학생부 초안",
+  "work-notes": "업무 노트",
 };
 
 const PREVIEW_RECORDS: LocalDataRecord[] = [
@@ -128,7 +132,9 @@ export function firstText(row: Record<string, unknown>, keys: string[]) {
 }
 
 export function studentName(record: LocalDataRecord) {
-  return firstText(record.payload, ["studentName", "displayName", "name", "studentCode", "studentId"]) || "학급 자료";
+  const name = firstText(record.payload, ["studentName", "displayName", "name"]);
+  if (name) return name;
+  return firstText(record.payload, ["studentCode", "studentId"]) ? "이름 미확인" : "학급 자료";
 }
 
 export function sectionLabel(record: LocalDataRecord) {
@@ -147,47 +153,118 @@ export function shortDate(record: LocalDataRecord) {
   return date.toLocaleDateString("ko-KR", { month: "numeric", day: "numeric" });
 }
 
-export function contentParts(payload: Record<string, unknown>) {
-  const preferred = ["observation", "summary", "content", "memo", "note", "reason", "result", "description", "detail", "comment", "feedback"];
+function valueAtPath(payload: Record<string, unknown>, path: string) {
+  return path.split(".").reduce<unknown>((value, key) => objectValue(value)[key], payload);
+}
+
+function readableValues(value: unknown) {
+  if (typeof value === "string" && value.trim()) return [value.trim()];
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (typeof item === "string" && item.trim()) return [item.trim()];
+    const row = objectValue(item);
+    return ["text", "content", "comment", "caption", "summary", "note"]
+      .map((key) => row[key])
+      .filter((text): text is string => typeof text === "string" && Boolean(text.trim()))
+      .map((text) => text.trim());
+  });
+}
+
+const CONTENT_PATHS: Record<string, string[]> = {
+  observations: ["observation", "memo", "note", "content"],
+  "teacher-counseling-sessions": ["summary", "followUpNote", "note", "sourceTranscript.text", "content"],
+  "student-private-details": ["siblingsNote", "specialNote", "health.emergencyNote"],
+  "attendance-records": ["reason", "note", "memo", "description"],
+  "attendance-nais-checks": ["reason", "note", "memo", "description"],
+  "attendance-document-requests": ["reason", "note", "memo", "description"],
+  "eval-assignments": ["description", "subject", "achievement", "coreStandard", "achievementStandard", "levelTexts", "note"],
+  "eval-results": ["customResultText", "customText", "levelLabel", "note", "feedback", "summary", "text", "result"],
+  "math-daily-attempts": ["feedback", "summary", "answer", "note"],
+  "board-post-snapshots": ["content", "body", "summary", "description"],
+  "student-record-draft-sets": ["summary", "description", "note"],
+  "student-record-drafts": ["behaviorComment", "subjectComments", "creativeComments", "content", "draftText", "text", "summary", "note"],
+  "work-notes": ["markdown", "properties.summary", "properties.description", "blocks"],
+};
+
+export function contentParts(payload: Record<string, unknown>, sectionKey = "") {
+  const preferred = CONTENT_PATHS[sectionKey] || ["summary", "content", "observation", "memo", "note", "reason", "description", "detail", "comment", "feedback"];
   const seen = new Set<string>();
   const parts: string[] = [];
-  for (const key of preferred) {
-    const value = payload[key];
-    if (typeof value === "string" && value.trim() && !seen.has(value.trim())) {
-      seen.add(value.trim());
-      parts.push(value.trim());
+  const add = (text: string) => {
+    const normalized = text.trim();
+    if (!normalized || seen.has(normalized)) return;
+    seen.add(normalized);
+    parts.push(normalized);
+  };
+  if (sectionKey === "student-private-details") {
+    const guardianText = (key: "guardian1" | "guardian2", label: string) => {
+      const guardian = objectValue(payload[key]);
+      const value = [firstText(guardian, ["name"]), firstText(guardian, ["phone"])].filter(Boolean).join(" · ");
+      if (value) add(`${label}: ${value}`);
+    };
+    guardianText("guardian1", "보호자 1");
+    guardianText("guardian2", "보호자 2");
+    const health = objectValue(payload.health);
+    for (const [key, label] of [["conditions", "건강 유의사항"], ["allergies", "알레르기"], ["cautionFoods", "주의 음식"]] as const) {
+      const values = readableValues(health[key]);
+      if (values.length) add(`${label}: ${values.join(", ")}`);
     }
+    const emergency = firstText(health, ["emergencyNote"]);
+    if (emergency) add(`응급 참고: ${emergency}`);
   }
-  if (!parts.length) {
-    for (const [key, value] of Object.entries(payload)) {
-      if (/id$|code$|name$|at$|atms$|date$|datekey$|status$/i.test(key)) continue;
-      if (typeof value === "string" && value.trim().length > 8 && !seen.has(value.trim())) {
-        seen.add(value.trim());
-        parts.push(value.trim());
-      }
-      if (parts.length >= 3) break;
+  for (const path of preferred) {
+    for (const text of readableValues(valueAtPath(payload, path))) {
+      add(text);
+      if (parts.length >= 4) return parts;
     }
   }
   return parts.slice(0, 4);
 }
 
 export function recordSummary(record: LocalDataRecord) {
-  const parts = contentParts(record.payload);
-  const value = parts[0] || firstText(record.payload, ["status", "kind", "resultMode"]) || "저장된 원문을 확인하세요.";
+  const parts = contentParts(record.payload, record.sectionKey);
+  const value = parts[0] || recordStatusLabel(record) || "저장된 원문을 확인하세요.";
   return value.length > 62 ? `${value.slice(0, 62)}…` : value;
 }
 
 function recordTitle(record: LocalDataRecord) {
+  if (record.sectionKey === "work-notes") {
+    return `${firstText(record.payload, ["emoji"])} ${firstText(record.payload, ["title"]) || "제목 없음"}`.trim();
+  }
   return `${studentName(record)} · ${sectionLabel(record)}`;
 }
 
-function attachmentFromValue(value: unknown): Attachment | null {
+export function recordStatusLabel(record: LocalDataRecord) {
+  const mode = firstText(record.payload, ["resultMode"]);
+  if (mode === "custom_text") return "서술형 평가";
+  if (mode === "level") return "단계형 평가";
+  const status = firstText(record.payload, ["status", "kind"]);
+  const labels: Record<string, string> = {
+    draft: "초안",
+    recorded: "기록 완료",
+    completed: "완료",
+    reviewed: "검토 완료",
+    unread: "미확인",
+    read: "확인",
+    closed: "종료",
+    in_progress: "진행 중",
+    pending: "대기",
+    approved: "승인",
+    rejected: "반려",
+    absent: "결석",
+    late: "지각",
+  };
+  return labels[status] || (record.sectionKey === "work-notes" ? "이 PC 업무 노트" : status);
+}
+
+function attachmentFromValue(value: unknown, defaultKind: string): Attachment | null {
   const row = objectValue(value);
   const mediaId = firstText(row, ["mediaId", "id"]);
   const fileName = firstText(row, ["fileName", "originalName", "name"]);
   if (!mediaId && !fileName) return null;
   return {
     mediaId,
+    attachmentKind: firstText(row, ["attachmentKind", "kind"]) || defaultKind,
     fileName: fileName || "첨부파일",
     contentType: firstText(row, ["contentType", "mimeType", "type"]) || "application/octet-stream",
     size: numeric(row.size || row.bytes),
@@ -203,7 +280,8 @@ export function recordAttachments(record: LocalDataRecord) {
   }
   if (record.sectionKey === "board-media") values.unshift(record.payload);
   const seen = new Set<string>();
-  return values.map(attachmentFromValue).filter((item): item is Attachment => {
+  const defaultKind = record.sectionKey === "work-notes" ? "work-note" : "board-media";
+  return values.map((value) => attachmentFromValue(value, defaultKind)).filter((item): item is Attachment => {
     if (!item) return false;
     const key = item.mediaId || item.fileName;
     if (seen.has(key)) return false;
@@ -261,6 +339,7 @@ export function initDataExplorer(options: ExplorerOptions) {
     element("dataGroupAttendanceCount").textContent = String(numeric(counts.attendance));
     element("dataGroupLearningCount").textContent = String(numeric(counts.learning));
     element("dataGroupStudentRecordCount").textContent = String(numeric(counts["student-record"]));
+    element("dataGroupWorkNotesCount").textContent = String(numeric(counts["work-notes"]));
     document.querySelectorAll<HTMLButtonElement>("[data-data-group]").forEach((button) => {
       const selected = Boolean(groupSelect.value) && button.dataset.dataGroup === groupSelect.value;
       button.classList.toggle("is-selected", selected);
@@ -288,7 +367,7 @@ export function initDataExplorer(options: ExplorerOptions) {
     list.innerHTML = records.map((record, index) => `
       <button class="data-record-row${index === selectedIndex ? " is-selected" : ""}" type="button" role="option" aria-selected="${index === selectedIndex}" data-data-record-index="${index}">
         <span class="data-record-title"><strong>${escapeHtml(recordTitle(record))}</strong>${record.hasAttachment ? '<i class="fa-solid fa-paperclip" aria-label="첨부파일 있음"></i>' : ""}</span>
-        <span class="data-record-date">${escapeHtml(shortDate(record))} · ${escapeHtml(firstText(record.payload, ["status", "kind", "resultMode"]) || sectionLabel(record))}</span>
+        <span class="data-record-date">${escapeHtml(shortDate(record))} · ${escapeHtml(recordStatusLabel(record) || sectionLabel(record))}</span>
         <span class="data-record-summary">${escapeHtml(recordSummary(record))}</span>
         <i class="fa-solid fa-chevron-right data-record-arrow" aria-hidden="true"></i>
       </button>
@@ -305,7 +384,7 @@ export function initDataExplorer(options: ExplorerOptions) {
       <div class="data-attachment-row">
         <span class="data-file-icon"><i class="fa-solid fa-file-pdf" aria-hidden="true"></i></span>
         <span><strong>${escapeHtml(attachment.fileName)}</strong><small>${escapeHtml(fileTypeLabel(attachment.contentType, attachment.fileName))} · ${escapeHtml(byteText(attachment.size))}</small></span>
-        <button type="button" data-open-media="${escapeHtml(attachment.mediaId)}"${attachment.mediaId ? "" : " disabled"}>${attachment.mediaId ? "열기" : "파일 정보만 있음"}</button>
+        <button type="button" data-open-media="${escapeHtml(attachment.mediaId)}" data-attachment-kind="${escapeHtml(attachment.attachmentKind)}"${attachment.mediaId ? "" : " disabled"}>${attachment.mediaId ? "열기" : "파일 정보만 있음"}</button>
       </div>
     `).join("");
   }
@@ -317,11 +396,11 @@ export function initDataExplorer(options: ExplorerOptions) {
     empty.hidden = Boolean(record);
     detail.hidden = !record;
     if (!record) return;
-    element("dataDetailTitle").textContent = `${studentName(record)} ${sectionLabel(record)}`;
-    element("dataDetailStudent").textContent = studentName(record);
+    element("dataDetailTitle").textContent = recordTitle(record);
+    element("dataDetailStudent").textContent = record.sectionKey === "work-notes" ? "학급 업무" : studentName(record);
     element("dataDetailKind").textContent = sectionLabel(record);
     element("dataDetailSavedAt").textContent = formatDate(record.updatedAtMs, record.dateKey);
-    const parts = contentParts(record.payload);
+    const parts = contentParts(record.payload, record.sectionKey);
     element("dataDetailBody").innerHTML = (parts.length ? parts : ["저장된 원문 필드가 없습니다. 원본 JSON에서 전체 내용을 확인할 수 있습니다."])
       .map((part) => `<p>${escapeHtml(part)}</p>`).join("");
     renderAttachments(record);
@@ -330,7 +409,7 @@ export function initDataExplorer(options: ExplorerOptions) {
 
   async function loadCounts() {
     if (DESIGN_PREVIEW) {
-      renderGroups({ care: 327, attendance: 93, learning: 874, "student-record": 174 });
+      renderGroups({ care: 327, attendance: 93, learning: 874, "student-record": 174, "work-notes": 12 });
       return;
     }
     const tenantId = options.getTenantId().trim();
@@ -342,7 +421,7 @@ export function initDataExplorer(options: ExplorerOptions) {
     if (overview?.ok === false) throw new Error(overview.error || "local_overview_failed");
     const sections = Array.isArray(overview.sections) ? overview.sections : [];
     const countFor = (group: typeof GROUP_KEYS[number]) => sections.reduce((sum, section) => sum + (GROUP_SECTIONS[group].includes(section.key as never) ? numeric(section.count) : 0), 0);
-    renderGroups({ care: countFor("care"), attendance: countFor("attendance"), learning: countFor("learning"), "student-record": countFor("student-record") });
+    renderGroups({ care: countFor("care"), attendance: countFor("attendance"), learning: countFor("learning"), "student-record": countFor("student-record"), "work-notes": countFor("work-notes") });
   }
 
   function previewSearch(): SearchResult {
@@ -423,6 +502,7 @@ export function initDataExplorer(options: ExplorerOptions) {
       attendance: numeric(element("dataGroupAttendanceCount").textContent),
       learning: numeric(element("dataGroupLearningCount").textContent),
       "student-record": numeric(element("dataGroupStudentRecordCount").textContent),
+      "work-notes": numeric(element("dataGroupWorkNotesCount").textContent),
     });
     void search();
   }
@@ -433,7 +513,7 @@ export function initDataExplorer(options: ExplorerOptions) {
     page = 0;
     void search();
   });
-  groupSelect.addEventListener("change", () => { sectionKey = ""; page = 0; renderGroups({ care: numeric(element("dataGroupCareCount").textContent), attendance: numeric(element("dataGroupAttendanceCount").textContent), learning: numeric(element("dataGroupLearningCount").textContent), "student-record": numeric(element("dataGroupStudentRecordCount").textContent) }); void search(); });
+  groupSelect.addEventListener("change", () => { sectionKey = ""; page = 0; renderGroups({ care: numeric(element("dataGroupCareCount").textContent), attendance: numeric(element("dataGroupAttendanceCount").textContent), learning: numeric(element("dataGroupLearningCount").textContent), "student-record": numeric(element("dataGroupStudentRecordCount").textContent), "work-notes": numeric(element("dataGroupWorkNotesCount").textContent) }); void search(); });
   studentInput.addEventListener("change", () => { page = 0; void search(); });
   periodSelect.addEventListener("change", () => { page = 0; void search(); });
   attachmentInput.addEventListener("change", () => { page = 0; void search(); });
@@ -443,7 +523,7 @@ export function initDataExplorer(options: ExplorerOptions) {
     groupSelect.value = button.dataset.dataGroup || "";
     sectionKey = "";
     page = 0;
-    renderGroups({ care: numeric(element("dataGroupCareCount").textContent), attendance: numeric(element("dataGroupAttendanceCount").textContent), learning: numeric(element("dataGroupLearningCount").textContent), "student-record": numeric(element("dataGroupStudentRecordCount").textContent) });
+    renderGroups({ care: numeric(element("dataGroupCareCount").textContent), attendance: numeric(element("dataGroupAttendanceCount").textContent), learning: numeric(element("dataGroupLearningCount").textContent), "student-record": numeric(element("dataGroupStudentRecordCount").textContent), "work-notes": numeric(element("dataGroupWorkNotesCount").textContent) });
     void search();
   });
   element("localDataRecordList").addEventListener("click", (event) => {
@@ -459,7 +539,7 @@ export function initDataExplorer(options: ExplorerOptions) {
     button.disabled = true;
     try {
       if (!DESIGN_PREVIEW) {
-        const result = await invoke<{ ok?: boolean; error?: string }>("open_local_data_attachment", { tenantId: options.getTenantId().trim(), mediaId: button.dataset.openMedia });
+        const result = await invoke<{ ok?: boolean; error?: string }>("open_local_data_attachment", { tenantId: options.getTenantId().trim(), mediaId: button.dataset.openMedia, attachmentKind: button.dataset.attachmentKind });
         if (result?.ok === false) throw new Error(result.error || "media_open_failed");
       }
       element("dataExplorerLocalStatus").textContent = "첨부파일을 이 PC의 기본 프로그램으로 열었습니다.";
@@ -485,6 +565,7 @@ export function initDataExplorer(options: ExplorerOptions) {
       queryInput.value = openOptions.query || queryInput.value;
       sectionKey = openOptions.sectionKey || "";
       groupSelect.value = openOptions.group || groupForSection(sectionKey);
+      attachmentInput.checked = openOptions.hasAttachment === true;
       page = 0;
       await refresh();
     },

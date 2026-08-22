@@ -7,6 +7,29 @@ use std::path::PathBuf;
 use std::process::Command;
 
 const MAX_PAGE_SIZE: i64 = 100;
+const WORK_NOTE_ATTACHMENT_EXPRESSION: &str =
+    "EXISTS (SELECT 1 FROM work_note_attachments a WHERE a.tenant_id = work_note_pages.tenant_id AND a.page_id = work_note_pages.page_id)";
+const WORK_NOTE_PAYLOAD_EXPRESSION: &str = r#"json_object(
+    'pageId', page_id,
+    'parentId', parent_id,
+    'title', title,
+    'emoji', emoji,
+    'properties', json(properties_json),
+    'blocks', json(document_json),
+    'markdown', markdown,
+    'attachments', json(COALESCE((
+        SELECT json_group_array(json_object(
+            'attachmentId', a.attachment_id,
+            'mediaId', a.attachment_id,
+            'attachmentKind', 'work-note',
+            'fileName', a.file_name,
+            'contentType', a.content_type,
+            'size', a.byte_size
+        ))
+        FROM work_note_attachments a
+        WHERE a.tenant_id = work_note_pages.tenant_id AND a.page_id = work_note_pages.page_id
+    ), '[]'))
+)"#;
 
 #[derive(Clone, Copy)]
 struct SearchSource {
@@ -18,6 +41,24 @@ struct SearchSource {
     date_expression: &'static str,
     attachment_expression: &'static str,
     student_column: &'static str,
+}
+
+impl SearchSource {
+    fn payload_expression(self) -> &'static str {
+        if self.key == "work-notes" {
+            WORK_NOTE_PAYLOAD_EXPRESSION
+        } else {
+            "payload_json"
+        }
+    }
+
+    fn search_expression(self) -> &'static str {
+        if self.key == "work-notes" {
+            "title || ' ' || markdown || ' ' || properties_json"
+        } else {
+            "payload_json"
+        }
+    }
 }
 
 const SEARCH_SOURCES: &[SearchSource] = &[
@@ -155,6 +196,17 @@ const SEARCH_SOURCES: &[SearchSource] = &[
         attachment_expression: "0",
         student_column: "student_code",
     },
+    SearchSource {
+        key: "work-notes",
+        label: "업무 노트",
+        group: "work-notes",
+        table: "work_note_pages",
+        sort_column: "updated_at_ms",
+        date_expression:
+            "strftime('%Y-%m-%d', updated_at_ms / 1000, 'unixepoch', 'localtime')",
+        attachment_expression: WORK_NOTE_ATTACHMENT_EXPRESSION,
+        student_column: "",
+    },
 ];
 
 #[derive(Clone, Debug, Deserialize)]
@@ -217,7 +269,7 @@ fn selected_sources(group: &str, section_key: &str) -> Result<Vec<SearchSource>,
     if !safe_group.is_empty()
         && !matches!(
             safe_group.as_str(),
-            "care" | "attendance" | "learning" | "student-record"
+            "care" | "attendance" | "learning" | "student-record" | "work-notes"
         )
     {
         return Err("local_data_group_invalid".to_string());
@@ -264,15 +316,29 @@ fn build_union_query(input: &LocalDataSearchInput) -> Result<(String, Vec<SqlVal
             values.push(SqlValue::Text(student_id.clone()));
         }
         if !student_query.is_empty() {
-            where_parts.push("lower(payload_json) LIKE ?".to_string());
+            where_parts.push(format!("lower({}) LIKE ?", source.search_expression()));
             values.push(SqlValue::Text(format!(
                 "%{}%",
                 student_query.to_lowercase()
             )));
         }
         if !text_query.is_empty() {
-            where_parts.push("lower(payload_json) LIKE ?".to_string());
-            values.push(SqlValue::Text(format!("%{}%", text_query.to_lowercase())));
+            let pattern = format!("%{}%", text_query.to_lowercase());
+            if source.key == "work-notes" {
+                let terms = text_query
+                    .split_whitespace()
+                    .map(|term| format!("\"{}\"*", term.replace('"', "\"\"")))
+                    .collect::<Vec<_>>()
+                    .join(" AND ");
+                where_parts.push("(page_id IN (SELECT page_id FROM work_note_pages_fts WHERE tenant_id = ? AND work_note_pages_fts MATCH ?) OR lower(properties_json) LIKE ? OR EXISTS (SELECT 1 FROM work_note_attachments a WHERE a.tenant_id = work_note_pages.tenant_id AND a.page_id = work_note_pages.page_id AND lower(a.file_name) LIKE ?))".to_string());
+                values.push(SqlValue::Text(tenant_id.clone()));
+                values.push(SqlValue::Text(terms));
+                values.push(SqlValue::Text(pattern.clone()));
+                values.push(SqlValue::Text(pattern));
+            } else {
+                where_parts.push(format!("lower({}) LIKE ?", source.search_expression()));
+                values.push(SqlValue::Text(pattern));
+            }
         }
         if !date_from.is_empty() {
             where_parts.push(format!("{} >= ?", source.date_expression));
@@ -286,10 +352,11 @@ fn build_union_query(input: &LocalDataSearchInput) -> Result<(String, Vec<SqlVal
             where_parts.push(source.attachment_expression.to_string());
         }
         statements.push(format!(
-            "SELECT '{}' AS section_key, '{}' AS section_label, '{}' AS group_key, payload_json, {} AS sort_ms, {} AS date_key, {} AS has_attachment FROM {} WHERE {}",
+            "SELECT '{}' AS section_key, '{}' AS section_label, '{}' AS group_key, {} AS payload_json, {} AS sort_ms, {} AS date_key, {} AS has_attachment FROM {} WHERE {}",
             source.key,
             source.label,
             source.group,
+            source.payload_expression(),
             source.sort_column,
             source.date_expression,
             source.attachment_expression,
@@ -411,7 +478,7 @@ impl SqliteStore {
                 let student_name = row.get::<_, String>(1)?;
                 Ok(json!({
                     "studentId": student_id,
-                    "studentName": if student_name.trim().is_empty() { student_id.clone() } else { student_name },
+                    "studentName": student_name,
                     "recordCount": row.get::<_, i64>(2)?,
                     "lastUpdatedMs": row.get::<_, i64>(3)?,
                 }))
@@ -434,11 +501,27 @@ impl SqliteStore {
         &self,
         tenant_id: String,
         media_id: String,
+        attachment_kind: String,
     ) -> Result<(PathBuf, String), String> {
         let safe_tenant = normalize_tenant_id(Some(&Value::String(tenant_id)));
         let safe_media = normalize(&media_id, 220);
         if safe_tenant.is_empty() || safe_media.is_empty() || safe_media.contains(['/', '\\']) {
             return Err("media_identity_required".to_string());
+        }
+        let kind = normalize(&attachment_kind, 40);
+        if kind == "work-note" {
+            let (path, content_type) = super::work_note_attachments::resolve_local_path(
+                self,
+                safe_tenant,
+                safe_media,
+            )?;
+            if !allowed_attachment_type(&content_type) {
+                return Err("media_content_type_unsupported".to_string());
+            }
+            return Ok((path, content_type));
+        }
+        if !kind.is_empty() && kind != "board-media" {
+            return Err("media_kind_unsupported".to_string());
         }
         let (relative_path, content_type): (String, String) = self
             .conn
@@ -539,6 +622,7 @@ pub(crate) fn open_local_data_attachment(
     state: tauri::State<'_, AppState>,
     tenant_id: String,
     media_id: String,
+    attachment_kind: Option<String>,
 ) -> Value {
     let result = state
         .store
@@ -546,8 +630,36 @@ pub(crate) fn open_local_data_attachment(
         .ok()
         .and_then(|store| store.clone())
         .ok_or_else(|| "local_store_unavailable".to_string())
-        .and_then(|store| store.resolve_local_attachment(tenant_id, media_id))
+        .and_then(|store| {
+            store.resolve_local_attachment(
+                tenant_id,
+                media_id,
+                attachment_kind.unwrap_or_default(),
+            )
+        })
         .and_then(|(path, _)| open_attachment_path(&path));
+    match result {
+        Ok(()) => json!({ "ok": true }),
+        Err(error) => json!({ "ok": false, "error": error }),
+    }
+}
+
+#[tauri::command]
+pub(crate) fn open_local_data_directory(state: tauri::State<'_, AppState>) -> Value {
+    let result = state
+        .store
+        .lock()
+        .ok()
+        .and_then(|store| store.clone())
+        .ok_or_else(|| "local_store_unavailable".to_string())
+        .and_then(|store| {
+            let path = fs::canonicalize(&store.data_dir)
+                .map_err(|_| "local_data_dir_missing".to_string())?;
+            if !path.is_dir() {
+                return Err("local_data_dir_invalid".to_string());
+            }
+            open_attachment_path(&path)
+        });
     match result {
         Ok(()) => json!({ "ok": true }),
         Err(error) => json!({ "ok": false, "error": error }),
@@ -558,6 +670,7 @@ pub(crate) fn open_local_data_attachment(
 mod tests {
     use super::*;
     use crate::random_url_token;
+    use std::io::Cursor;
 
     fn test_store() -> (PathBuf, SqliteStore) {
         let directory = std::env::temp_dir().join(format!(
@@ -698,15 +811,101 @@ mod tests {
         assert_eq!(result.get("total").and_then(Value::as_i64), Some(2));
 
         let (path, _) = store
-            .resolve_local_attachment("tenant-a".to_string(), "media-a".to_string())
+            .resolve_local_attachment(
+                "tenant-a".to_string(),
+                "media-a".to_string(),
+                "board-media".to_string(),
+            )
             .expect("resolve safe media");
         assert!(path.starts_with(fs::canonicalize(&directory).expect("canonical directory")));
         assert_eq!(
             store
-                .resolve_local_attachment("tenant-a".to_string(), "media-b".to_string())
+                .resolve_local_attachment(
+                    "tenant-a".to_string(),
+                    "media-b".to_string(),
+                    "board-media".to_string(),
+                )
                 .unwrap_err(),
             "media_content_type_unsupported"
         );
+        fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn work_notes_search_title_body_and_attachment_without_crossing_tenants() {
+        let (directory, store) = test_store();
+        store
+            .upsert_work_note(json!({
+                "tenantId": "tenant-a",
+                "pageId": "page-a",
+                "title": "5학년 평가 운영 계획",
+                "blocks": [{ "id": "block-a", "type": "text", "text": "회의에서 제출 일정을 정리함" }],
+                "markdown": "회의에서 제출 일정을 정리함",
+                "updatedAtMs": 20
+            }))
+            .expect("save work note");
+        store
+            .upsert_work_note(json!({
+                "tenantId": "tenant-b",
+                "pageId": "page-b",
+                "title": "다른 학급 평가 운영 계획",
+                "blocks": [],
+                "markdown": "회의에서 제출 일정을 정리함",
+                "updatedAtMs": 30
+            }))
+            .expect("save other tenant work note");
+        crate::work_note_attachments::save(
+            &store,
+            "tenant-a".to_string(),
+            "attachment-a".to_string(),
+            "page-a".to_string(),
+            "block-a".to_string(),
+            "평가계획_증빙자료.pdf".to_string(),
+            "application/pdf".to_string(),
+            &mut Cursor::new(b"pdf"),
+        )
+        .expect("save work note attachment");
+
+        let mut body = input("tenant-a");
+        body.group = "work-notes".to_string();
+        body.text_query = "제출 일정".to_string();
+        let result = store.search_local_data(body).expect("search work note body");
+        assert_eq!(result.get("total").and_then(Value::as_i64), Some(1));
+        assert_eq!(
+            result.pointer("/records/0/payload/title").and_then(Value::as_str),
+            Some("5학년 평가 운영 계획")
+        );
+        assert_eq!(
+            result
+                .pointer("/records/0/payload/attachments/0/fileName")
+                .and_then(Value::as_str),
+            Some("평가계획_증빙자료.pdf")
+        );
+
+        let mut file_name = input("tenant-a");
+        file_name.group = "work-notes".to_string();
+        file_name.text_query = "증빙자료".to_string();
+        file_name.has_attachment = true;
+        let result = store
+            .search_local_data(file_name)
+            .expect("search work note attachment name");
+        assert_eq!(result.get("total").and_then(Value::as_i64), Some(1));
+        assert_eq!(
+            result
+                .pointer("/records/0/hasAttachment")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+
+        let (path, content_type) = store
+            .resolve_local_attachment(
+                "tenant-a".to_string(),
+                "attachment-a".to_string(),
+                "work-note".to_string(),
+            )
+            .expect("resolve work note attachment");
+        assert!(path.starts_with(fs::canonicalize(&directory).expect("canonical directory")));
+        assert_eq!(content_type, "application/pdf");
         fs::remove_dir_all(directory).expect("remove test directory");
     }
 

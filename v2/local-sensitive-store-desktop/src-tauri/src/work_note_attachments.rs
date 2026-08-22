@@ -239,6 +239,27 @@ pub(crate) fn open(store: &SqliteStore, tenant_id: String, attachment_id: String
     Ok(AttachmentFile { record: row.record, file, size })
 }
 
+pub(crate) fn resolve_local_path(
+    store: &SqliteStore,
+    tenant_id: String,
+    attachment_id: String,
+) -> Result<(PathBuf, String), String> {
+    let tenant = normalize_tenant_id(Some(&Value::String(tenant_id)));
+    let attachment = safe_id(&attachment_id);
+    if tenant.is_empty() { return Err("tenant_id_required".to_string()); }
+    if attachment.is_empty() { return Err("work_note_attachment_id_required".to_string()); }
+    let row = row_for(store, &tenant, &attachment)?
+        .ok_or_else(|| "work_note_attachment_not_found".to_string())?;
+    let base = fs::canonicalize(&store.data_dir)
+        .map_err(|_| "local_data_dir_missing".to_string())?;
+    let target = fs::canonicalize(checked_path(store, &row.local_path)?)
+        .map_err(|_| "work_note_attachment_file_missing".to_string())?;
+    if !target.starts_with(&base) || !target.is_file() {
+        return Err("work_note_attachment_path_invalid".to_string());
+    }
+    Ok((target, row.record.content_type))
+}
+
 pub(crate) fn delete(store: &SqliteStore, tenant_id: String, attachment_id: String) -> Result<usize, String> {
     let tenant = normalize_tenant_id(Some(&Value::String(tenant_id)));
     let attachment = safe_id(&attachment_id);

@@ -1,22 +1,18 @@
 import { invoke } from "@tauri-apps/api/core";
-
-type HomeSection = {
-  key: string;
-  label: string;
-  count?: number;
-  updatedAtMs?: number;
-  route?: string;
-};
-
-type HomeOverview = {
-  ok?: boolean;
-  sections?: HomeSection[];
-  error?: string;
-};
+import {
+  firstText,
+  recordStatusLabel,
+  recordSummary,
+  sectionLabel,
+  studentName,
+  type LocalDataRecord,
+  type SearchResult,
+} from "./data-explorer";
 
 export type HomeStatus = {
   connected: boolean;
   healthy: boolean;
+  storeReady?: boolean;
   tenantLabel: string;
   syncAtMs?: number;
   backupAtMs?: number;
@@ -24,26 +20,11 @@ export type HomeStatus = {
 };
 
 type DashboardOptions = {
-  onViewChange?: (view: string, context: { group?: string; sectionKey?: string }) => void | Promise<void>;
+  onViewChange?: (view: string, context: { group?: string; sectionKey?: string; attachment?: boolean }) => void | Promise<void>;
   onSearch?: (query: string) => void | Promise<void>;
 };
 
-type RecentRecord = {
-  icon: string;
-  title: string;
-  student: string;
-  savedAtMs: number;
-  sectionKey: string;
-};
-
 const DESIGN_PREVIEW = new URLSearchParams(window.location.search).get("designPreview") === "1";
-
-const HOME_GROUPS = {
-  care: ["observations", "teacher-counseling-sessions", "student-private-details"],
-  attendance: ["attendance-records", "attendance-nais-checks", "attendance-document-requests"],
-  learning: ["eval-assignments", "eval-results", "math-daily-attempts"],
-  "student-record": ["student-record-drafts", "student-record-draft-sets"],
-} as const;
 
 function element<T extends HTMLElement>(id: string) {
   const found = document.getElementById(id);
@@ -91,81 +72,57 @@ function showView(view: string) {
   document.querySelector<HTMLElement>(".workspace-scroll")?.scrollTo({ top: 0, behavior: "smooth" });
 }
 
-function groupCount(sections: HomeSection[], keys: readonly string[]) {
-  return sections.reduce((total, section) => total + (keys.includes(section.key) ? numeric(section.count) : 0), 0);
+function recordTitle(record: LocalDataRecord) {
+  if (record.sectionKey === "work-notes") {
+    return `${firstText(record.payload, ["emoji"])} ${firstText(record.payload, ["title"]) || "제목 없음"}`.trim();
+  }
+  return `${studentName(record)} · ${sectionLabel(record)}`;
 }
 
-function recordTime(row: Record<string, unknown>, fallback: number) {
-  return numeric(row.updatedAtMs || row.createdAtMs || row.savedAtMs || row.importedAtMs || row.observedAtMs || fallback);
+function recordMeta(record: LocalDataRecord) {
+  const summary = recordSummary(record);
+  return record.sectionKey === "work-notes"
+    ? `업무 노트 · ${summary}`
+    : `${sectionLabel(record)} · ${summary}`;
 }
 
-function recordTitle(row: Record<string, unknown>, section: HomeSection, index: number) {
-  const raw = row.title
-    || row.planName
-    || row.subject
-    || row.content
-    || row.memo
-    || row.note
-    || row.observation
-    || row.summary
-    || row.dateKey
-    || `${section.label || section.key} ${index + 1}`;
-  const text = String(raw || "").replace(/\s+/g, " ").trim();
-  return text.length > 48 ? `${text.slice(0, 48)}…` : text;
-}
-
-function recordStudent(row: Record<string, unknown>) {
-  return String(row.studentName || row.displayName || row.name || row.studentCode || row.studentId || "학급 자료");
-}
-
-function iconForSection(key: string) {
-  if (HOME_GROUPS.care.includes(key as never)) return "fa-comments";
-  if (HOME_GROUPS.attendance.includes(key as never)) return "fa-calendar-check";
-  if (HOME_GROUPS.learning.includes(key as never)) return "fa-chart-line";
-  return "fa-folder-open";
-}
-
-function renderRecent(records: RecentRecord[]) {
-  const container = element<HTMLElement>("homeRecentRecords");
+function renderCards(containerId: string, records: LocalDataRecord[], kind: "work-notes" | "sensitive") {
+  const container = element<HTMLElement>(containerId);
   if (!records.length) {
-    container.innerHTML = `<p class="home-empty">아직 표시할 저장 자료가 없습니다.</p>`;
+    container.innerHTML = `<p class="home-empty">${kind === "work-notes" ? "아직 저장된 업무 노트가 없습니다." : "아직 표시할 민감 자료가 없습니다."}</p>`;
     return;
   }
-  container.innerHTML = records.slice(0, 4).map((record) => `
-    <button class="recent-row" type="button" data-app-view-target="data" data-home-section="${safeText(record.sectionKey)}">
-      <span class="recent-icon"><i class="fa-solid ${safeText(record.icon)}" aria-hidden="true"></i></span>
-      <span class="recent-title"><strong>${safeText(record.title)}</strong><small>로컬 DB에 안전하게 저장됨</small></span>
-      <span class="recent-student">${safeText(record.student)}</span>
-      <time>${safeText(formatDateTime(record.savedAtMs))}</time>
-      <i class="fa-solid fa-chevron-right recent-arrow" aria-hidden="true"></i>
-    </button>
-  `).join("");
+  container.innerHTML = records.slice(0, 4).map((record) => {
+    const status = record.sectionKey === "work-notes" ? "로컬 보관" : recordStatusLabel(record) || "로컬 저장";
+    return `
+      <button class="home-record-card" type="button" data-app-view-target="data" data-home-kind="${safeText(record.groupKey)}" data-home-section="${safeText(record.sectionKey)}">
+        <span class="home-record-icon${kind === "sensitive" ? " is-sensitive" : ""}"><i class="fa-solid ${record.sectionKey === "work-notes" ? "fa-note-sticky" : "fa-user-shield"}" aria-hidden="true"></i></span>
+        <span class="home-record-copy"><strong>${safeText(recordTitle(record))}</strong><small>${safeText(recordMeta(record))}</small></span>
+        <span class="home-record-side"><span class="home-record-badge">${safeText(status)}</span><time>${safeText(formatDateTime(record.updatedAtMs))}</time></span>
+        <i class="fa-solid fa-chevron-right home-record-arrow" aria-hidden="true"></i>
+      </button>`;
+  }).join("");
 }
 
-function renderCounts(sections: HomeSection[]) {
-  element("homeCareCount").textContent = String(groupCount(sections, HOME_GROUPS.care));
-  element("homeAttendanceCount").textContent = String(groupCount(sections, HOME_GROUPS.attendance));
-  element("homeLearningCount").textContent = String(groupCount(sections, HOME_GROUPS.learning));
-  element("homeStudentRecordCount").textContent = String(groupCount(sections, HOME_GROUPS["student-record"]));
+function previewRecord(input: Partial<LocalDataRecord> & { sectionKey: string; groupKey: string; payload: Record<string, unknown>; updatedAtMs: number }): LocalDataRecord {
+  return {
+    sectionLabel: input.sectionKey === "work-notes" ? "업무 노트" : "상담 기록",
+    hasAttachment: false,
+    ...input,
+  };
 }
 
 function renderPreview() {
   const now = Date.now();
-  applyHomeStatus({ connected: true, healthy: true, tenantLabel: "수영초등학교 5학년 1반", syncAtMs: now - 18 * 60000, backupAtMs: now - 19 * 60 * 60000, pending: 0 });
-  renderCounts([
-    { key: "observations", label: "관찰 기록", count: 124 },
-    { key: "teacher-counseling-sessions", label: "상담 기록", count: 38 },
-    { key: "attendance-records", label: "출결 기록", count: 86 },
-    { key: "eval-results", label: "평가 결과", count: 74 },
-    { key: "math-daily-results", label: "매일수학", count: 41 },
-    { key: "student-record-drafts", label: "학생부 초안", count: 29 },
-  ]);
-  renderRecent([
-    { icon: "fa-comments", title: "수학 단원평가 후 학습 태도 관찰", student: "김민준", savedAtMs: now - 18 * 60000, sectionKey: "observations" },
-    { icon: "fa-calendar-check", title: "교외체험학습 증빙 자료", student: "이서윤", savedAtMs: now - 74 * 60000, sectionKey: "attendance-records" },
-    { icon: "fa-chart-line", title: "분수의 덧셈 단원평가 결과", student: "박지후", savedAtMs: now - 3 * 60 * 60000, sectionKey: "eval-results" },
-    { icon: "fa-folder-open", title: "행동특성 및 종합의견 초안", student: "최하은", savedAtMs: now - 24 * 60 * 60000, sectionKey: "student-record-drafts" },
-  ]);
+  applyHomeStatus({ connected: true, healthy: true, storeReady: true, tenantLabel: "수영초등학교 5학년 1반", syncAtMs: now - 18 * 60000, backupAtMs: now - 19 * 60 * 60000, pending: 0 });
+  renderCards("homeRecentWorkNotes", [
+    previewRecord({ sectionKey: "work-notes", groupKey: "work-notes", updatedAtMs: now - 18 * 60000, payload: { emoji: "📝", title: "5학년 2학기 학습으로의 평가 계획", markdown: "교과별 평가 기준과 제출 일정을 정리했습니다." } }),
+    previewRecord({ sectionKey: "work-notes", groupKey: "work-notes", updatedAtMs: now - 74 * 60000, payload: { emoji: "📌", title: "학부모 상담 주간 준비", markdown: "상담 일정과 확인할 내용을 정리했습니다." } }),
+  ], "work-notes");
+  renderCards("homeRecentSensitive", [
+    previewRecord({ sectionKey: "teacher-counseling-sessions", groupKey: "care", updatedAtMs: now - 42 * 60000, payload: { studentName: "김하늘", summary: "학생 및 보호자 면담 내용을 기록했습니다.", status: "recorded" } }),
+    previewRecord({ sectionKey: "student-private-details", groupKey: "care", updatedAtMs: now - 20 * 60 * 60000, payload: { studentName: "박도윤", specialNote: "건강 및 생활 정보를 확인했습니다.", status: "reviewed" } }),
+  ], "sensitive");
 }
 
 export function initHomeDashboard(options: DashboardOptions = {}) {
@@ -174,7 +131,11 @@ export function initHomeDashboard(options: DashboardOptions = {}) {
     if (!target) return;
     const view = target.dataset.appViewTarget || "home";
     showView(view);
-    void options.onViewChange?.(view, { group: target.dataset.homeKind, sectionKey: target.dataset.homeSection });
+    void options.onViewChange?.(view, {
+      group: target.dataset.homeKind,
+      sectionKey: target.dataset.homeSection,
+      attachment: target.dataset.homeFilter === "attachments",
+    });
   });
 
   element<HTMLFormElement>("homeSearchForm").addEventListener("submit", (event) => {
@@ -192,10 +153,12 @@ function applyHomeStatus(status: HomeStatus) {
   element("homeTenantLabel").textContent = status.tenantLabel || "연결된 학급 없음";
   element("homeConnectionText").textContent = status.connected ? "정상 연결" : "연결 필요";
   element("homeBackupText").textContent = formatDateTime(status.backupAtMs);
+  element("homeSafetyBackupText").textContent = formatDateTime(status.backupAtMs);
   element("homeSyncText").textContent = formatDateTime(status.syncAtMs);
   element("homeFooterBackupText").textContent = formatDateTime(status.backupAtMs);
   element("homePendingText").textContent = `${numeric(status.pending)}건`;
-  element("homeHealthText").textContent = status.healthy ? "연결 정상" : status.connected ? "확인 필요" : "연결 필요";
+  element("homeStoreText").textContent = status.storeReady === false ? "확인 필요" : "정상";
+  element("homeHealthText").textContent = status.healthy ? "로컬 저장소 정상" : status.connected ? "확인 필요" : "연결 필요";
   document.body.dataset.homeHealth = status.healthy ? "ok" : "warning";
 }
 
@@ -204,48 +167,42 @@ export function renderHomeStatus(status: HomeStatus) {
   applyHomeStatus(status);
 }
 
+async function loadRecentGroup(tenantId: string, group: "work-notes" | "care") {
+  const result = await invoke<SearchResult>("search_local_data", {
+    input: {
+      tenantId,
+      group,
+      sectionKey: "",
+      studentQuery: "",
+      textQuery: "",
+      dateFrom: "",
+      dateTo: "",
+      hasAttachment: false,
+      offset: 0,
+      limit: 4,
+    },
+  });
+  if (result?.ok === false) throw new Error(result.error || "local_data_search_failed");
+  return Array.isArray(result.records) ? result.records : [];
+}
+
 export async function loadHomeOverview(tenantId: string) {
   if (DESIGN_PREVIEW) return;
   const safeTenantId = String(tenantId || "").trim();
   if (!safeTenantId) {
-    renderCounts([]);
-    renderRecent([]);
+    renderCards("homeRecentWorkNotes", [], "work-notes");
+    renderCards("homeRecentSensitive", [], "sensitive");
     return;
   }
-
   try {
-    const overview = await invoke<HomeOverview>("get_local_overview", { tenantId: safeTenantId });
-    if (overview?.ok === false) throw new Error(overview.error || "local_overview_failed");
-    const sections = Array.isArray(overview.sections) ? overview.sections : [];
-    renderCounts(sections);
-
-    const candidates = [...sections]
-      .filter((section) => section.route && numeric(section.count) > 0)
-      .sort((a, b) => numeric(b.updatedAtMs) - numeric(a.updatedAtMs));
-    const recent: RecentRecord[] = [];
-    for (const section of candidates.slice(0, 6)) {
-      const payload = await invoke<{ ok?: boolean; records?: unknown[]; error?: string }>("list_local_data_section", {
-        tenantId: safeTenantId,
-        route: section.route,
-        limit: 4,
-      });
-      if (payload?.ok === false) continue;
-      const rows = Array.isArray(payload.records) ? payload.records : [];
-      rows.slice(0, 2).forEach((record, index) => {
-        const row = (record && typeof record === "object" ? record : {}) as Record<string, unknown>;
-        recent.push({
-          icon: iconForSection(section.key),
-          title: recordTitle(row, section, index),
-          student: recordStudent(row),
-          savedAtMs: recordTime(row, numeric(section.updatedAtMs)),
-          sectionKey: section.key,
-        });
-      });
-    }
-    recent.sort((a, b) => b.savedAtMs - a.savedAtMs);
-    renderRecent(recent);
-  } catch (_) {
-    renderCounts([]);
-    renderRecent([]);
+    const [workNotes, sensitive] = await Promise.all([
+      loadRecentGroup(safeTenantId, "work-notes"),
+      loadRecentGroup(safeTenantId, "care"),
+    ]);
+    renderCards("homeRecentWorkNotes", workNotes, "work-notes");
+    renderCards("homeRecentSensitive", sensitive, "sensitive");
+  } catch {
+    renderCards("homeRecentWorkNotes", [], "work-notes");
+    renderCards("homeRecentSensitive", [], "sensitive");
   }
 }

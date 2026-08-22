@@ -81,7 +81,13 @@ const PREVIEW_TIMELINE: LocalDataRecord[] = [
 
 function studentLabel(student: LocalStudent | undefined) {
   if (!student) return "학생";
-  return student.studentName || student.studentId;
+  return student.studentName && student.studentName !== student.studentId ? student.studentName : "이름 미확인";
+}
+
+function studentIdentifierLabel(studentId: string) {
+  if (/^\d{1,3}$/u.test(studentId)) return `${studentId}번`;
+  const short = studentId.length > 16 ? `${studentId.slice(0, 16)}…` : studentId;
+  return `식별번호 ${short}`;
 }
 
 function timelineIcon(record: LocalDataRecord) {
@@ -141,7 +147,7 @@ export function initStudentTimeline(options: StudentTimelineOptions) {
     }
     list.innerHTML = students.map((student) => `
       <button type="button" class="student-roster-row${student.studentId === selectedStudentId ? " is-selected" : ""}" data-student-id="${escapeHtml(student.studentId)}" aria-pressed="${student.studentId === selectedStudentId}">
-        <span>${escapeHtml(student.studentId)}</span><strong>${escapeHtml(studentLabel(student))}</strong>
+        <span title="${escapeHtml(student.studentId)}">${escapeHtml(studentIdentifierLabel(student.studentId))}</span><strong>${escapeHtml(studentLabel(student))}</strong>
       </button>
     `).join("");
   }
@@ -149,7 +155,7 @@ export function initStudentTimeline(options: StudentTimelineOptions) {
   function renderTimeline() {
     const student = selectedStudent();
     element("studentTimelineName").textContent = studentLabel(student);
-    element("studentTimelineNumber").textContent = student ? `${student.studentId}번` : "";
+    element("studentTimelineNumber").textContent = student ? studentIdentifierLabel(student.studentId) : "";
     element("studentTimelineSummary").textContent = student
       ? `저장 자료 ${student.recordCount.toLocaleString("ko-KR")}건 · 최근 기록 ${records[0]?.dateKey ? records[0].dateKey.replace(/-/g, ". ") + "." : "-"}`
       : "학생을 선택하면 저장 기록이 표시됩니다.";
@@ -188,7 +194,7 @@ export function initStudentTimeline(options: StudentTimelineOptions) {
       <div class="student-attachment-row">
         <span class="student-file-icon"><i class="fa-solid fa-file-pdf" aria-hidden="true"></i></span>
         <span><strong>${escapeHtml(attachment.fileName)}</strong><small>${escapeHtml(fileTypeLabel(attachment.contentType, attachment.fileName))} · ${escapeHtml(byteText(attachment.size))}</small></span>
-        <button type="button" data-open-student-media="${escapeHtml(attachment.mediaId)}"${attachment.mediaId ? "" : " disabled"}>${attachment.mediaId ? "열기" : "파일 정보만 있음"}</button>
+        <button type="button" data-open-student-media="${escapeHtml(attachment.mediaId)}" data-attachment-kind="${escapeHtml(attachment.attachmentKind)}"${attachment.mediaId ? "" : " disabled"}>${attachment.mediaId ? "열기" : "파일 정보만 있음"}</button>
       </div>
     `).join("");
   }
@@ -207,7 +213,7 @@ export function initStudentTimeline(options: StudentTimelineOptions) {
     element("studentTimelineDetailKind").textContent = timelineCategory(record);
     element("studentTimelineDetailDate").textContent = record.dateKey ? formatDate(0, record.dateKey) : "-";
     element("studentTimelineDetailSavedAt").textContent = formatDate(record.updatedAtMs, record.dateKey);
-    const parts = contentParts(record.payload);
+    const parts = contentParts(record.payload, record.sectionKey);
     element("studentTimelineDetailBody").innerHTML = (parts.length ? parts : ["저장된 원문 필드가 없습니다. 원본 JSON에서 전체 내용을 확인할 수 있습니다."])
       .map((part) => `<p>${escapeHtml(part)}</p>`).join("");
     renderAttachments(record);
@@ -332,7 +338,7 @@ export function initStudentTimeline(options: StudentTimelineOptions) {
     try {
       if (!DESIGN_PREVIEW) {
         const result = await invoke<{ ok?: boolean; error?: string }>("open_local_data_attachment", {
-          tenantId: options.getTenantId().trim(), mediaId: button.dataset.openStudentMedia,
+          tenantId: options.getTenantId().trim(), mediaId: button.dataset.openStudentMedia, attachmentKind: button.dataset.attachmentKind,
         });
         if (result?.ok === false) throw new Error(result.error || "media_open_failed");
       }

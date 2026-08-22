@@ -1,4 +1,4 @@
-name: Local Sensitive Store Release
+name: ClassAiMate 교사 데스크 릴리스
 
 on:
   workflow_dispatch:
@@ -73,7 +73,7 @@ jobs:
           $builderCommit = (git -C $repoRoot rev-parse HEAD).Trim()
           $downloadUrl = "https://github.com/$($env:BUILDER_REPO)/releases/download/$releaseTag/$fileName"
           $manifest = [ordered]@{
-            name = "OnlineClass Local Sensitive Store"
+            name = "ClassAiMate 교사 데스크"
             version = [string]$packageJson.version
             platform = "windows"
             fileName = $fileName
@@ -92,6 +92,6 @@ jobs:
           $manifest | ConvertTo-Json -Depth 8 | Set-Content -Path $manifestPath -Encoding UTF8
           gh release view $releaseTag *> $null
           if ($LASTEXITCODE -ne 0) {
-            gh release create $releaseTag --target $builderCommit --title "OnlineClass Local Sensitive Store $($packageJson.version)" --notes "Windows local DB helper synced from onlineClass $($source.sourceCommit)."
+            gh release create $releaseTag --target $builderCommit --title "ClassAiMate 교사 데스크 $($packageJson.version)" --notes "ClassAiMate 교사 데스크 Windows 설치본입니다. 원본 커밋: $($source.sourceCommit)"
           }
           gh release upload $releaseTag $stagedAsset $manifestPath --clobber

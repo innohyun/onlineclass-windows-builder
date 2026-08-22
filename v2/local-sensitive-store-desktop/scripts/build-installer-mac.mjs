@@ -8,7 +8,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, "..");
 const tauriRoot = path.join(projectRoot, "src-tauri");
-const appName = "OnlineClass Local Sensitive Store";
+const appName = "ClassAiMate 교사 데스크";
 const arch = process.arch === "arm64" ? "aarch64" : process.arch;
 const appPath = path.join(tauriRoot, "target", "release", "bundle", "macos", `${appName}.app`);
 const dmgDir = path.join(tauriRoot, "target", "release", "bundle", "dmg");

@@ -10,6 +10,7 @@ import "./backup-restore.css";
 import "./shared-archive.css";
 import "./health-dashboard.css";
 import "./settings-dashboard.css";
+import "./desktop-shell.css";
 import { initSharedArchive } from "./shared-archive";
 import { initHomeDashboard, loadHomeOverview, renderHomeStatus } from "./home-dashboard";
 import { createDeviceAuthorizationController, type DeviceAuthorizationResult } from "./device-authorization";
@@ -22,6 +23,7 @@ import { initHealthDashboardPreview } from "./health-dashboard-preview";
 import { initSettingsDashboard, renderSettingsDashboard } from "./settings-dashboard";
 import { initSettingsDashboardPreview } from "./settings-dashboard-preview";
 import { loadDeviceSyncStatus, renderDeviceSyncStatus, runDeviceSyncNow } from "./device-sync-ui";
+import { initDesktopShell } from "./desktop-shell";
 import type { BackupDiscovery, BackupItem, BackupPreview, BackupSource, BackupStatus, CommandResult } from "./backup-types";
 
 declare const __APP_VERSION__: string;
@@ -78,7 +80,7 @@ type DeviceConnectionStatus = DeviceAuthorizationResult & {
 };
 
 type BadgeTone = "ok" | "warning" | "error" | "neutral";
-type ActionName = "open-settings" | "refresh-status" | "run-sync" | "run-device-sync" | "repair-device-sync" | "run-backup" | "choose-backup-folder" | "restore-backup";
+type ActionName = "open-settings" | "open-data-directory" | "refresh-status" | "run-sync" | "run-device-sync" | "repair-device-sync" | "run-backup" | "choose-backup-folder" | "restore-backup";
 
 let serviceSnapshot: ServiceStatus | null = null;
 let serviceLoadError = "";
@@ -152,7 +154,7 @@ function refreshActionStates() {
     "run-backup": backupUnavailable,
     "restore-backup": restoreUnavailable,
   };
-  (["open-settings", "refresh-status", "run-sync", "run-backup", "choose-backup-folder", "restore-backup"] as ActionName[]).forEach((action) => {
+  (["open-settings", "open-data-directory", "refresh-status", "run-sync", "run-backup", "choose-backup-folder", "restore-backup"] as ActionName[]).forEach((action) => {
     actionButtons(action).forEach((button) => {
       button.disabled = busyActions.has(action) || Boolean(disabledByAction[action]);
     });
@@ -488,6 +490,7 @@ function renderSummary() {
   renderHomeStatus({
     connected: deviceConnectionSnapshot?.connected === true || (cloudSyncSnapshot?.connected === true && !isCredentialMissing(cloudSyncSnapshot)),
     healthy: tone === "is-ok" || (tone === "is-warning" && backupSnapshot?.configured !== true),
+    storeReady: serviceSnapshot?.ok === true,
     tenantLabel: tenantLabel(deviceConnectionSnapshot?.connected ? deviceConnectionSnapshot : cloudSyncSnapshot),
     syncAtMs: latestSyncTime(cloudSyncSnapshot),
     backupAtMs: latestBackupTime(backupSnapshot),
@@ -1064,6 +1067,7 @@ async function refreshAll() {
     await loadStatus().catch(renderServiceLoadError);
     await loadCloudSyncStatus().catch(renderCloudSyncLoadError);
     await loadDeviceConnectionStatus().catch(() => undefined);
+    await desktopShell.refreshConnection().catch(() => undefined);
     await loadBackupStatus().catch(renderBackupLoadError);
     await loadDeviceSyncStatus().catch(() => renderDeviceSyncStatus(null));
     await loadHomeOverview(currentBackupTenantId());
@@ -1092,6 +1096,18 @@ function bindUi() {
   });
 
   actionButtons("open-settings").forEach((button) => button.addEventListener("click", () => void deviceAuthorization.start()));
+  actionButtons("open-data-directory").forEach((button) => button.addEventListener("click", async () => {
+    setActionBusy("open-data-directory", true);
+    try {
+      const result = await invoke<{ ok?: boolean; error?: string }>("open_local_data_directory");
+      if (result?.ok === false) throw new Error(result.error || "local_data_directory_open_failed");
+      setText("homeHealthText", "저장 위치를 열었습니다");
+    } catch (error) {
+      setText("homeHealthText", `저장 위치 열기 실패: ${String((error as Error)?.message || error)}`);
+    } finally {
+      setActionBusy("open-data-directory", false);
+    }
+  }));
   byId<HTMLButtonElement>("healthConnectionAction").addEventListener("click", () => {
     const connected = deviceConnectionSnapshot?.connected === true
       || (cloudSyncSnapshot?.connected === true && !isCredentialMissing(cloudSyncSnapshot));
@@ -1134,11 +1150,12 @@ function bindUi() {
   });
 }
 
+const desktopShell = initDesktopShell();
 const dataExplorer = initDataExplorer({ getTenantId: currentBackupTenantId });
 const studentTimeline = initStudentTimeline({ getTenantId: currentBackupTenantId });
 initHomeDashboard({
   onViewChange(view, context) {
-    if (view === "data") void dataExplorer.open({ group: context.group, sectionKey: context.sectionKey });
+    if (view === "data") void dataExplorer.open({ group: context.group, sectionKey: context.sectionKey, hasAttachment: context.attachment });
     if (view === "students") void studentTimeline.open();
   },
   onSearch(query) {

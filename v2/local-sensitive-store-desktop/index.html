@@ -4,16 +4,32 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" href="data:," />
-    <title>온라인 클래스 로컬 저장소</title>
+    <title>ClassAiMate 교사 데스크</title>
   </head>
   <body>
+    <header class="desktop-shell-bar" id="desktopShellBar" aria-label="데스크톱 화면 전환" hidden>
+      <div class="desktop-shell-brand"><i class="fa-solid fa-graduation-cap" aria-hidden="true"></i><strong>ClassAiMate 교사 데스크</strong></div>
+      <nav class="desktop-shell-switch" aria-label="주 작업공간">
+        <button id="desktopTeacherHome" type="button" aria-pressed="false">교사 홈</button>
+        <button id="desktopLocalArchive" type="button" aria-pressed="false">로컬 자료함</button>
+      </nav>
+      <p class="desktop-shell-status" id="desktopShellStatus" role="status"><i class="fa-solid fa-circle" aria-hidden="true"></i><span>이 PC 저장소 확인 중</span></p>
+      <button class="desktop-shell-icon" id="desktopTeacherReload" type="button" aria-label="교사 홈 다시 불러오기"><i class="fa-solid fa-rotate-right" aria-hidden="true"></i></button>
+      <button class="desktop-shell-icon" id="desktopShellHelp" type="button" aria-label="데스크톱 앱 사용 안내"><i class="fa-solid fa-circle-question" aria-hidden="true"></i></button>
+    </header>
+    <section class="desktop-teacher-fallback" id="desktopTeacherFallback" aria-live="polite" hidden>
+      <i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i>
+      <h1>교사 홈을 여는 중입니다.</h1>
+      <p>잠시만 기다려 주세요.</p>
+      <button id="desktopTeacherRetry" type="button">다시 시도</button>
+    </section>
     <main class="store-shell">
       <aside class="app-sidebar" aria-label="주 메뉴">
         <div class="brand-lockup">
           <span class="brand-mark" aria-hidden="true"><i class="fa-solid fa-database"></i></span>
           <div>
-            <strong>온라인 클래스</strong>
-            <span>로컬 민감 데이터 저장소</span>
+            <strong>ClassAiMate</strong>
+            <span>교사 데스크</span>
           </div>
         </div>
 
@@ -64,48 +80,53 @@
         </header>
 
         <div class="workspace-scroll">
-          <section class="app-view is-active" data-app-view="home" aria-labelledby="homeTitle">
-            <div class="home-hero">
-              <h1 id="homeTitle">저장된 자료를 바로 확인하세요</h1>
-              <p>웹에 접속하지 않아도 이 PC에 보관된 학생 자료를 찾고 내용을 확인할 수 있습니다.</p>
-              <form class="home-search" id="homeSearchForm" role="search">
-                <label class="home-search-field" for="homeSearchInput">
-                  <i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i>
-                  <span class="sr-only">학생 이름이나 자료 내용 검색</span>
-                  <input id="homeSearchInput" type="search" autocomplete="off" placeholder="학생 이름이나 자료 내용을 검색" />
-                </label>
-                <button class="home-search-button" type="submit"><i class="fa-solid fa-user-magnifying-glass" aria-hidden="true"></i>학생별 자료 찾기</button>
-              </form>
+          <section class="app-view is-active local-archive-home" data-app-view="home" aria-labelledby="homeTitle">
+            <div class="home-overview-grid">
+              <section class="home-search-card" aria-labelledby="homeTitle">
+                <p class="home-eyebrow">이 PC 자료</p>
+                <h1 id="homeTitle">로컬 자료함</h1>
+                <p>이 PC에 저장된 학생 자료와 업무 노트를 한 번에 찾습니다.</p>
+                <form class="home-search" id="homeSearchForm" role="search">
+                  <label class="home-search-field" for="homeSearchInput">
+                    <i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i>
+                    <span class="sr-only">학생, 상담 내용, 업무 노트, 첨부 파일 검색</span>
+                    <input id="homeSearchInput" type="search" autocomplete="off" placeholder="학생, 상담 내용, 업무 노트, 첨부 파일 검색" />
+                  </label>
+                  <button class="home-search-button" type="submit">검색</button>
+                </form>
+                <nav class="home-filter-chips" aria-label="빠른 자료 분류">
+                  <button type="button" data-app-view-target="data" data-home-filter="all">전체</button>
+                  <button type="button" data-app-view-target="data" data-home-filter="student-record" data-home-kind="student-record">학생 기록</button>
+                  <button type="button" data-app-view-target="data" data-home-filter="care" data-home-kind="care">상담</button>
+                  <button type="button" data-app-view-target="data" data-home-filter="learning" data-home-kind="learning">평가</button>
+                  <button type="button" data-app-view-target="data" data-home-filter="work-notes" data-home-kind="work-notes">업무 노트</button>
+                  <button type="button" data-app-view-target="data" data-home-filter="attachments">첨부</button>
+                </nav>
+              </section>
+
+              <section class="home-safety-card" id="homeSafetyCard" aria-labelledby="homeSafetyTitle">
+                <header><span><i class="fa-solid fa-shield-halved" aria-hidden="true"></i></span><div><h2 id="homeSafetyTitle">이 기기에만 저장되는 자료</h2><p>민감자료 원문은 외부로 전송되지 않습니다.</p></div></header>
+                <div class="home-safety-statuses">
+                  <div><i class="fa-solid fa-database" aria-hidden="true"></i><span>SQLite<strong id="homeStoreText">확인 중</strong></span></div>
+                  <div><i class="fa-solid fa-clock-rotate-left" aria-hidden="true"></i><span>최근 백업<strong id="homeSafetyBackupText">-</strong></span></div>
+                  <div><i class="fa-solid fa-cloud-arrow-down" aria-hidden="true"></i><span>동기화 대기<strong id="homePendingText">0건</strong></span></div>
+                </div>
+              </section>
+            </div>
+
+            <div class="home-secondary-actions">
+              <button id="homeStorageOpen" data-action="open-data-directory" type="button"><i class="fa-solid fa-folder-open" aria-hidden="true"></i> 저장 위치 열기</button>
+              <button class="is-primary" data-action="run-backup" type="button"><i class="fa-solid fa-cloud-arrow-up" aria-hidden="true"></i> 새 백업 만들기</button>
             </div>
 
             <div class="home-grid">
-              <section class="home-panel recent-panel" aria-labelledby="recentDataTitle">
-                <div class="home-panel-head">
-                  <div>
-                    <p>최근 활동</p>
-                    <h2 id="recentDataTitle">최근 저장 자료</h2>
-                  </div>
-                  <button class="text-button" type="button" data-app-view-target="data">전체 자료 보기 <i class="fa-solid fa-arrow-right" aria-hidden="true"></i></button>
-                </div>
-                <div class="recent-table-head" aria-hidden="true"><span>자료</span><span>학생</span><span>저장 시각</span></div>
-                <div class="recent-records" id="homeRecentRecords" aria-live="polite">
-                  <p class="home-empty">로컬 저장 자료를 확인하고 있습니다.</p>
-                </div>
+              <section class="home-panel" aria-labelledby="recentWorkNotesTitle">
+                <div class="home-panel-head"><h2 id="recentWorkNotesTitle"><i class="fa-solid fa-note-sticky" aria-hidden="true"></i> 최근 업무 노트</h2><button class="text-button" type="button" data-app-view-target="data" data-home-kind="work-notes">전체 보기 <i class="fa-solid fa-arrow-right" aria-hidden="true"></i></button></div>
+                <div class="home-card-records" id="homeRecentWorkNotes" aria-live="polite"><p class="home-empty">업무 노트를 확인하고 있습니다.</p></div>
               </section>
-
-              <section class="home-panel kinds-panel" aria-labelledby="dataKindsTitle">
-                <div class="home-panel-head">
-                  <div>
-                    <p>한눈에 보기</p>
-                    <h2 id="dataKindsTitle">자료 종류</h2>
-                  </div>
-                </div>
-                <div class="kind-list" id="homeKindList">
-                  <button type="button" data-home-kind="care" data-app-view-target="data"><span class="kind-icon is-blue"><i class="fa-solid fa-comments"></i></span><span><strong>관찰·상담</strong><small>관찰 기록과 상담 메모</small></span><b id="homeCareCount">0</b><i class="fa-solid fa-chevron-right"></i></button>
-                  <button type="button" data-home-kind="attendance" data-app-view-target="data"><span class="kind-icon is-violet"><i class="fa-solid fa-calendar-check"></i></span><span><strong>출결·증빙</strong><small>출결 기록과 첨부 자료</small></span><b id="homeAttendanceCount">0</b><i class="fa-solid fa-chevron-right"></i></button>
-                  <button type="button" data-home-kind="learning" data-app-view-target="data"><span class="kind-icon is-green"><i class="fa-solid fa-chart-line"></i></span><span><strong>평가·학습</strong><small>평가 결과와 학습 기록</small></span><b id="homeLearningCount">0</b><i class="fa-solid fa-chevron-right"></i></button>
-                  <button type="button" data-home-kind="student-record" data-app-view-target="data"><span class="kind-icon is-amber"><i class="fa-solid fa-folder-open"></i></span><span><strong>학생부·종합기록</strong><small>학생부 초안과 종합 기록</small></span><b id="homeStudentRecordCount">0</b><i class="fa-solid fa-chevron-right"></i></button>
-                </div>
+              <section class="home-panel" aria-labelledby="recentSensitiveTitle">
+                <div class="home-panel-head"><h2 id="recentSensitiveTitle"><i class="fa-solid fa-user-shield" aria-hidden="true"></i> 최근 민감 자료</h2><button class="text-button" type="button" data-app-view-target="data" data-home-kind="care">전체 보기 <i class="fa-solid fa-arrow-right" aria-hidden="true"></i></button></div>
+                <div class="home-card-records" id="homeRecentSensitive" aria-live="polite"><p class="home-empty">민감 자료를 확인하고 있습니다.</p></div>
               </section>
             </div>
 
@@ -113,7 +134,7 @@
               <span><i class="fa-solid fa-circle-check" aria-hidden="true"></i><strong id="homeHealthText">연결 상태 확인 중</strong></span>
               <span>최근 수거 <strong id="homeSyncText">-</strong></span>
               <span>최근 백업 <strong id="homeFooterBackupText">-</strong></span>
-              <span class="healthbar-pending">대기 중 <strong id="homePendingText">0건</strong></span>
+              <span class="healthbar-pending">ClassAiMate 교사 데스크</span>
             </footer>
           </section>
 
@@ -133,7 +154,7 @@
             </form>
 
             <div class="data-filter-strip" aria-label="자료 검색 조건">
-              <label><span>자료 종류</span><select id="dataExplorerGroup"><option value="">전체 자료</option><option value="care">관찰·상담</option><option value="attendance">출결·증빙</option><option value="learning">평가·학습</option><option value="student-record">학생부·종합기록</option></select></label>
+              <label><span>자료 종류</span><select id="dataExplorerGroup"><option value="">전체 자료</option><option value="care">관찰·상담</option><option value="attendance">출결·증빙</option><option value="learning">평가·학습</option><option value="student-record">학생부·종합기록</option><option value="work-notes">업무 노트</option></select></label>
               <label><span>학생</span><input id="dataExplorerStudent" type="search" autocomplete="off" placeholder="전체 학생" /></label>
               <label><span>기간</span><select id="dataExplorerPeriod"><option value="30">최근 30일</option><option value="7">최근 7일</option><option value="90">최근 90일</option><option value="all">전체 기간</option></select></label>
               <label class="data-attachment-filter"><input id="dataExplorerHasAttachment" type="checkbox" /><span><i class="fa-solid fa-paperclip" aria-hidden="true"></i> 첨부 있는 자료</span></label>
@@ -147,6 +168,7 @@
                 <button type="button" data-data-group="attendance"><i class="fa-solid fa-calendar-check" aria-hidden="true"></i><span>출결·증빙</span><strong id="dataGroupAttendanceCount">0</strong></button>
                 <button type="button" data-data-group="learning"><i class="fa-solid fa-chart-simple" aria-hidden="true"></i><span>평가·학습</span><strong id="dataGroupLearningCount">0</strong></button>
                 <button type="button" data-data-group="student-record"><i class="fa-solid fa-file-lines" aria-hidden="true"></i><span>학생부·종합기록</span><strong id="dataGroupStudentRecordCount">0</strong></button>
+                <button type="button" data-data-group="work-notes"><i class="fa-solid fa-note-sticky" aria-hidden="true"></i><span>업무 노트</span><strong id="dataGroupWorkNotesCount">0</strong></button>
               </nav>
 
               <section class="data-results-column" aria-labelledby="dataResultsTitle">
@@ -385,6 +407,18 @@
       </section>
       <span class="status-dot" id="statusDot" aria-hidden="true"></span>
     </main>
+    <dialog class="desktop-shell-tutorial" id="desktopShellTutorial" aria-labelledby="desktopShellTutorialTitle">
+      <div class="desktop-shell-tutorial-card">
+        <span class="desktop-shell-tutorial-kicker">처음 사용하는 분을 위한 안내</span>
+        <h2 id="desktopShellTutorialTitle">교사 홈과 로컬 자료함</h2>
+        <p id="desktopShellTutorialBody"></p>
+        <small id="desktopShellTutorialStep">1 / 2</small>
+        <div>
+          <button id="desktopShellTutorialPrevious" type="button">이전</button>
+          <button id="desktopShellTutorialNext" type="button">다음</button>
+        </div>
+      </div>
+    </dialog>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

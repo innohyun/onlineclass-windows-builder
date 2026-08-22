@@ -1,0 +1,253 @@
+.desktop-shell-bar,
+.desktop-teacher-fallback,
+.desktop-shell-tutorial {
+  font-family: "Pretendard", "Noto Sans KR", system-ui, sans-serif;
+}
+
+.desktop-shell-bar[hidden],
+.desktop-teacher-fallback[hidden] {
+  display: none;
+}
+
+body.is-desktop-shell {
+  overflow: hidden;
+}
+
+body.is-desktop-shell .desktop-shell-bar {
+  align-items: center;
+  background: #111827;
+  border-bottom: 1px solid #263244;
+  color: #f8fafc;
+  display: flex;
+  gap: 14px;
+  height: 56px;
+  padding: 0 14px;
+  position: relative;
+  z-index: 20;
+}
+
+.desktop-shell-brand {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  min-width: max-content;
+}
+
+.desktop-shell-brand i {
+  color: #7dd3fc;
+}
+
+.desktop-shell-switch {
+  align-items: center;
+  background: #1f2937;
+  border: 1px solid #334155;
+  border-radius: 10px;
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+}
+
+.desktop-shell-switch button,
+.desktop-shell-icon,
+.desktop-teacher-fallback button,
+.desktop-shell-tutorial button {
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+}
+
+.desktop-shell-switch button {
+  background: transparent;
+  border-radius: 7px;
+  color: #cbd5e1;
+  font-size: 13px;
+  font-weight: 750;
+  padding: 7px 14px;
+}
+
+.desktop-shell-switch button.is-active {
+  background: #f8fafc;
+  color: #111827;
+}
+
+.desktop-shell-status {
+  align-items: center;
+  color: #cbd5e1;
+  display: flex;
+  font-size: 12px;
+  gap: 7px;
+  margin: 0 0 0 auto;
+  min-width: 0;
+}
+
+.desktop-shell-status span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.desktop-shell-status i {
+  color: #f59e0b;
+  font-size: 7px;
+}
+
+.desktop-shell-status.is-connected i {
+  color: #34d399;
+}
+
+.desktop-shell-icon {
+  align-items: center;
+  background: transparent;
+  border-radius: 8px;
+  color: #cbd5e1;
+  display: inline-flex;
+  height: 34px;
+  justify-content: center;
+  width: 34px;
+}
+
+.desktop-shell-icon:hover,
+.desktop-shell-icon:focus-visible {
+  background: #273449;
+  color: #fff;
+}
+
+body.is-desktop-shell .store-shell {
+  height: calc(100vh - 56px);
+}
+
+body.is-desktop-shell .app-workspace,
+body.is-desktop-shell .app-sidebar {
+  height: calc(100vh - 56px);
+}
+
+body.is-desktop-shell.is-teacher-home .store-shell {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.desktop-teacher-fallback {
+  align-items: center;
+  background: #0f172a;
+  color: #e2e8f0;
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 56px);
+  justify-content: center;
+  left: 0;
+  position: fixed;
+  right: 0;
+  text-align: center;
+  top: 56px;
+  z-index: 10;
+}
+
+.desktop-teacher-fallback i {
+  color: #38bdf8;
+  font-size: 28px;
+}
+
+.desktop-teacher-fallback h1 {
+  font-size: 20px;
+  margin: 18px 0 6px;
+}
+
+.desktop-teacher-fallback p {
+  color: #94a3b8;
+  margin: 0 0 18px;
+}
+
+.desktop-teacher-fallback button {
+  background: #0284c7;
+  border-radius: 9px;
+  color: white;
+  font-weight: 750;
+  padding: 9px 16px;
+}
+
+.desktop-shell-tutorial {
+  background: transparent;
+  border: 0;
+  max-width: 460px;
+  padding: 0;
+  width: calc(100% - 32px);
+}
+
+.desktop-shell-tutorial::backdrop {
+  background: rgba(2, 6, 23, 0.74);
+}
+
+.desktop-shell-tutorial-card {
+  background: white;
+  border-radius: 18px;
+  box-shadow: 0 24px 80px rgba(2, 6, 23, 0.35);
+  color: #172033;
+  padding: 26px;
+}
+
+.desktop-shell-tutorial-kicker {
+  color: #0284c7;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.desktop-shell-tutorial h2 {
+  font-size: 22px;
+  margin: 8px 0 10px;
+}
+
+.desktop-shell-tutorial p {
+  color: #475569;
+  line-height: 1.65;
+  margin: 0 0 14px;
+}
+
+.desktop-shell-tutorial small {
+  color: #64748b;
+  display: block;
+  font-weight: 700;
+}
+
+.desktop-shell-tutorial-card > div {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 22px;
+}
+
+.desktop-shell-tutorial button {
+  background: #e2e8f0;
+  border-radius: 9px;
+  color: #334155;
+  font-weight: 750;
+  padding: 9px 15px;
+}
+
+.desktop-shell-tutorial button:last-child {
+  background: #0284c7;
+  color: white;
+}
+
+.desktop-shell-tutorial-target {
+  box-shadow: 0 0 0 3px #38bdf8, 0 0 0 7px rgba(56, 189, 248, 0.28);
+}
+
+@media (max-width: 720px) {
+  body.is-desktop-shell .desktop-shell-bar {
+    gap: 7px;
+    padding: 0 8px;
+  }
+
+  .desktop-shell-brand strong,
+  .desktop-shell-status {
+    display: none;
+  }
+
+  .desktop-shell-switch {
+    margin-right: auto;
+  }
+
+  .desktop-shell-switch button {
+    padding-inline: 10px;
+  }
+}

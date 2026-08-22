@@ -32,7 +32,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-08-22.2-device-sync-credential-repair";
+pub(crate) const SERVICE_VERSION: &str = "2026-08-22.3-teacher-desktop-shell";
 const WORK_MEETING_ROOT_PAGE_ID: &str = "classaimate:work-meeting-minutes";
 const WORK_MEETING_ROOT_TITLE: &str = "업무 회의록";
 const WORK_MEETING_ROOT_INTRO: &str = "모바일에서 확정한 업무 회의록이 자동으로 들어옵니다.";
@@ -44,6 +44,8 @@ const DEVICE_AUTHORIZATION_API_URL: &str = "https://t.classaimate.com/api/v3/loc
 const DEVICE_AUTHORIZATION_PAGE_URL: &str = "https://t.classaimate.com/connect-local";
 const DEVICE_AUTHORIZATION_TTL_MS: i64 = 10 * 60 * 1000;
 const BROWSER_LINK_PICKUP_TTL_MS: i64 = 60 * 1000;
+const DESKTOP_BROWSER_LINK_PICKUP_TTL_MS: i64 = 10 * 60 * 1000;
+const DESKTOP_BROWSER_LINK_AUDIENCE: &str = "teacher-home-webview";
 const HOST: &str = "127.0.0.1";
 const PORTS: [u16; 5] = [51273, 51274, 51275, 51276, 51277];
 const MAX_BODY_BYTES: u64 = 14 * 1024 * 1024;
@@ -183,6 +185,8 @@ struct BrowserLinkToken {
     account_email: String,
     account_display_name: String,
     tenant_name: String,
+    #[serde(default)]
+    audience: String,
     created_at_ms: i64,
     last_used_at_ms: i64,
 }
@@ -199,6 +203,7 @@ struct PendingBrowserLink {
     request_id: String,
     link: BrowserLinkToken,
     expires_at_ms: i64,
+    retire_siblings_on_use: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1364,6 +1369,10 @@ impl BrowserLinkStore {
     }
 
     fn issue(&self, input: &Value) -> Result<BrowserLinkToken, String> {
+        self.issue_for_audience(input, "")
+    }
+
+    fn issue_for_audience(&self, input: &Value, audience: &str) -> Result<BrowserLinkToken, String> {
         let tenant_id = normalize_tenant_id(input.get("tenantId"));
         let uid = normalize_json_text(input.get("uid"), 200);
         if tenant_id.is_empty() {
@@ -1385,11 +1394,19 @@ impl BrowserLinkStore {
             account_email: normalize_json_text(input.get("accountEmail").or_else(|| input.get("email")), 320),
             account_display_name: normalize_json_text(input.get("accountDisplayName"), 120),
             tenant_name: normalize_json_text(input.get("tenantName"), 180),
+            audience: audience.to_string(),
             created_at_ms: now,
             last_used_at_ms: now,
         };
         let snapshot = {
             let mut tokens = self.tokens.lock().map_err(|_| "browser_link_lock_failed".to_string())?;
+            if !audience.is_empty() {
+                tokens.retain(|entry| {
+                    entry.audience != audience
+                        || entry.tenant_id != record.tenant_id
+                        || entry.uid != record.uid
+                });
+            }
             tokens.push(record.clone());
             if tokens.len() > 20 {
                 let keep_from = tokens.len().saturating_sub(20);
@@ -1402,17 +1419,56 @@ impl BrowserLinkStore {
     }
 
     fn issue_for_request(&self, request_id: &str, input: &Value) -> Result<BrowserLinkToken, String> {
+        let link = self.issue(input)?;
+        self.stage_for_request(
+            request_id,
+            link,
+            BROWSER_LINK_PICKUP_TTL_MS,
+            true,
+        )
+    }
+
+    fn issue_desktop_for_request(&self, request_id: &str) -> Result<BrowserLinkToken, String> {
+        let current = self
+            .latest()
+            .ok_or_else(|| "browser_link_missing".to_string())?;
+        let link = self.issue_for_audience(&json!({
+            "tenantId": current.tenant_id,
+            "uid": current.uid,
+            "accountEmail": current.account_email,
+            "accountDisplayName": current.account_display_name,
+            "tenantName": current.tenant_name,
+        }), DESKTOP_BROWSER_LINK_AUDIENCE)?;
+        self.stage_for_request(
+            request_id,
+            link,
+            DESKTOP_BROWSER_LINK_PICKUP_TTL_MS,
+            false,
+        )
+    }
+
+    fn stage_for_request(
+        &self,
+        request_id: &str,
+        link: BrowserLinkToken,
+        ttl_ms: i64,
+        retire_siblings_on_use: bool,
+    ) -> Result<BrowserLinkToken, String> {
         let safe_request_id = normalize(request_id, 80);
-        if safe_request_id.len() != 43 {
+        if safe_request_id.len() != 43
+            || !safe_request_id
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
+        {
             return Err("device_authorization_request_invalid".to_string());
         }
-        let link = self.issue(input)?;
         let mut pending = self.pending_requests.lock().map_err(|_| "browser_link_lock_failed".to_string())?;
         pending.retain(|entry| entry.request_id != safe_request_id);
         pending.push(PendingBrowserLink {
             request_id: safe_request_id,
             link: link.clone(),
-            expires_at_ms: now_ms() + BROWSER_LINK_PICKUP_TTL_MS,
+            expires_at_ms: now_ms() + ttl_ms.max(1),
+            retire_siblings_on_use,
         });
         Ok(link)
     }
@@ -1437,9 +1493,12 @@ impl BrowserLinkStore {
         if token.is_empty() {
             return None;
         }
-        let staged = self.pending_requests.lock().ok().map(|pending| {
-            pending.iter().any(|entry| entry.link.token == token)
-        }).unwrap_or(false);
+        let staged = self.pending_requests.lock().ok().and_then(|pending| {
+            pending
+                .iter()
+                .find(|entry| entry.link.token == token)
+                .map(|entry| entry.retire_siblings_on_use)
+        });
         let mut changed = false;
         let mut snapshot = None;
         let tenant_id = {
@@ -1454,7 +1513,7 @@ impl BrowserLinkStore {
                 changed = true;
                 let tenant_id = entry.tenant_id.clone();
                 let uid = entry.uid.clone();
-                if staged {
+                if staged == Some(true) {
                     tokens.retain(|entry| entry.token == token
                         || entry.tenant_id != tenant_id || entry.uid != uid);
                 }
@@ -1467,7 +1526,7 @@ impl BrowserLinkStore {
         if changed {
             if let Some(tokens) = snapshot { let _ = self.write_tokens(&tokens); }
         }
-        if staged && tenant_id.is_some() {
+        if staged.is_some() && tenant_id.is_some() {
             if let Ok(mut pending) = self.pending_requests.lock() {
                 pending.retain(|entry| entry.link.token != token);
             }
@@ -6013,6 +6072,34 @@ fn get_device_connection_status(state: tauri::State<'_, AppState>) -> Value {
 }
 
 #[tauri::command]
+fn prepare_teacher_home_bridge(state: tauri::State<'_, AppState>) -> Value {
+    let browser_links = match state
+        .browser_links
+        .lock()
+        .ok()
+        .and_then(|store| store.clone())
+    {
+        Some(store) => store,
+        None => return json!({ "ok": false, "connected": false, "error": "browser_link_unavailable" }),
+    };
+    let request_id = random_url_token();
+    match browser_links.issue_desktop_for_request(&request_id) {
+        Ok(link) => json!({
+            "ok": true,
+            "connected": true,
+            "requestId": request_id,
+            "tenantId": link.tenant_id,
+            "tenantName": link.tenant_name,
+            "expiresAtMs": now_ms() + DESKTOP_BROWSER_LINK_PICKUP_TTL_MS,
+        }),
+        Err(error) if error == "browser_link_missing" => {
+            json!({ "ok": true, "connected": false })
+        }
+        Err(error) => json!({ "ok": false, "connected": false, "error": error }),
+    }
+}
+
+#[tauri::command]
 fn get_device_sync_status(state: tauri::State<'_, AppState>) -> Value {
     let manager = state
         .device_sync_manager
@@ -6402,6 +6489,58 @@ mod device_authorization_tests {
     }
 
     #[test]
+    fn desktop_bridge_uses_a_new_token_without_revoking_existing_browsers() {
+        let directory = env::temp_dir().join(format!(
+            "onlineclass-desktop-bridge-test-{}",
+            random_url_token()
+        ));
+        let store = BrowserLinkStore::open(&directory).expect("open browser link store");
+        let previous = store
+            .issue(&json!({
+                "tenantId": "tenant-a",
+                "uid": "teacher-a",
+                "accountEmail": "teacher@example.com",
+                "tenantName": "학급"
+            }))
+            .expect("issue previous link");
+        let request_id = random_url_token();
+        let desktop = store
+            .issue_desktop_for_request(&request_id)
+            .expect("issue desktop bridge link");
+
+        assert_ne!(previous.token, desktop.token);
+        assert_eq!(
+            store.authorize_token(&desktop.token).as_deref(),
+            Some("tenant-a")
+        );
+        assert_eq!(
+            store.authorize_token(&previous.token).as_deref(),
+            Some("tenant-a")
+        );
+        assert!(store
+            .read_for_request(&request_id)
+            .expect("read consumed bridge")
+            .is_none());
+
+        let next_request_id = random_url_token();
+        let next_desktop = store
+            .issue_desktop_for_request(&next_request_id)
+            .expect("replace desktop bridge link");
+        assert_ne!(desktop.token, next_desktop.token);
+        assert!(store.authorize_token(&desktop.token).is_none());
+        assert_eq!(
+            store.authorize_token(&next_desktop.token).as_deref(),
+            Some("tenant-a")
+        );
+        assert_eq!(
+            store.authorize_token(&previous.token).as_deref(),
+            Some("tenant-a")
+        );
+        assert_eq!(store.tokens.lock().expect("browser token lock").len(), 2);
+        fs::remove_dir_all(&directory).expect("remove test directory");
+    }
+
+    #[test]
     fn browser_link_revoke_all_keeps_local_data_files() {
         let directory = env::temp_dir().join(format!("onlineclass-browser-link-revoke-test-{}", random_url_token()));
         let store = BrowserLinkStore::open(&directory).expect("open browser link store");
@@ -6677,6 +6816,7 @@ pub fn run() {
             get_service_status,
             get_cloud_sync_status,
             get_device_connection_status,
+            prepare_teacher_home_bridge,
             get_device_sync_status,
             run_device_sync_now,
             disconnect_local_store,
@@ -6695,6 +6835,7 @@ pub fn run() {
             data_explorer::list_local_students,
             data_explorer::search_local_data,
             data_explorer::open_local_data_attachment,
+            data_explorer::open_local_data_directory,
             open_teacher_settings_url,
             start_device_authorization,
             reopen_device_authorization,

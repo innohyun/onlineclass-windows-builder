@@ -1,4 +1,4 @@
-# OnlineClass Local Sensitive Store
+# ClassAiMate 교사 데스크
 
 Windows installer for the loopback SQLite service used by tenant observation records in `local_sqlite` mode.
 

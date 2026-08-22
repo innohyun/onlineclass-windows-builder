@@ -496,6 +496,8 @@
   color: #2a3951;
   font-size: 13px;
   line-height: 1.65;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .data-detail-body p:last-child {
@@ -645,7 +647,7 @@
   .data-explorer-view { padding-top: 28px; }
   .data-workbench { min-height: auto; grid-template-columns: 1fr; overflow: visible; }
   .data-group-list, .data-results-column { border-right: 0; border-bottom: 1px solid #d9e0ea; }
-  .data-group-list { display: grid; grid-template-columns: repeat(4, minmax(148px, 1fr)); overflow-x: auto; }
+  .data-group-list { display: grid; grid-template-columns: repeat(5, minmax(148px, 1fr)); overflow-x: auto; }
   .data-column-title { display: none; }
   .data-group-list button { min-height: 64px; }
   .data-results-column { min-height: 520px; }
@@ -659,7 +661,7 @@
   .data-search-field { height: 52px; }
   .data-filter-strip { grid-template-columns: 1fr; gap: 9px; padding-block: 14px; }
   .data-filter-strip > label:not(.data-attachment-filter) { grid-template-columns: 72px minmax(0, 1fr); }
-  .data-group-list { grid-template-columns: repeat(4, 154px); }
+  .data-group-list { grid-template-columns: repeat(5, 154px); }
   .data-group-list button { grid-template-columns: 26px minmax(0, 1fr) auto; gap: 8px; padding-inline: 9px; }
   .data-group-list button i { width: 24px; font-size: 16px; }
   .data-group-list button span { font-size: 11px; }
