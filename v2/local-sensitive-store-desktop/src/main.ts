@@ -78,7 +78,7 @@ type DeviceConnectionStatus = DeviceAuthorizationResult & {
 };
 
 type BadgeTone = "ok" | "warning" | "error" | "neutral";
-type ActionName = "open-settings" | "refresh-status" | "run-sync" | "run-device-sync" | "run-backup" | "choose-backup-folder" | "restore-backup";
+type ActionName = "open-settings" | "refresh-status" | "run-sync" | "run-device-sync" | "repair-device-sync" | "run-backup" | "choose-backup-folder" | "restore-backup";
 
 let serviceSnapshot: ServiceStatus | null = null;
 let serviceLoadError = "";
@@ -1106,6 +1106,7 @@ function bindUi() {
   actionButtons("refresh-status").forEach((button) => button.addEventListener("click", refreshAll));
   actionButtons("run-sync").forEach((button) => button.addEventListener("click", runCloudSyncNow));
   actionButtons("run-device-sync").forEach((button) => button.addEventListener("click", () => void runDeviceSyncNow(loadBackupStatus)));
+  actionButtons("repair-device-sync").forEach((button) => button.addEventListener("click", () => void deviceAuthorization.start()));
   actionButtons("run-backup").forEach((button) => button.addEventListener("click", runBackupNow));
   actionButtons("restore-backup").forEach((button) => button.addEventListener("click", restoreSelectedBackup));
   actionButtons("choose-backup-folder").forEach((button) => {

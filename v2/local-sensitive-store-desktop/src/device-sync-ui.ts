@@ -63,6 +63,10 @@ function updateActionState(busy = false) {
   document.querySelectorAll<HTMLButtonElement>('button[data-action="run-device-sync"]').forEach((button) => {
     button.disabled = busy || unavailable;
   });
+  document.querySelectorAll<HTMLButtonElement>('button[data-action="repair-device-sync"]').forEach((button) => {
+    button.hidden = snapshot?.connected === true && snapshot.credentialAvailable === true;
+    button.disabled = busy;
+  });
 }
 
 export function renderDeviceSyncStatus(status: DeviceSyncStatus | null) {

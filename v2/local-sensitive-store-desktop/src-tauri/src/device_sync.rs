@@ -1,6 +1,6 @@
+use crate::device_sync_credential::DeviceSyncCredentialStore;
 use crate::{backup, local_arch, local_os_name, local_pc_name, normalize_json_text, SqliteStore};
 use chrono::Utc;
-use keyring::Entry;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::env;
@@ -11,7 +11,6 @@ use std::thread;
 use std::time::Duration;
 use url::Url;
 
-const KEYRING_SERVICE: &str = "OnlineClassLocalSensitiveStore";
 const SESSION_FILE_NAME: &str = "device-sync-session.json";
 const DEFAULT_API_ROOT: &str = "https://t.classaimate.com/api/v3/local-store-sync";
 const IDLE_PUBLISH_MS: i64 = 30 * 1000;
@@ -37,6 +36,7 @@ struct DeviceSyncSession {
 
 pub(crate) struct DeviceSyncManager {
     session_path: PathBuf,
+    credential_store: DeviceSyncCredentialStore,
     store: Arc<SqliteStore>,
     sync_lock: Mutex<()>,
 }
@@ -47,26 +47,6 @@ fn now_ms() -> i64 {
 
 fn keyring_account(tenant_id: &str, device_id: &str) -> String {
     format!("device-sync:{tenant_id}:{device_id}")
-}
-
-fn keyring_entry(account: &str) -> Result<Entry, String> {
-    Entry::new(KEYRING_SERVICE, account)
-        .map_err(|e| format!("device_sync_keyring_entry_failed:{e}"))
-}
-
-fn credential_storage_label() -> &'static str {
-    #[cfg(target_os = "windows")]
-    {
-        "windows_credential_manager"
-    }
-    #[cfg(target_os = "macos")]
-    {
-        "macos_keychain"
-    }
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    {
-        "os_keyring"
-    }
 }
 
 fn valid_identifier(value: &str, max_len: usize) -> bool {
@@ -141,6 +121,7 @@ impl DeviceSyncManager {
     pub(crate) fn new(data_dir: PathBuf, store: Arc<SqliteStore>) -> Self {
         Self {
             session_path: data_dir.join(SESSION_FILE_NAME),
+            credential_store: DeviceSyncCredentialStore::new(data_dir),
             store,
             sync_lock: Mutex::new(()),
         }
@@ -187,17 +168,7 @@ impl DeviceSyncManager {
     }
 
     fn credential(&self, session: &DeviceSyncSession) -> Result<String, String> {
-        let credential = keyring_entry(&session.keyring_account)?
-            .get_password()
-            .map_err(|e| format!("device_sync_credential_get_failed:{e}"))?;
-        if credential.len() != 43
-            || !credential.chars().all(|character| {
-                character.is_ascii_alphanumeric() || matches!(character, '_' | '-')
-            })
-        {
-            return Err("device_sync_credential_invalid".to_string());
-        }
-        Ok(credential)
+        self.credential_store.read(&session.keyring_account)
     }
 
     fn authorized_get(
@@ -522,18 +493,20 @@ impl DeviceSyncManager {
         {
             return Err("device_sync_credential_invalid".to_string());
         }
-        let account = keyring_account(&tenant_id, &device_id);
-        let entry = keyring_entry(&account)?;
-        entry
-            .set_password(&credential)
-            .map_err(|e| format!("device_sync_credential_set_failed:{e}"))?;
-        let verified = entry
-            .get_password()
-            .map_err(|e| format!("device_sync_credential_get_failed:{e}"))?;
-        if verified != credential {
-            return Err("device_sync_credential_verify_failed".to_string());
-        }
         let previous = self.load_session()?;
+        let account = keyring_account(&tenant_id, &device_id);
+        let device_id_for_revoke = device_id.clone();
+        let credential_storage = match self.credential_store.store(&account, &credential) {
+            Ok(storage) => storage,
+            Err(error) => {
+                let provisional = DeviceSyncSession {
+                    device_id: device_id_for_revoke,
+                    ..DeviceSyncSession::default()
+                };
+                let _ = self.authorized_delete(&provisional, &credential, "/devices/current");
+                return Err(error);
+            }
+        };
         let session = DeviceSyncSession {
             version: 1,
             tenant_id: tenant_id.clone(),
@@ -545,17 +518,17 @@ impl DeviceSyncManager {
                 .to_string(),
             app_version: env!("CARGO_PKG_VERSION").to_string(),
             keyring_account: account,
-            credential_storage: credential_storage_label().to_string(),
+            credential_storage,
             connected_at_ms: now_ms(),
         };
         if let Err(error) = self.save_session(&session) {
-            let _ = entry.delete_credential();
+            let _ = self.authorized_delete(&session, &credential, "/devices/current");
+            self.credential_store.delete(&session.keyring_account);
             return Err(error);
         }
         if let Some(previous) = previous {
             if previous.keyring_account != session.keyring_account {
-                let _ = keyring_entry(&previous.keyring_account)
-                    .and_then(|entry| entry.delete_credential().map_err(|e| e.to_string()));
+                self.credential_store.delete(&previous.keyring_account);
             }
         }
         let _ = backup::auto_configure_onedrive(&self.store, &tenant_id)?;
@@ -632,11 +605,7 @@ impl DeviceSyncManager {
                 }
                 Err(error) => revoke_error = Some(error),
             }
-            let _ = keyring_entry(&session.keyring_account).and_then(|entry| {
-                entry
-                    .delete_credential()
-                    .map_err(|e| format!("device_sync_credential_delete_failed:{e}"))
-            });
+            self.credential_store.delete(&session.keyring_account);
         }
         if self.session_path.exists() {
             fs::remove_file(&self.session_path)

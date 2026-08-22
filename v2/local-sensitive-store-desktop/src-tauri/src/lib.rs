@@ -4,6 +4,7 @@ mod backup;
 mod cloud_sync;
 mod data_explorer;
 mod device_sync;
+mod device_sync_credential;
 mod desktop_preferences;
 mod shared_archive;
 mod student_private_photos;
@@ -31,7 +32,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-08-22.1-onedrive-device-sync";
+pub(crate) const SERVICE_VERSION: &str = "2026-08-22.2-device-sync-credential-repair";
 const WORK_MEETING_ROOT_PAGE_ID: &str = "classaimate:work-meeting-minutes";
 const WORK_MEETING_ROOT_TITLE: &str = "업무 회의록";
 const WORK_MEETING_ROOT_INTRO: &str = "모바일에서 확정한 업무 회의록이 자동으로 들어옵니다.";
@@ -5932,28 +5933,52 @@ fn poll_device_authorization(state: tauri::State<'_, AppState>) -> Value {
         Ok(value) => value,
         Err(error) => return json!({ "ok": false, "status": "approved", "error": error }),
     };
-    let browser_links = match state.browser_links.lock().ok().and_then(|value| value.clone()) {
-        Some(store) => store,
-        None => return json!({ "ok": false, "status": "approved", "error": "browser_link_unavailable" }),
-    };
-    let link = match browser_links.issue_for_request(&pending.request_id, &consumed) {
-        Ok(link) => link,
-        Err(error) => return json!({ "ok": false, "status": "approved", "error": error }),
-    };
-    let device_sync = state
+    let device_sync_manager = state
         .device_sync_manager
         .lock()
         .ok()
         .and_then(|manager| manager.clone())
-        .ok_or_else(|| "device_sync_unavailable".to_string())
-        .and_then(|manager| {
-            let status = manager.connect_from_authorization(&consumed)?;
-            let background = Arc::clone(&manager);
-            thread::spawn(move || {
-                let _ = background.run_once(false);
+        .ok_or_else(|| "device_sync_unavailable".to_string());
+    let device_sync_manager = match device_sync_manager {
+        Ok(manager) => manager,
+        Err(error) => {
+            if let Ok(mut slot) = state.pending_device_authorization.lock() { *slot = None; }
+            return json!({ "ok": false, "status": "device_sync_failed", "error": error });
+        }
+    };
+    let device_sync = match device_sync_manager.connect_from_authorization(&consumed) {
+        Ok(status) => status,
+        Err(error) => {
+            if let Ok(mut slot) = state.pending_device_authorization.lock() { *slot = None; }
+            return json!({
+                "ok": false,
+                "status": "device_sync_failed",
+                "error": if error.starts_with("device_sync_credential_") || error.contains("device_sync_dpapi_") {
+                    "device_sync_credential_store_failed"
+                } else {
+                    "device_sync_connect_failed"
+                }
             });
-            Ok(status)
-        });
+        }
+    };
+    let browser_links = match state.browser_links.lock().ok().and_then(|value| value.clone()) {
+        Some(store) => store,
+        None => {
+            let _ = device_sync_manager.disconnect();
+            return json!({ "ok": false, "status": "approved", "error": "browser_link_unavailable" });
+        }
+    };
+    let link = match browser_links.issue_for_request(&pending.request_id, &consumed) {
+        Ok(link) => link,
+        Err(error) => {
+            let _ = device_sync_manager.disconnect();
+            return json!({ "ok": false, "status": "approved", "error": error });
+        }
+    };
+    let background = Arc::clone(&device_sync_manager);
+    thread::spawn(move || {
+        let _ = background.run_once(false);
+    });
     if let Ok(mut slot) = state.pending_device_authorization.lock() { *slot = None; }
     json!({
         "ok": true,
@@ -5962,9 +5987,8 @@ fn poll_device_authorization(state: tauri::State<'_, AppState>) -> Value {
         "tenantName": link.tenant_name,
         "accountEmail": link.account_email,
         "accountDisplayName": link.account_display_name,
-        "deviceSyncConnected": device_sync.is_ok(),
-        "deviceSync": device_sync.as_ref().ok(),
-        "deviceSyncError": device_sync.err()
+        "deviceSyncConnected": true,
+        "deviceSync": device_sync
     })
 }
 

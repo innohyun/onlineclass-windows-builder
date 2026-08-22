@@ -2,13 +2,15 @@ import { invoke } from "@tauri-apps/api/core";
 
 export type DeviceAuthorizationResult = {
   ok: boolean;
-  status?: "idle" | "pending" | "approved" | "connected" | "expired" | "canceled" | "consumed";
+  status?: "idle" | "pending" | "approved" | "connected" | "expired" | "canceled" | "consumed" | "device_sync_failed";
   requestId?: string;
   expiresAtMs?: number;
   tenantId?: string;
   tenantName?: string;
   accountEmail?: string;
   accountDisplayName?: string;
+  deviceSyncConnected?: boolean;
+  deviceSyncError?: string;
   error?: string;
 };
 
@@ -40,6 +42,9 @@ export function createDeviceAuthorizationController(options: Options) {
     element<HTMLElement>("deviceAuthWait").hidden = !waiting;
     element<HTMLButtonElement>("deviceAuthStart").hidden = waiting || result.status === "connected";
     element<HTMLButtonElement>("deviceAuthReopen").hidden = !waiting;
+    element<HTMLButtonElement>("deviceAuthStart").textContent = result.status === "device_sync_failed"
+      ? "기기 동기화 다시 연결"
+      : "브라우저에서 교사 로그인";
     if (waiting) {
       options.setText("deviceAuthTitle", "브라우저 승인 대기 중");
       options.setText("deviceAuthDescription", "열린 웹페이지에서 교사 로그인 후 이 PC 연결을 승인하세요.");
@@ -48,6 +53,10 @@ export function createDeviceAuthorizationController(options: Options) {
       options.setText("deviceAuthTitle", "이 PC 연결 완료");
       options.setText("deviceAuthDescription", `${result.tenantName || result.tenantId || "선택한 학급"}이 이 로컬 저장소에 연결되었습니다.`);
       options.setText("deviceAuthMeta", result.accountEmail || result.accountDisplayName || "교사 계정으로 승인됨");
+    } else if (result.status === "device_sync_failed") {
+      options.setText("deviceAuthTitle", "기기 동기화 연결을 완료하지 못했습니다");
+      options.setText("deviceAuthDescription", "브라우저 승인은 확인했지만 동기화 연결 정보를 안전하게 저장하지 못했습니다. 다시 연결해 주세요.");
+      options.setText("deviceAuthMeta", "다시 연결하기 전까지 기존 로컬 자료와 수동 백업은 그대로 유지됩니다.");
     } else if (result.status === "expired" || result.status === "canceled" || result.status === "consumed") {
       options.setText("deviceAuthTitle", result.status === "expired" ? "승인 요청이 만료되었습니다" : "승인 요청이 종료되었습니다");
       options.setText("deviceAuthDescription", "새 요청을 열어 교사 로그인으로 다시 연결하세요.");
