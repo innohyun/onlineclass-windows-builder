@@ -2,9 +2,9 @@ import { initSharedArchive, type ArchiveBridge, type ArchiveDetail, type Archive
 
 const MB = 1024 * 1024;
 const fixtures: ArchiveSummary[] = [
-  { id: "archive-eco-assignment", sourceType: "assignment", title: "우리 동네 생태 조사", recordCount: 35, contentCount: 28, fileCount: 16, totalFileBytes: 84.2 * MB, importedAt: Date.parse("2026-08-04T14:18:00+09:00") },
-  { id: "archive-environment-board", sourceType: "board", title: "환경보호 실천 게시판", recordCount: 63, contentCount: 42, fileCount: 21, totalFileBytes: 96.8 * MB, importedAt: Date.parse("2026-08-02T16:32:00+09:00") },
-  { id: "archive-reading-assignment", sourceType: "assignment", title: "여름방학 독서 기록", recordCount: 29, contentCount: 24, fileCount: 5, totalFileBytes: 12.4 * MB, importedAt: Date.parse("2026-07-30T11:06:00+09:00") },
+  { id: "archive-eco-assignment", tenantId: "preview-tenant", sourceType: "assignment", title: "우리 동네 생태 조사", recordCount: 35, contentCount: 28, fileCount: 16, totalFileBytes: 84.2 * MB, importedAt: Date.parse("2026-08-04T14:18:00+09:00") },
+  { id: "archive-environment-board", tenantId: "preview-tenant", sourceType: "board", title: "환경보호 실천 게시판", recordCount: 63, contentCount: 42, fileCount: 21, totalFileBytes: 96.8 * MB, importedAt: Date.parse("2026-08-02T16:32:00+09:00") },
+  { id: "archive-reading-assignment", tenantId: "preview-tenant", sourceType: "assignment", title: "여름방학 독서 기록", recordCount: 29, contentCount: 24, fileCount: 5, totalFileBytes: 12.4 * MB, importedAt: Date.parse("2026-07-30T11:06:00+09:00") },
 ];
 
 const detailFixtures: Record<string, ArchiveDetail> = {
@@ -72,5 +72,5 @@ export function initSharedArchivePreview() {
   document.getElementById("homeTenantLabel")!.textContent = "수영초등학교 5학년 1반";
   document.getElementById("homeConnectionText")!.textContent = "연결됨";
   document.getElementById("homeBackupText")!.textContent = "어제 오후 5:58";
-  initSharedArchive({ bridge: previewBridge(state) });
+  initSharedArchive({ bridge: previewBridge(state), getTenantId: () => "preview-tenant" });
 }

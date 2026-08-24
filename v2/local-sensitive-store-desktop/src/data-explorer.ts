@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { openArchiveBoardViewer, searchArchiveBoards, type ArchiveBoardSummary } from "./archive-board-explorer";
 
 type LocalDataSection = {
   key: string;
@@ -61,6 +62,7 @@ const GROUP_SECTIONS = {
   "work-notes": ["work-notes"],
 } as const;
 const SECTION_LABELS: Record<string, string> = {
+  "archive-board": "보관 보드",
   observations: "관찰 기록",
   "teacher-counseling-sessions": "상담 기록",
   "student-private-details": "학생 민감정보",
@@ -132,6 +134,7 @@ export function firstText(row: Record<string, unknown>, keys: string[]) {
 }
 
 export function studentName(record: LocalDataRecord) {
+  if (record.sectionKey === "archive-board") return "공유 보관본";
   const name = firstText(record.payload, ["studentName", "displayName", "name"]);
   if (name) return name;
   return firstText(record.payload, ["studentCode", "studentId"]) ? "이름 미확인" : "학급 자료";
@@ -228,6 +231,7 @@ export function recordSummary(record: LocalDataRecord) {
 }
 
 function recordTitle(record: LocalDataRecord) {
+  if (record.sectionKey === "archive-board") return firstText(record.payload, ["title"]) || "제목 없는 보관 보드";
   if (record.sectionKey === "work-notes") {
     return `${firstText(record.payload, ["emoji"])} ${firstText(record.payload, ["title"]) || "제목 없음"}`.trim();
   }
@@ -235,6 +239,7 @@ function recordTitle(record: LocalDataRecord) {
 }
 
 export function recordStatusLabel(record: LocalDataRecord) {
+  if (record.sectionKey === "archive-board") return "읽기 전용";
   const mode = firstText(record.payload, ["resultMode"]);
   if (mode === "custom_text") return "서술형 평가";
   if (mode === "level") return "단계형 평가";
@@ -313,7 +318,27 @@ export function dateRange(period: string) {
 }
 
 function groupForSection(sectionKey: string) {
+  if (sectionKey === "archive-board") return "archive-boards";
   return GROUP_KEYS.find((group) => GROUP_SECTIONS[group].includes(sectionKey as never)) || "";
+}
+
+function archiveBoardRecord(board: ArchiveBoardSummary): LocalDataRecord {
+  return {
+    sectionKey: "archive-board",
+    sectionLabel: "보관 보드",
+    groupKey: "archive-boards",
+    updatedAtMs: board.importedAt,
+    hasAttachment: board.fileCount > 0,
+    payload: {
+      archiveId: board.archiveId,
+      title: board.title,
+      postCount: board.postCount,
+      fileCount: board.fileCount,
+      totalFileBytes: board.totalFileBytes,
+      studentViewMode: board.studentViewMode,
+      summary: `게시글 ${board.postCount}개 · 첨부파일 ${board.fileCount}개 · ${board.studentViewMode === "shelf" ? "선반" : board.studentViewMode === "detail" ? "상세 목록" : "갤러리"} 보기`,
+    },
+  };
 }
 
 export function initDataExplorer(options: ExplorerOptions) {
@@ -340,6 +365,7 @@ export function initDataExplorer(options: ExplorerOptions) {
     element("dataGroupLearningCount").textContent = String(numeric(counts.learning));
     element("dataGroupStudentRecordCount").textContent = String(numeric(counts["student-record"]));
     element("dataGroupWorkNotesCount").textContent = String(numeric(counts["work-notes"]));
+    element("dataGroupArchiveBoardsCount").textContent = String(numeric(counts["archive-boards"]));
     document.querySelectorAll<HTMLButtonElement>("[data-data-group]").forEach((button) => {
       const selected = Boolean(groupSelect.value) && button.dataset.dataGroup === groupSelect.value;
       button.classList.toggle("is-selected", selected);
@@ -395,6 +421,8 @@ export function initDataExplorer(options: ExplorerOptions) {
     const record = records[selectedIndex];
     empty.hidden = Boolean(record);
     detail.hidden = !record;
+    const openBoardButton = element<HTMLButtonElement>("dataOpenArchiveBoard");
+    openBoardButton.hidden = record?.sectionKey !== "archive-board";
     if (!record) return;
     element("dataDetailTitle").textContent = recordTitle(record);
     element("dataDetailStudent").textContent = record.sectionKey === "work-notes" ? "학급 업무" : studentName(record);
@@ -409,7 +437,7 @@ export function initDataExplorer(options: ExplorerOptions) {
 
   async function loadCounts() {
     if (DESIGN_PREVIEW) {
-      renderGroups({ care: 327, attendance: 93, learning: 874, "student-record": 174, "work-notes": 12 });
+      renderGroups({ care: 327, attendance: 93, learning: 874, "student-record": 174, "work-notes": 12, "archive-boards": 4 });
       return;
     }
     const tenantId = options.getTenantId().trim();
@@ -417,11 +445,14 @@ export function initDataExplorer(options: ExplorerOptions) {
       renderGroups({});
       return;
     }
-    const overview = await invoke<LocalOverview>("get_local_overview", { tenantId });
+    const [overview, archiveBoards] = await Promise.all([
+      invoke<LocalOverview>("get_local_overview", { tenantId }),
+      searchArchiveBoards(tenantId, "", 1),
+    ]);
     if (overview?.ok === false) throw new Error(overview.error || "local_overview_failed");
     const sections = Array.isArray(overview.sections) ? overview.sections : [];
     const countFor = (group: typeof GROUP_KEYS[number]) => sections.reduce((sum, section) => sum + (GROUP_SECTIONS[group].includes(section.key as never) ? numeric(section.count) : 0), 0);
-    renderGroups({ care: countFor("care"), attendance: countFor("attendance"), learning: countFor("learning"), "student-record": countFor("student-record"), "work-notes": countFor("work-notes") });
+    renderGroups({ care: countFor("care"), attendance: countFor("attendance"), learning: countFor("learning"), "student-record": countFor("student-record"), "work-notes": countFor("work-notes"), "archive-boards": archiveBoards.total });
   }
 
   function previewSearch(): SearchResult {
@@ -453,7 +484,16 @@ export function initDataExplorer(options: ExplorerOptions) {
     renderRecords();
     try {
       const range = dateRange(periodSelect.value);
-      const result = DESIGN_PREVIEW ? previewSearch() : await invoke<SearchResult>("search_local_data", {
+      let result: SearchResult;
+      if (!DESIGN_PREVIEW && groupSelect.value === "archive-boards") {
+        const archiveResult = await searchArchiveBoards(tenantId, [queryInput.value, studentInput.value].map((value) => value.trim()).filter(Boolean).join(" "), 100);
+        const filtered = archiveResult.boards
+          .filter((board) => !range.dateFrom || new Date(board.importedAt).toISOString().slice(0, 10) >= range.dateFrom)
+          .filter((board) => !range.dateTo || new Date(board.importedAt).toISOString().slice(0, 10) <= range.dateTo)
+          .filter((board) => !attachmentInput.checked || board.fileCount > 0)
+          .map(archiveBoardRecord);
+        result = { ok: true, total: filtered.length, records: filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE) };
+      } else result = DESIGN_PREVIEW ? previewSearch() : await invoke<SearchResult>("search_local_data", {
         input: {
           tenantId,
           group: groupSelect.value,
@@ -503,6 +543,7 @@ export function initDataExplorer(options: ExplorerOptions) {
       learning: numeric(element("dataGroupLearningCount").textContent),
       "student-record": numeric(element("dataGroupStudentRecordCount").textContent),
       "work-notes": numeric(element("dataGroupWorkNotesCount").textContent),
+      "archive-boards": numeric(element("dataGroupArchiveBoardsCount").textContent),
     });
     void search();
   }
@@ -513,7 +554,7 @@ export function initDataExplorer(options: ExplorerOptions) {
     page = 0;
     void search();
   });
-  groupSelect.addEventListener("change", () => { sectionKey = ""; page = 0; renderGroups({ care: numeric(element("dataGroupCareCount").textContent), attendance: numeric(element("dataGroupAttendanceCount").textContent), learning: numeric(element("dataGroupLearningCount").textContent), "student-record": numeric(element("dataGroupStudentRecordCount").textContent), "work-notes": numeric(element("dataGroupWorkNotesCount").textContent) }); void search(); });
+  groupSelect.addEventListener("change", () => { sectionKey = ""; page = 0; renderGroups({ care: numeric(element("dataGroupCareCount").textContent), attendance: numeric(element("dataGroupAttendanceCount").textContent), learning: numeric(element("dataGroupLearningCount").textContent), "student-record": numeric(element("dataGroupStudentRecordCount").textContent), "work-notes": numeric(element("dataGroupWorkNotesCount").textContent), "archive-boards": numeric(element("dataGroupArchiveBoardsCount").textContent) }); void search(); });
   studentInput.addEventListener("change", () => { page = 0; void search(); });
   periodSelect.addEventListener("change", () => { page = 0; void search(); });
   attachmentInput.addEventListener("change", () => { page = 0; void search(); });
@@ -523,7 +564,7 @@ export function initDataExplorer(options: ExplorerOptions) {
     groupSelect.value = button.dataset.dataGroup || "";
     sectionKey = "";
     page = 0;
-    renderGroups({ care: numeric(element("dataGroupCareCount").textContent), attendance: numeric(element("dataGroupAttendanceCount").textContent), learning: numeric(element("dataGroupLearningCount").textContent), "student-record": numeric(element("dataGroupStudentRecordCount").textContent), "work-notes": numeric(element("dataGroupWorkNotesCount").textContent) });
+    renderGroups({ care: numeric(element("dataGroupCareCount").textContent), attendance: numeric(element("dataGroupAttendanceCount").textContent), learning: numeric(element("dataGroupLearningCount").textContent), "student-record": numeric(element("dataGroupStudentRecordCount").textContent), "work-notes": numeric(element("dataGroupWorkNotesCount").textContent), "archive-boards": numeric(element("dataGroupArchiveBoardsCount").textContent) });
     void search();
   });
   element("localDataRecordList").addEventListener("click", (event) => {
@@ -548,6 +589,13 @@ export function initDataExplorer(options: ExplorerOptions) {
     } finally {
       button.disabled = false;
     }
+  });
+  element("dataOpenArchiveBoard").addEventListener("click", () => {
+    const archiveId = firstText(records[selectedIndex]?.payload || {}, ["archiveId"]);
+    if (!archiveId) return;
+    void openArchiveBoardViewer(options.getTenantId().trim(), archiveId).catch((error) => {
+      element("dataExplorerLocalStatus").textContent = `보관 보드 열기 실패: ${String((error as Error)?.message || error)}`;
+    });
   });
   element("dataExplorerReset").addEventListener("click", reset);
   element("dataExplorerRefresh").addEventListener("click", () => void refresh());

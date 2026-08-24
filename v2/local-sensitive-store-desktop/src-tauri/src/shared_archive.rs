@@ -16,7 +16,7 @@ fn paths() -> (PathBuf, PathBuf) {
     (root.join(DB_FILE), root.join(FILE_DIR))
 }
 
-fn open_db() -> Result<Connection, String> {
+pub(crate) fn open_db() -> Result<Connection, String> {
     let (path, files) = paths();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("archive_dir_create_failed:{e}"))?;
@@ -69,15 +69,26 @@ fn api_root(value: &str) -> Result<String, String> {
         || url.password().is_some()
         || url.query().is_some()
         || url.fragment().is_some()
-        || !(host.ends_with(".classaimate.com") || host == "classaimate.com" || host == "classaimate-v3.pages.dev")
+        || !(host.ends_with(".classaimate.com")
+            || host == "classaimate.com"
+            || host == "classaimate-v3.pages.dev")
     {
         return Err("archive_api_url_forbidden".to_string());
     }
-    Ok(format!("{}://{}{}", url.scheme(), url.host_str().unwrap_or(""), url.port().map(|port| format!(":{port}")).unwrap_or_default()))
+    Ok(format!(
+        "{}://{}{}",
+        url.scheme(),
+        url.host_str().unwrap_or(""),
+        url.port()
+            .map(|port| format!(":{port}"))
+            .unwrap_or_default()
+    ))
 }
 
 fn body_data(response: ureq::Response) -> Result<Value, String> {
-    let payload = response.into_json::<Value>().map_err(|e| format!("archive_response_decode_failed:{e}"))?;
+    let payload = response
+        .into_json::<Value>()
+        .map_err(|e| format!("archive_response_decode_failed:{e}"))?;
     if payload.get("ok").and_then(Value::as_bool) != Some(true) {
         return Err("archive_api_rejected".to_string());
     }
@@ -101,7 +112,10 @@ fn get_json(request: ureq::Request) -> Result<Value, String> {
 }
 
 fn hex_sha(bytes: &[u8]) -> String {
-    Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect()
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn file_sha(path: &Path) -> Result<String, String> {
@@ -109,19 +123,31 @@ fn file_sha(path: &Path) -> Result<String, String> {
     let mut hash = Sha256::new();
     let mut buffer = [0u8; 65536];
     loop {
-        let count = file.read(&mut buffer).map_err(|e| format!("archive_file_read_failed:{e}"))?;
+        let count = file
+            .read(&mut buffer)
+            .map_err(|e| format!("archive_file_read_failed:{e}"))?;
         if count == 0 {
             break;
         }
         hash.update(&buffer[..count]);
     }
-    Ok(hash.finalize().iter().map(|byte| format!("{byte:02x}")).collect())
+    Ok(hash
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
 }
 
 fn sanitized_name(value: &str) -> String {
     let result: String = value
         .chars()
-        .map(|character| if character.is_alphanumeric() || matches!(character, '.' | '-' | '_' | ' ') { character } else { '_' })
+        .map(|character| {
+            if character.is_alphanumeric() || matches!(character, '.' | '-' | '_' | ' ') {
+                character
+            } else {
+                '_'
+            }
+        })
         .take(120)
         .collect();
     if result.trim_matches('.').is_empty() {
@@ -131,19 +157,49 @@ fn sanitized_name(value: &str) -> String {
     }
 }
 
-fn download_file(agent: &ureq::Agent, root: &str, capability: &str, file: &Value, dir: &Path) -> Result<Value, String> {
-    let ordinal = file.get("ordinal").and_then(Value::as_i64).ok_or("archive_file_ordinal_missing")?;
-    let size = file.get("byteSize").and_then(Value::as_u64).ok_or("archive_file_size_missing")?;
-    let expected = file.get("sha256").and_then(Value::as_str).ok_or("archive_file_sha_missing")?;
-    let name = sanitized_name(file.get("originalName").and_then(Value::as_str).unwrap_or("attachment.bin"));
+fn download_file(
+    agent: &ureq::Agent,
+    root: &str,
+    capability: &str,
+    file: &Value,
+    dir: &Path,
+) -> Result<Value, String> {
+    let ordinal = file
+        .get("ordinal")
+        .and_then(Value::as_i64)
+        .ok_or("archive_file_ordinal_missing")?;
+    let size = file
+        .get("byteSize")
+        .and_then(Value::as_u64)
+        .ok_or("archive_file_size_missing")?;
+    let expected = file
+        .get("sha256")
+        .and_then(Value::as_str)
+        .ok_or("archive_file_sha_missing")?;
+    let name = sanitized_name(
+        file.get("originalName")
+            .and_then(Value::as_str)
+            .unwrap_or("attachment.bin"),
+    );
     let final_path = dir.join(format!("{ordinal:04}-{name}"));
     let part_path = dir.join(format!("{ordinal:04}-{name}.part"));
-    if final_path.exists() && fs::metadata(&final_path).map(|item| item.len()).unwrap_or(0) == size && file_sha(&final_path)? == expected {
+    if final_path.exists()
+        && fs::metadata(&final_path)
+            .map(|item| item.len())
+            .unwrap_or(0)
+            == size
+        && file_sha(&final_path)? == expected
+    {
         return Ok(json!({"ordinal":ordinal,"localPath":final_path.to_string_lossy()}));
     }
-    let offset = fs::metadata(&part_path).map(|item| item.len()).unwrap_or(0).min(size);
+    let offset = fs::metadata(&part_path)
+        .map(|item| item.len())
+        .unwrap_or(0)
+        .min(size);
     let url = format!("{root}/api/v3/archive-export/files/{ordinal}");
-    let mut request = agent.get(&url).set("Authorization", &format!("Archive {capability}"));
+    let mut request = agent
+        .get(&url)
+        .set("Authorization", &format!("Archive {capability}"));
     if offset > 0 && offset < size {
         request = request.set("Range", &format!("bytes={offset}-"));
     }
@@ -163,15 +219,23 @@ fn download_file(agent: &ureq::Agent, root: &str, capability: &str, file: &Value
         let mut input = response.into_reader();
         let mut buffer = [0u8; 65536];
         loop {
-            let count = input.read(&mut buffer).map_err(|e| format!("archive_file_download_failed:{e}"))?;
+            let count = input
+                .read(&mut buffer)
+                .map_err(|e| format!("archive_file_download_failed:{e}"))?;
             if count == 0 {
                 break;
             }
-            output.write_all(&buffer[..count]).map_err(|e| format!("archive_file_write_failed:{e}"))?;
+            output
+                .write_all(&buffer[..count])
+                .map_err(|e| format!("archive_file_write_failed:{e}"))?;
         }
-        output.flush().map_err(|e| format!("archive_file_flush_failed:{e}"))?;
+        output
+            .flush()
+            .map_err(|e| format!("archive_file_flush_failed:{e}"))?;
     }
-    if fs::metadata(&part_path).map(|item| item.len()).unwrap_or(0) != size || file_sha(&part_path)? != expected {
+    if fs::metadata(&part_path).map(|item| item.len()).unwrap_or(0) != size
+        || file_sha(&part_path)? != expected
+    {
         return Err(format!("archive_file_verify_failed:{ordinal}"));
     }
     fs::rename(&part_path, &final_path).map_err(|e| format!("archive_file_commit_failed:{e}"))?;
@@ -179,7 +243,9 @@ fn download_file(agent: &ureq::Agent, root: &str, capability: &str, file: &Value
 }
 
 fn manifest_hash(manifest: &Value) -> Result<String, String> {
-    let archive = manifest.get("archive").ok_or("archive_manifest_archive_missing")?;
+    let archive = manifest
+        .get("archive")
+        .ok_or("archive_manifest_archive_missing")?;
     let exact = json!({
       "schemaVersion":"shared_content_archive_v1","archiveId":archive.get("id"),"tenantId":archive.get("tenantId"),
       "sourceType":archive.get("sourceType"),"sourceId":archive.get("sourceId"),"sourceRevision":archive.get("sourceRevision"),
@@ -189,7 +255,9 @@ fn manifest_hash(manifest: &Value) -> Result<String, String> {
         "contentType":file.get("contentType"),"byteSize":file.get("byteSize"),"sha256":file.get("sha256")
       })).collect::<Vec<_>>()).unwrap_or_default()
     });
-    serde_json::to_vec(&exact).map(|bytes| hex_sha(&bytes)).map_err(|e| format!("archive_manifest_encode_failed:{e}"))
+    serde_json::to_vec(&exact)
+        .map(|bytes| hex_sha(&bytes))
+        .map_err(|e| format!("archive_manifest_encode_failed:{e}"))
 }
 
 #[tauri::command]
@@ -200,38 +268,83 @@ pub(crate) fn import_shared_archive(base_url: String, code: String) -> Value {
     }
 }
 
-pub(crate) fn import_archive_for_tenant(base_url: &str, code: &str, tenant_id: &str) -> Result<Value, String> {
+pub(crate) fn import_archive_for_tenant(
+    base_url: &str,
+    code: &str,
+    tenant_id: &str,
+) -> Result<Value, String> {
     import_archive(base_url, code, tenant_id)
 }
 
 fn import_archive(base_url: &str, code: &str, expected_tenant_id: &str) -> Result<Value, String> {
     let root = api_root(base_url)?;
     let safe_code = code.trim();
-    if safe_code.len() != 43 || !safe_code.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-')) {
+    if safe_code.len() != 43
+        || !safe_code
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+    {
         return Err("archive_code_invalid".to_string());
     }
     let agent = ureq::AgentBuilder::new().build();
-    let exchange = send_json(agent.post(&format!("{root}/api/v3/archive-export/exchange")), json!({"code":safe_code}))?;
-    let capability = exchange.get("capability").and_then(Value::as_str).ok_or("archive_capability_missing")?.to_string();
+    let exchange = send_json(
+        agent.post(&format!("{root}/api/v3/archive-export/exchange")),
+        json!({"code":safe_code}),
+    )?;
+    let capability = exchange
+        .get("capability")
+        .and_then(Value::as_str)
+        .ok_or("archive_capability_missing")?
+        .to_string();
     let auth = || format!("Archive {capability}");
-    let manifest = get_json(agent.get(&format!("{root}/api/v3/archive-export/manifest")).set("Authorization", &auth()))?;
+    let manifest = get_json(
+        agent
+            .get(&format!("{root}/api/v3/archive-export/manifest"))
+            .set("Authorization", &auth()),
+    )?;
     let archive = manifest.get("archive").ok_or("archive_manifest_invalid")?;
-    let archive_tenant_id = archive.get("tenantId").and_then(Value::as_str).ok_or("archive_tenant_missing")?;
+    let archive_tenant_id = archive
+        .get("tenantId")
+        .and_then(Value::as_str)
+        .ok_or("archive_tenant_missing")?;
     if !expected_tenant_id.is_empty() && archive_tenant_id != expected_tenant_id {
         return Err("archive_tenant_mismatch".to_string());
     }
-    let archive_id = archive.get("id").and_then(Value::as_str).ok_or("archive_id_missing")?;
-    if archive_id.is_empty() || archive_id.len() > 128 || !archive_id.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | ':' | '.')) {
+    let archive_id = archive
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or("archive_id_missing")?;
+    if archive_id.is_empty()
+        || archive_id.len() > 128
+        || !archive_id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | ':' | '.'))
+    {
         return Err("archive_id_invalid".to_string());
     }
-    let expected_manifest = archive.get("manifestSha256").and_then(Value::as_str).ok_or("archive_manifest_sha_missing")?;
+    let expected_manifest = archive
+        .get("manifestSha256")
+        .and_then(Value::as_str)
+        .ok_or("archive_manifest_sha_missing")?;
     if manifest_hash(&manifest)? != expected_manifest {
         return Err("archive_manifest_verify_failed".to_string());
     }
-    let records = get_json(agent.get(&format!("{root}/api/v3/archive-export/records")).set("Authorization", &auth()))?;
-    let record_rows = records.get("records").and_then(Value::as_array).ok_or("archive_records_invalid")?;
+    let records = get_json(
+        agent
+            .get(&format!("{root}/api/v3/archive-export/records"))
+            .set("Authorization", &auth()),
+    )?;
+    let record_rows = records
+        .get("records")
+        .and_then(Value::as_array)
+        .ok_or("archive_records_invalid")?;
     for record in record_rows {
-        let encoded = serde_json::to_vec(record.get("payload").ok_or("archive_record_payload_missing")?).map_err(|e| format!("archive_record_encode_failed:{e}"))?;
+        let encoded = serde_json::to_vec(
+            record
+                .get("payload")
+                .ok_or("archive_record_payload_missing")?,
+        )
+        .map_err(|e| format!("archive_record_encode_failed:{e}"))?;
         if hex_sha(&encoded) != record.get("sha256").and_then(Value::as_str).unwrap_or("") {
             return Err("archive_record_verify_failed".to_string());
         }
@@ -240,27 +353,63 @@ fn import_archive(base_url: &str, code: &str, expected_tenant_id: &str) -> Resul
     let archive_dir = file_root.join(archive_id);
     fs::create_dir_all(&archive_dir).map_err(|e| format!("archive_target_dir_failed:{e}"))?;
     let mut local_files = Vec::new();
-    for file in manifest.get("files").and_then(Value::as_array).ok_or("archive_files_invalid")? {
-        local_files.push(download_file(&agent, &root, &capability, file, &archive_dir)?);
+    for file in manifest
+        .get("files")
+        .and_then(Value::as_array)
+        .ok_or("archive_files_invalid")?
+    {
+        local_files.push(download_file(
+            &agent,
+            &root,
+            &capability,
+            file,
+            &archive_dir,
+        )?);
     }
     let mut connection = open_db()?;
-    let existing: i64 = connection.query_row("SELECT COUNT(*) FROM shared_archives WHERE id=?1", params![archive_id], |row| row.get(0)).unwrap_or(0);
+    let existing: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM shared_archives WHERE id=?1",
+            params![archive_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
     if existing == 0 {
-        let tx = connection.transaction().map_err(|e| format!("archive_db_transaction_failed:{e}"))?;
+        let tx = connection
+            .transaction()
+            .map_err(|e| format!("archive_db_transaction_failed:{e}"))?;
         tx.execute(
             "INSERT INTO shared_archives VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             params![
                 archive_id,
-                archive.get("tenantId").and_then(Value::as_str).unwrap_or(""),
-                archive.get("sourceType").and_then(Value::as_str).unwrap_or(""),
-                archive.get("sourceId").and_then(Value::as_str).unwrap_or(""),
+                archive
+                    .get("tenantId")
+                    .and_then(Value::as_str)
+                    .unwrap_or(""),
+                archive
+                    .get("sourceType")
+                    .and_then(Value::as_str)
+                    .unwrap_or(""),
+                archive
+                    .get("sourceId")
+                    .and_then(Value::as_str)
+                    .unwrap_or(""),
                 archive.get("title").and_then(Value::as_str).unwrap_or(""),
                 expected_manifest,
                 record_rows.len() as i64,
                 local_files.len() as i64,
-                archive.get("totalFileBytes").and_then(Value::as_i64).unwrap_or(0),
-                archive.get("createdAt").and_then(Value::as_i64).unwrap_or(0),
-                archive.get("expiresAt").and_then(Value::as_i64).unwrap_or(0),
+                archive
+                    .get("totalFileBytes")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0),
+                archive
+                    .get("createdAt")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0),
+                archive
+                    .get("expiresAt")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0),
                 Utc::now().timestamp_millis(),
                 serde_json::to_string(&manifest).unwrap_or_default()
             ],
@@ -273,20 +422,31 @@ fn import_archive(base_url: &str, code: &str, expected_tenant_id: &str) -> Resul
                     archive_id,
                     record.get("ordinal").and_then(Value::as_i64).unwrap_or(0),
                     record.get("type").and_then(Value::as_str).unwrap_or(""),
-                    serde_json::to_string(record.get("payload").unwrap_or(&Value::Null)).unwrap_or_default(),
+                    serde_json::to_string(record.get("payload").unwrap_or(&Value::Null))
+                        .unwrap_or_default(),
                     record.get("sha256").and_then(Value::as_str).unwrap_or("")
                 ],
             )
             .map_err(|e| format!("archive_record_insert_failed:{e}"))?;
         }
-        for (file, local) in manifest.get("files").and_then(Value::as_array).expect("validated archive files").iter().zip(local_files.iter()) {
+        for (file, local) in manifest
+            .get("files")
+            .and_then(Value::as_array)
+            .expect("validated archive files")
+            .iter()
+            .zip(local_files.iter())
+        {
             tx.execute(
                 "INSERT INTO shared_archive_files VALUES (?,?,?,?,?,?,?)",
                 params![
                     archive_id,
                     file.get("ordinal").and_then(Value::as_i64).unwrap_or(0),
-                    file.get("originalName").and_then(Value::as_str).unwrap_or(""),
-                    file.get("contentType").and_then(Value::as_str).unwrap_or(""),
+                    file.get("originalName")
+                        .and_then(Value::as_str)
+                        .unwrap_or(""),
+                    file.get("contentType")
+                        .and_then(Value::as_str)
+                        .unwrap_or(""),
                     file.get("byteSize").and_then(Value::as_i64).unwrap_or(0),
                     file.get("sha256").and_then(Value::as_str).unwrap_or(""),
                     local.get("localPath").and_then(Value::as_str).unwrap_or("")
@@ -294,10 +454,18 @@ fn import_archive(base_url: &str, code: &str, expected_tenant_id: &str) -> Resul
             )
             .map_err(|e| format!("archive_file_insert_failed:{e}"))?;
         }
-        tx.commit().map_err(|e| format!("archive_db_commit_failed:{e}"))?;
+        tx.commit()
+            .map_err(|e| format!("archive_db_commit_failed:{e}"))?;
     }
-    send_json(agent.post(&format!("{root}/api/v3/archive-export/complete")).set("Authorization", &auth()), json!({"manifestSha256":expected_manifest}))?;
-    Ok(json!({"ok":true,"archiveId":archive_id,"tenantId":archive_tenant_id,"title":archive.get("title"),"recordCount":record_rows.len(),"fileCount":local_files.len()}))
+    send_json(
+        agent
+            .post(&format!("{root}/api/v3/archive-export/complete"))
+            .set("Authorization", &auth()),
+        json!({"manifestSha256":expected_manifest}),
+    )?;
+    Ok(
+        json!({"ok":true,"archiveId":archive_id,"tenantId":archive_tenant_id,"title":archive.get("title"),"recordCount":record_rows.len(),"fileCount":local_files.len()}),
+    )
 }
 
 #[tauri::command]
@@ -322,7 +490,8 @@ fn list_archives() -> Result<Vec<Value>, String> {
         )
         .map_err(|e| format!("archive_list_prepare_failed:{e}"))?;
     let rows=statement.query_map([],|row|Ok(json!({"id":row.get::<_,String>(0)?,"tenantId":row.get::<_,String>(1)?,"sourceType":row.get::<_,String>(2)?,"title":row.get::<_,String>(3)?,"recordCount":row.get::<_,i64>(4)?,"fileCount":row.get::<_,i64>(5)?,"totalFileBytes":row.get::<_,i64>(6)?,"importedAt":row.get::<_,i64>(7)?,"contentCount":row.get::<_,i64>(8)?}))).map_err(|e|format!("archive_list_query_failed:{e}"))?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("archive_list_row_failed:{e}"))
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("archive_list_row_failed:{e}"))
 }
 
 #[tauri::command]
@@ -336,6 +505,28 @@ pub(crate) fn get_shared_archive(archive_id: String) -> Value {
 fn archive_detail(id: &str) -> Result<Value, String> {
     let connection = open_db()?;
     archive_detail_from_connection(&connection, id)
+}
+
+pub(crate) fn record_values(
+    connection: &Connection,
+    archive_id: &str,
+) -> Result<Vec<(i64, String, Value)>, String> {
+    let mut statement = connection
+        .prepare("SELECT ordinal,record_type,payload_json FROM shared_archive_records WHERE archive_id=?1 ORDER BY ordinal")
+        .map_err(|e| format!("archive_records_prepare_failed:{e}"))?;
+    let rows = statement
+        .query_map(params![archive_id], |row| {
+            let raw: String = row.get(2)?;
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                serde_json::from_str(&raw).unwrap_or(Value::Null),
+            ))
+        })
+        .map_err(|e| format!("archive_records_query_failed:{e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("archive_records_row_failed:{e}"))?;
+    Ok(rows)
 }
 
 fn archive_detail_from_connection(connection: &Connection, id: &str) -> Result<Value, String> {
@@ -378,7 +569,10 @@ pub(crate) fn export_shared_archive(archive_id: String, target_path: String) -> 
     match archive_detail(&archive_id).and_then(|value| {
         serde_json::to_string_pretty(&value)
             .map_err(|e| format!("archive_export_encode_failed:{e}"))
-            .and_then(|raw| fs::write(target_path, format!("{raw}\n")).map_err(|e| format!("archive_export_write_failed:{e}")))
+            .and_then(|raw| {
+                fs::write(target_path, format!("{raw}\n"))
+                    .map_err(|e| format!("archive_export_write_failed:{e}"))
+            })
     }) {
         Ok(()) => json!({"ok":true}),
         Err(error) => json!({"ok":false,"error":error}),
@@ -386,16 +580,24 @@ pub(crate) fn export_shared_archive(archive_id: String, target_path: String) -> 
 }
 
 #[tauri::command]
-pub(crate) fn open_shared_archive_file(archive_id: String, ordinal: i64) -> Value {
+pub(crate) fn open_shared_archive_file(
+    tenant_id: String,
+    archive_id: String,
+    ordinal: i64,
+) -> Value {
     let result = (|| -> Result<(), String> {
         let connection = open_db()?;
         let path: String = connection
-            .query_row("SELECT local_path FROM shared_archive_files WHERE archive_id=?1 AND ordinal=?2", params![archive_id, ordinal], |row| row.get(0))
+            .query_row("SELECT file.local_path FROM shared_archive_files file JOIN shared_archives archive ON archive.id=file.archive_id WHERE file.archive_id=?1 AND file.ordinal=?2 AND archive.tenant_id=?3", params![archive_id, ordinal, tenant_id], |row| row.get(0))
             .map_err(|_| "archive_file_not_found".to_string())?;
         let target = PathBuf::from(path);
         let (_, root) = paths();
-        let canonical = target.canonicalize().map_err(|e| format!("archive_file_path_failed:{e}"))?;
-        let safe_root = root.canonicalize().map_err(|e| format!("archive_root_path_failed:{e}"))?;
+        let canonical = target
+            .canonicalize()
+            .map_err(|e| format!("archive_file_path_failed:{e}"))?;
+        let safe_root = root
+            .canonicalize()
+            .map_err(|e| format!("archive_root_path_failed:{e}"))?;
         if !canonical.starts_with(safe_root) {
             return Err("archive_file_path_forbidden".to_string());
         }
@@ -408,7 +610,9 @@ pub(crate) fn open_shared_archive_file(archive_id: String, ordinal: i64) -> Valu
         let opened = Command::new("open").arg(&canonical).spawn();
         #[cfg(all(unix, not(target_os = "macos")))]
         let opened = Command::new("xdg-open").arg(&canonical).spawn();
-        opened.map(|_| ()).map_err(|e| format!("archive_file_open_failed:{e}"))
+        opened
+            .map(|_| ())
+            .map_err(|e| format!("archive_file_open_failed:{e}"))
     })();
     match result {
         Ok(()) => json!({"ok":true}),
@@ -424,8 +628,14 @@ mod tests {
 
     #[test]
     fn archive_api_accepts_only_https_classaimate_hosts() {
-        assert_eq!(api_root("https://classaimate-v3.pages.dev/path").unwrap(), "https://classaimate-v3.pages.dev");
-        assert_eq!(api_root("https://v3.classaimate.com").unwrap(), "https://v3.classaimate.com");
+        assert_eq!(
+            api_root("https://classaimate-v3.pages.dev/path").unwrap(),
+            "https://classaimate-v3.pages.dev"
+        );
+        assert_eq!(
+            api_root("https://v3.classaimate.com").unwrap(),
+            "https://v3.classaimate.com"
+        );
         assert!(api_root("http://v3.classaimate.com").is_err());
         assert!(api_root("https://classaimate.com.attacker.example").is_err());
         assert!(api_root("https://user@classaimate-v3.pages.dev").is_err());
@@ -442,7 +652,10 @@ mod tests {
         });
         let mut server = base.clone();
         server["files"][0]["objectKey"] = json!("private/server/key");
-        assert_eq!(manifest_hash(&base).unwrap(), manifest_hash(&server).unwrap());
+        assert_eq!(
+            manifest_hash(&base).unwrap(),
+            manifest_hash(&server).unwrap()
+        );
     }
 
     #[test]
@@ -493,4 +706,5 @@ mod tests {
         assert!(!encoded.contains("/private/archive"));
         assert!(!encoded.contains("file-hash"));
     }
+
 }

@@ -7,6 +7,7 @@ mod device_sync;
 mod device_sync_credential;
 mod desktop_preferences;
 mod shared_archive;
+mod shared_archive_board;
 mod student_private_photos;
 mod work_note_attachments;
 use rand::{distributions::Alphanumeric, Rng};
@@ -32,7 +33,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-08-24.2-device-sync-fk-order";
+pub(crate) const SERVICE_VERSION: &str = "2026-08-24.3-archive-board-reader";
 const WORK_MEETING_ROOT_PAGE_ID: &str = "classaimate:work-meeting-minutes";
 const WORK_MEETING_ROOT_TITLE: &str = "업무 회의록";
 const WORK_MEETING_ROOT_INTRO: &str = "모바일에서 확정한 업무 회의록이 자동으로 들어옵니다.";
@@ -6952,6 +6953,8 @@ pub fn run() {
             shared_archive::import_shared_archive,
             shared_archive::list_shared_archives,
             shared_archive::get_shared_archive,
+            shared_archive_board::search_shared_archive_boards,
+            shared_archive_board::get_shared_archive_board_view,
             shared_archive::export_shared_archive,
             shared_archive::open_shared_archive_file
         ])

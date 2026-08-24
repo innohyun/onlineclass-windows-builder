@@ -8,6 +8,7 @@ import "./data-explorer.css";
 import "./student-timeline.css";
 import "./backup-restore.css";
 import "./shared-archive.css";
+import "./archive-board-explorer.css";
 import "./health-dashboard.css";
 import "./settings-dashboard.css";
 import "./desktop-shell.css";
@@ -19,6 +20,7 @@ import { initStudentTimeline } from "./student-timeline";
 import { confirmBackupRestore } from "./backup-restore-confirmation";
 import { initBackupRestorePreview } from "./backup-restore-preview";
 import { initSharedArchivePreview } from "./shared-archive-preview";
+import { initArchiveBoardExplorer } from "./archive-board-explorer";
 import { initHealthDashboardPreview } from "./health-dashboard-preview";
 import { initSettingsDashboard, renderSettingsDashboard } from "./settings-dashboard";
 import { initSettingsDashboardPreview } from "./settings-dashboard-preview";
@@ -1151,6 +1153,7 @@ function bindUi() {
 }
 
 const desktopShell = initDesktopShell();
+initArchiveBoardExplorer();
 const dataExplorer = initDataExplorer({ getTenantId: currentBackupTenantId });
 const studentTimeline = initStudentTimeline({ getTenantId: currentBackupTenantId });
 initHomeDashboard({
@@ -1168,7 +1171,7 @@ if (designPreview !== "settings") {
 }
 renderAppVersion();
 if (designPreview === "archive") initSharedArchivePreview();
-else initSharedArchive();
+else initSharedArchive({ getTenantId: currentBackupTenantId });
 if (designPreview === "auth") {
   document.querySelector<HTMLButtonElement>('.sidebar-link[data-app-view-target="settings"]')?.click();
   deviceAuthorization.render({ ok: true, status: "pending", expiresAtMs: Date.now() + 10 * 60 * 1000 });

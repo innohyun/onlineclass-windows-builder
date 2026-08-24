@@ -1,10 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
+import { openArchiveBoardViewer } from "./archive-board-explorer";
 
 const DEFAULT_API_URL = "https://classaimate-v3.pages.dev";
 
 export type ArchiveSummary = {
   id: string;
+  tenantId: string;
   sourceType: "assignment" | "board" | string;
   title: string;
   recordCount: number;
@@ -49,7 +51,7 @@ export type ArchiveBridge = {
   detail(archiveId: string): Promise<ArchiveCommandResult>;
   import(code: string): Promise<ArchiveCommandResult>;
   exportArchive(archiveId: string, title: string): Promise<ArchiveCommandResult>;
-  openFile(archiveId: string, ordinal: number): Promise<ArchiveCommandResult>;
+  openFile(tenantId: string, archiveId: string, ordinal: number): Promise<ArchiveCommandResult>;
 };
 
 type RecordPresentation = {
@@ -73,7 +75,7 @@ const tauriBridge: ArchiveBridge = {
     if (!targetPath) return { ok: false, error: "archive_export_cancelled" };
     return invoke<ArchiveCommandResult>("export_shared_archive", { archiveId, targetPath });
   },
-  openFile: (archiveId, ordinal) => invoke<ArchiveCommandResult>("open_shared_archive_file", { archiveId, ordinal }),
+  openFile: (tenantId, archiveId, ordinal) => invoke<ArchiveCommandResult>("open_shared_archive_file", { tenantId, archiveId, ordinal }),
 };
 
 let activeBridge = tauriBridge;
@@ -273,6 +275,7 @@ function render() {
   el<HTMLButtonElement>("sharedArchiveImportButton").disabled = busy;
   el<HTMLButtonElement>("sharedArchiveRefreshButton").disabled = busy;
   el<HTMLButtonElement>("sharedArchiveExportButton").disabled = busy || !selectedArchiveId;
+  el<HTMLButtonElement>("sharedArchiveOpenBoardButton").hidden = detail?.meta.sourceType !== "board";
   renderArchiveList();
   renderDetail();
 }
@@ -351,7 +354,7 @@ async function exportArchive() {
   setStatus(result.ok ? "읽기 전용 보관본을 JSON으로 내보냈습니다." : errorText(result.error), result.ok ? "ok" : result.error === "archive_export_cancelled" ? "neutral" : "error");
 }
 
-export function initSharedArchive(options: { bridge?: ArchiveBridge } = {}) {
+export function initSharedArchive(options: { bridge?: ArchiveBridge; getTenantId?: () => string } = {}) {
   activeBridge = options.bridge || tauriBridge;
   archives = [];
   selectedArchiveId = "";
@@ -364,6 +367,11 @@ export function initSharedArchive(options: { bridge?: ArchiveBridge } = {}) {
   });
   el<HTMLButtonElement>("sharedArchiveRefreshButton").addEventListener("click", () => void loadArchives());
   el<HTMLButtonElement>("sharedArchiveExportButton").addEventListener("click", () => void exportArchive());
+  el<HTMLButtonElement>("sharedArchiveOpenBoardButton").addEventListener("click", () => {
+    if (!selectedArchiveId || detail?.meta.sourceType !== "board") return;
+    const tenantId = options.getTenantId?.().trim() || detail.meta.tenantId;
+    void openArchiveBoardViewer(tenantId, selectedArchiveId).catch((error) => setStatus(errorText((error as Error).message), "error"));
+  });
   el("sharedArchiveList").addEventListener("click", (event) => {
     const row = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-archive-id]");
     if (row) void selectArchive(row.dataset.archiveId || "").catch((error) => setStatus(errorText((error as Error).message), "error"));
@@ -378,7 +386,8 @@ export function initSharedArchive(options: { bridge?: ArchiveBridge } = {}) {
     }
     const fileRow = target.closest<HTMLButtonElement>("[data-archive-file]");
     if (!fileRow || !selectedArchiveId) return;
-    void activeBridge.openFile(selectedArchiveId, Number(fileRow.dataset.archiveFile))
+    const tenantId = options.getTenantId?.().trim() || detail?.meta.tenantId || "";
+    void activeBridge.openFile(tenantId, selectedArchiveId, Number(fileRow.dataset.archiveFile))
       .then((result) => { if (!result.ok) setStatus(errorText(result.error), "error"); });
   });
   render();
