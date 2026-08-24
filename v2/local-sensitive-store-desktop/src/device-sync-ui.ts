@@ -58,6 +58,17 @@ function verificationLabel(status: DeviceSyncStatus) {
   return status.latestStatus || "확인 중";
 }
 
+export function deviceSyncErrorMessage(error?: string) {
+  const value = String(error || "");
+  if (value.startsWith("restore_sync_merge_failed:work_note_attachments:")) {
+    return "업무노트와 첨부파일의 연결 순서를 확인하지 못했습니다. 최신 앱에서 다시 동기화해 주세요. 복원 전 보호 백업과 현재 자료는 유지됩니다.";
+  }
+  if (value.startsWith("restore_sync_merge_failed:counseling_teacher_notes:")) {
+    return "상담 기록과 교사 메모의 연결 순서를 확인하지 못했습니다. 최신 앱에서 다시 동기화해 주세요. 복원 전 보호 백업과 현재 자료는 유지됩니다.";
+  }
+  return value;
+}
+
 function updateActionState(busy = false) {
   const unavailable = !snapshot?.connected || !snapshot.credentialAvailable || !snapshot.oneDriveConfigured;
   document.querySelectorAll<HTMLButtonElement>('button[data-action="run-device-sync"]').forEach((button) => {
@@ -77,7 +88,7 @@ export function renderDeviceSyncStatus(status: DeviceSyncStatus | null) {
   setText("deviceSyncConflictText", status?.connected ? `${Number(status.conflictCount || 0)}건` : "-");
   if (status?.ok === false && status.error) {
     setBadge("확인 필요", "error");
-    setText("deviceSyncStatus", `기기 동기화 상태를 확인하지 못했습니다: ${status.error}`);
+    setText("deviceSyncStatus", `기기 동기화 상태를 확인하지 못했습니다: ${deviceSyncErrorMessage(status.error)}`);
   } else if (!status?.connected) {
     setBadge("PC 연결 필요", "warning");
     setText("deviceSyncStatus", "교사 설정에서 이 PC를 연결하면 OneDrive 최신 내용을 자동으로 맞춥니다.");
@@ -89,7 +100,7 @@ export function renderDeviceSyncStatus(status: DeviceSyncStatus | null) {
     setText("deviceSyncStatus", "학교 OneDrive 안의 백업 폴더를 선택하면 자동 동기화를 시작합니다.");
   } else if (status.lastError) {
     setBadge("확인 필요", "error");
-    setText("deviceSyncStatus", `마지막 동기화 문제: ${status.lastError}`);
+    setText("deviceSyncStatus", `마지막 동기화 문제: ${deviceSyncErrorMessage(status.lastError)}`);
   } else if (status.waitingForOneDrive) {
     setBadge("파일 도착 대기", "warning");
     setText("deviceSyncStatus", "서버의 최신 세대를 확인했습니다. OneDrive 파일이 이 PC에 도착하면 자동으로 반영합니다.");

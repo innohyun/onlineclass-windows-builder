@@ -408,6 +408,29 @@ fn parse_sync_records(manifest: &Value, generation: i64) -> Result<Vec<SyncRecor
     Ok(parsed)
 }
 
+fn sort_sync_records_for_apply(records: &mut [SyncRecord]) {
+    let table_order = |record: &SyncRecord| {
+        BACKUP_TABLES
+            .iter()
+            .position(|table| table.name == record.table_name)
+            .unwrap_or(BACKUP_TABLES.len())
+    };
+    records.sort_by(|left, right| {
+        left.tombstone
+            .cmp(&right.tombstone)
+            .then_with(|| {
+                let left_order = table_order(left);
+                let right_order = table_order(right);
+                if left.tombstone {
+                    right_order.cmp(&left_order)
+                } else {
+                    left_order.cmp(&right_order)
+                }
+            })
+            .then_with(|| left.record_key.cmp(&right.record_key))
+    });
+}
+
 fn record_where(table: &BackupTable) -> String {
     table
         .key_columns
@@ -572,11 +595,12 @@ pub(super) fn restore_generation(
         return Ok(json!({ "ok": true, "applied": false, "generation": state.applied_generation }));
     }
     let records = parse_sync_records(&manifest, generation)?;
-    let applicable = records
+    let mut applicable = records
         .iter()
         .filter(|record| force_all || state.applied_generation == 0 || record.changed_generation > state.applied_generation)
         .cloned()
         .collect::<Vec<_>>();
+    sort_sync_records_for_apply(&mut applicable);
     let allowed_media = applicable
         .iter()
         .filter(|record| record.table_name == "board_media_files" && !record.tombstone)
@@ -961,6 +985,114 @@ mod tests {
         drop(source);
         drop(target);
         fs::remove_dir_all(base).expect("remove generation merge test directory");
+    }
+
+    #[test]
+    fn generation_records_apply_parents_before_children_and_delete_children_first() {
+        let record = |table_name: &str, tombstone: bool| SyncRecord {
+            table_name: table_name.to_string(),
+            record_key: format!("[\"{table_name}\"]"),
+            key_values: vec![SqlValue::Text(table_name.to_string())],
+            changed_generation: 1,
+            record_version: 1,
+            tombstone,
+        };
+        let mut records = vec![
+            record("work_note_attachments", false),
+            record("work_note_pages", false),
+            record("counseling_records", true),
+            record("counseling_teacher_notes", true),
+        ];
+        sort_sync_records_for_apply(&mut records);
+        assert_eq!(records.iter().map(|item| (item.table_name.as_str(), item.tombstone)).collect::<Vec<_>>(), vec![
+            ("work_note_pages", false),
+            ("work_note_attachments", false),
+            ("counseling_teacher_notes", true),
+            ("counseling_records", true),
+        ]);
+    }
+
+    #[test]
+    fn generation_restores_and_deletes_work_note_attachment_with_its_parent() {
+        let base = std::env::temp_dir().join(format!(
+            "onlineclass-generation-work-note-attachment-test-{}",
+            random_url_token()
+        ));
+        let source_dir = base.join("source");
+        let target_dir = base.join("target");
+        let backup_root = base.join("onedrive");
+        fs::create_dir_all(&source_dir).expect("create source directory");
+        fs::create_dir_all(&target_dir).expect("create target directory");
+        fs::create_dir_all(&backup_root).expect("create backup root");
+        let source = SqliteStore::open(source_dir.join("source.sqlite")).expect("open source store");
+        let target = SqliteStore::open(target_dir.join("target.sqlite")).expect("open target store");
+        set_folder(&source, "tenant-a".to_string(), backup_root.to_string_lossy().to_string())
+            .expect("configure source backup");
+        set_folder(&target, "tenant-a".to_string(), backup_root.to_string_lossy().to_string())
+            .expect("configure target backup");
+        source.upsert_work_note(json!({
+            "tenantId": "tenant-a", "pageId": "page-a", "title": "첨부 노트",
+            "blocks": [], "markdown": "# 첨부 노트"
+        })).expect("create source work note");
+        crate::work_note_attachments::save(
+            &source,
+            "tenant-a".to_string(),
+            "attachment-a".to_string(),
+            "page-a".to_string(),
+            "block-a".to_string(),
+            "자료.pdf".to_string(),
+            "application/pdf".to_string(),
+            &mut Cursor::new(b"generation-pdf".to_vec()),
+        ).expect("save source attachment");
+
+        let generation_one = run_with_kind(&source, "tenant-a".to_string(), "auto_sync", Some(1))
+            .expect("create generation one");
+        let generation_one_path = PathBuf::from(generation_one["manifestPath"].as_str().expect("generation one path"));
+        let content_one = tenant_content_sha256(&source, "tenant-a").expect("source content root");
+        mark_sync_published(&source, "tenant-a", 1, &generation_one_path, &content_one, "announced")
+            .expect("mark generation one published");
+        restore_generation(&target, "tenant-a", &generation_one_path, 1, "announced", false)
+            .expect("restore page and attachment generation");
+        let mut restored = crate::work_note_attachments::open(
+            &target,
+            "tenant-a".to_string(),
+            "attachment-a".to_string(),
+        ).expect("open generation attachment");
+        let mut restored_bytes = Vec::new();
+        restored.file.read_to_end(&mut restored_bytes).expect("read generation attachment");
+        assert_eq!(restored_bytes, b"generation-pdf");
+        drop(restored);
+        let target_attachment_path = {
+            let conn = target.conn.lock().expect("lock target");
+            let relative: String = conn.query_row(
+                "SELECT local_path FROM work_note_attachments WHERE tenant_id = 'tenant-a' AND attachment_id = 'attachment-a'",
+                [],
+                |row| row.get(0),
+            ).expect("read target attachment path");
+            target.data_dir.join(relative)
+        };
+        assert!(target_attachment_path.is_file());
+
+        source.delete_work_note("tenant-a".to_string(), "page-a".to_string())
+            .expect("delete source page and attachment");
+        let generation_two = run_with_kind(&source, "tenant-a".to_string(), "auto_sync", Some(2))
+            .expect("create generation two");
+        restore_generation(
+            &target,
+            "tenant-a",
+            Path::new(generation_two["manifestPath"].as_str().expect("generation two path")),
+            2,
+            "announced",
+            false,
+        ).expect("restore attachment and page tombstones");
+        assert!(target.get_work_note("tenant-a".to_string(), "page-a".to_string()).expect("read target page").is_none());
+        assert!(crate::work_note_attachments::list(&target, "tenant-a".to_string(), "page-a".to_string())
+            .expect("list target attachments").is_empty());
+        assert!(!target_attachment_path.exists());
+
+        drop(source);
+        drop(target);
+        fs::remove_dir_all(base).expect("remove work note attachment generation test directory");
     }
 
     #[test]
