@@ -28,6 +28,13 @@ function element<T extends HTMLElement>(id: string) {
   return found as T;
 }
 
+export function deviceAuthorizationErrorMessage(code: string | undefined) {
+  if (code === "local_store_service_unavailable" || code === "local_store_unavailable") {
+    return "이 PC 저장 서비스가 시작되지 않았습니다. 이미 실행 중인 앱이 있으면 트레이 아이콘에서 열고, 없으면 앱을 완전히 종료한 뒤 다시 실행해 주세요.";
+  }
+  return "인터넷 연결과 앱 실행 상태를 확인한 뒤 다시 시도해 주세요.";
+}
+
 export function createDeviceAuthorizationController(options: Options) {
   let pollTimer = 0;
 
@@ -63,8 +70,8 @@ export function createDeviceAuthorizationController(options: Options) {
       options.setText("deviceAuthMeta", "페어링 키나 수동 코드는 필요하지 않습니다.");
     } else if (!result.ok) {
       options.setText("deviceAuthTitle", "브라우저 연결을 시작하지 못했습니다");
-      options.setText("deviceAuthDescription", "인터넷 연결을 확인한 뒤 다시 시도해 주세요.");
-      options.setText("deviceAuthMeta", result.error || "device_authorization_failed");
+      options.setText("deviceAuthDescription", deviceAuthorizationErrorMessage(result.error));
+      options.setText("deviceAuthMeta", "로컬 자료는 그대로 유지됩니다.");
     }
   }
 
@@ -89,7 +96,7 @@ export function createDeviceAuthorizationController(options: Options) {
     try {
       const result = await invoke<DeviceAuthorizationResult>("start_device_authorization");
       render(result);
-      if (!result?.ok) options.onStartFailure(`브라우저 연결 시작 실패: ${result?.error || "open_failed"}`);
+      if (!result?.ok) options.onStartFailure(deviceAuthorizationErrorMessage(result?.error));
       else void poll();
     } catch (error) {
       render({ ok: false, error: String((error as Error)?.message || error) });

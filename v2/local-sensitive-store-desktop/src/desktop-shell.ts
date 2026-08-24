@@ -49,6 +49,17 @@ export function buildTeacherHomeUrl(bridge: BridgeResult) {
   return url.toString();
 }
 
+export function desktopShellErrorMessage(value: unknown) {
+  const code = String(value instanceof Error ? value.message : value || "");
+  if (code === "local_store_service_unavailable") {
+    return "이 PC 저장 서비스가 시작되지 않았습니다. 이미 실행 중인 앱이 있으면 트레이 아이콘에서 열고, 없으면 앱을 완전히 종료한 뒤 다시 실행해 주세요.";
+  }
+  if (code === "browser_link_unavailable") {
+    return "로컬 저장소 연결을 준비하지 못했습니다. 앱을 완전히 종료한 뒤 다시 실행해 주세요.";
+  }
+  return "교사 홈 연결을 준비하지 못했습니다. 잠시 뒤 다시 시도해 주세요.";
+}
+
 export function initDesktopShell() {
   const noop = { refreshConnection: async () => undefined };
   if (!isTauri()) return noop;
@@ -179,7 +190,7 @@ export function initDesktopShell() {
       await view.setFocus();
       fallback.hidden = true;
     } catch (error) {
-      setFallback("교사 홈을 열지 못했습니다.", String((error as Error)?.message || error), true);
+      setFallback("교사 홈을 열지 못했습니다.", desktopShellErrorMessage(error), true);
     }
   }
 

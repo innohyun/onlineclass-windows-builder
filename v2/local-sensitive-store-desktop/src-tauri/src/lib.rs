@@ -32,7 +32,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-08-22.5-teacher-popup-windows";
+pub(crate) const SERVICE_VERSION: &str = "2026-08-24.1-single-instance-board-archive";
 const WORK_MEETING_ROOT_PAGE_ID: &str = "classaimate:work-meeting-minutes";
 const WORK_MEETING_ROOT_TITLE: &str = "업무 회의록";
 const WORK_MEETING_ROOT_INTRO: &str = "모바일에서 확정한 업무 회의록이 자동으로 들어옵니다.";
@@ -5907,7 +5907,7 @@ fn device_api_data(payload: Value) -> Result<Value, String> {
 fn start_device_authorization(state: tauri::State<'_, AppState>) -> Value {
     let status = match state.status.lock().map(|status| status.clone()) {
         Ok(status) if status.ok => status,
-        _ => return json!({ "ok": false, "error": "local_store_unavailable" }),
+        _ => return json!({ "ok": false, "error": "local_store_service_unavailable" }),
     };
     let request_id = random_url_token();
     let verifier = random_url_token();
@@ -6026,7 +6026,7 @@ fn poll_device_authorization(state: tauri::State<'_, AppState>) -> Value {
         Some(store) => store,
         None => {
             let _ = device_sync_manager.disconnect();
-            return json!({ "ok": false, "status": "approved", "error": "browser_link_unavailable" });
+            return json!({ "ok": false, "status": "approved", "error": "local_store_service_unavailable" });
         }
     };
     let link = match browser_links.issue_for_request(&pending.request_id, &consumed) {
@@ -6082,7 +6082,7 @@ fn prepare_teacher_home_bridge(state: tauri::State<'_, AppState>) -> Value {
         .and_then(|store| store.clone())
     {
         Some(store) => store,
-        None => return json!({ "ok": false, "connected": false, "error": "browser_link_unavailable" }),
+        None => return json!({ "ok": false, "connected": false, "error": "local_store_service_unavailable" }),
     };
     let request_id = random_url_token();
     match browser_links.issue_desktop_for_request(&request_id) {
@@ -6864,6 +6864,9 @@ mod teacher_popup_tests {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_main_window(app);
+        }))
         .plugin(tauri_plugin_dialog::init())
         .on_window_event(|window, event| {
             if window.label() != "main" { return; }
