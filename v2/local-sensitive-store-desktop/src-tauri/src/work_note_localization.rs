@@ -170,9 +170,6 @@ pub(crate) fn begin(store: &SqliteStore, body: Value) -> Result<Value, String> {
         let same_root = previous.get("rootPageId").and_then(Value::as_str) == Some(root_page_id.as_str());
         let completed = previous.get("status").and_then(Value::as_str) == Some(STATUS_COMPLETED);
         if same_root && completed { return Err("work_note_localization_already_completed".to_string()); }
-        if !same_root && !completed {
-            return Err("work_note_localization_identity_mismatch".to_string());
-        }
     }
     let reset = previous.as_ref().is_some_and(|value| {
         value.get("rootPageId").and_then(Value::as_str) != Some(root_page_id.as_str())
@@ -594,6 +591,37 @@ mod tests {
             "SELECT COUNT(*) FROM work_note_pages WHERE tenant_id='tenant-a' AND page_id IN ('root-a','child-a','sibling-a')",
             [], |row| row.get(0)).unwrap();
         assert_eq!(preserved, 3);
+        drop(store);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn a_new_cloud_root_replaces_an_incomplete_receipt_without_publishing_it() {
+        let directory = std::env::temp_dir().join(format!("classaimate-localization-{}", crate::random_url_token()));
+        fs::create_dir_all(&directory).unwrap();
+        let db_path = directory.join("store.sqlite3");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE work_note_pages (tenant_id TEXT NOT NULL,page_id TEXT NOT NULL,parent_id TEXT,title TEXT NOT NULL,emoji TEXT NOT NULL,position INTEGER NOT NULL,properties_json TEXT NOT NULL,document_json TEXT NOT NULL,markdown TEXT NOT NULL,created_at_ms INTEGER NOT NULL,updated_at_ms INTEGER NOT NULL,PRIMARY KEY(tenant_id,page_id));
+             CREATE VIRTUAL TABLE work_note_pages_fts USING fts5(tenant_id UNINDEXED,page_id UNINDEXED,title,markdown);
+             CREATE TABLE work_note_attachments (tenant_id TEXT NOT NULL,attachment_id TEXT NOT NULL,page_id TEXT NOT NULL,block_id TEXT NOT NULL,file_name TEXT NOT NULL,content_type TEXT NOT NULL,byte_size INTEGER NOT NULL,sha256 TEXT NOT NULL,local_path TEXT NOT NULL,created_at_ms INTEGER NOT NULL,updated_at_ms INTEGER NOT NULL,PRIMARY KEY(tenant_id,attachment_id));",
+        ).unwrap();
+        ensure_schema(&conn).unwrap();
+        let store = SqliteStore { conn: Mutex::new(conn), db_path, data_dir: directory.clone() };
+        begin(&store, json!({ "tenantId":"tenant-a","documentId":"document-a","rootPageId":"old-root",
+            "documentTitle":"이전 준비본","preparedRevision":2,"snapshotSha256":"a".repeat(64),"expectedPageCount":1 })).unwrap();
+        stage_page(&store, "tenant-a".into(), "document-a".into(), "old-root".into(),
+            json!({"pageId":"old-root","parentId":null,"title":"이전 준비본","blocks":[],"markdown":""})).unwrap();
+        cancel(&store, "tenant-a".into(), "document-a".into()).unwrap();
+
+        let replaced = begin(&store, json!({ "tenantId":"tenant-a","documentId":"document-a","rootPageId":"ai-root",
+            "documentTitle":"AI","preparedRevision":4,"snapshotSha256":"b".repeat(64),"expectedPageCount":1 })).unwrap();
+        assert_eq!(replaced["rootPageId"], "ai-root");
+        assert_eq!(replaced["status"], STATUS_COPYING);
+        assert!(staged_pages(&store, "tenant-a", "document-a").unwrap().is_empty());
+        let published: i64 = store.conn.lock().unwrap().query_row(
+            "SELECT COUNT(*) FROM work_note_pages WHERE tenant_id='tenant-a'", [], |row| row.get(0)).unwrap();
+        assert_eq!(published, 0);
         drop(store);
         fs::remove_dir_all(directory).unwrap();
     }
