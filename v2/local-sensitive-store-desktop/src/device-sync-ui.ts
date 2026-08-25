@@ -14,6 +14,9 @@ export type DeviceSyncStatus = {
   lastSuccessAtMs?: number;
   lastError?: string;
   conflictCount?: number;
+  conflictRetainedCount?: number;
+  conflictUnreviewedCount?: number;
+  conflictLifetimeCount?: number;
   waitingForOneDrive?: boolean;
   error?: string;
 };
@@ -88,7 +91,9 @@ export function renderDeviceSyncStatus(status: DeviceSyncStatus | null) {
   setText("deviceSyncLatestText", status?.connected ? `${Number(status.latestGeneration || 0)}세대` : "-");
   setText("deviceSyncAppliedText", status?.connected ? `${Number(status.appliedGeneration || 0)}세대` : "-");
   setText("deviceSyncVerifiedText", status?.connected ? verificationLabel(status) : "-");
-  setText("deviceSyncConflictText", status?.connected ? `${Number(status.conflictCount || 0)}건` : "-");
+  setText("deviceSyncConflictText", status?.connected
+    ? `미검토 ${Number(status.conflictUnreviewedCount || 0)} · 보관 ${Number(status.conflictRetainedCount ?? status.conflictCount ?? 0)} · 누적 ${Number(status.conflictLifetimeCount ?? status.conflictCount ?? 0)}`
+    : "-");
   if (status?.ok === false && status.error) {
     setBadge("확인 필요", "error");
     setText("deviceSyncStatus", `기기 동기화 상태를 확인하지 못했습니다: ${deviceSyncErrorMessage(status.error)}`);

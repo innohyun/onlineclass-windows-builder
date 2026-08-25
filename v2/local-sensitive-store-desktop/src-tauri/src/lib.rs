@@ -13,6 +13,9 @@ mod shared_archive_board;
 mod shared_archive_sync;
 mod student_private_photos;
 mod work_note_attachments;
+mod work_note_localization;
+mod work_note_reader;
+mod device_sync_conflicts;
 use rand::{distributions::Alphanumeric, Rng};
 use rusqlite::{params, params_from_iter, Connection, ToSql};
 use serde::{Deserialize, Serialize};
@@ -36,7 +39,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-08-25.1-archive-device-sync-v4";
+pub(crate) const SERVICE_VERSION: &str = "2026-08-25.2-work-note-localization-conflicts";
 const WORK_MEETING_ROOT_PAGE_ID: &str = "classaimate:work-meeting-minutes";
 const WORK_MEETING_ROOT_TITLE: &str = "업무 회의록";
 const WORK_MEETING_ROOT_INTRO: &str = "모바일에서 확정한 업무 회의록이 자동으로 들어옵니다.";
@@ -101,6 +104,7 @@ const LOCAL_SENSITIVE_STORE_ROUTES: &[&str] = &[
     "/v1/work-note-attachments",
     "/v1/work-notes/import",
     "/v1/work-notes/export",
+    "/v1/work-note-localizations",
     "/v1/overview",
     "/v1/cloud-sync/status",
     "/v1/cloud-sync/runs",
@@ -117,13 +121,14 @@ const LOCAL_SENSITIVE_STORE_ROUTES: &[&str] = &[
     "/v1/shared-archives/import",
     "/v1/shared-archives/import-jobs",
 ];
-const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 6] = [
+const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 7] = [
     "non_lesson_observations",
     "teacher_local_records",
     "work_notes",
     "work_note_tree_move",
     "counseling_local_authority",
     "onedrive_device_sync",
+    "work_note_localization_staging_v1",
 ];
 
 #[derive(Clone, Debug, Serialize)]
@@ -1947,7 +1952,9 @@ impl SqliteStore {
         )
         .map_err(|e| format!("db_schema_failed:{e}"))?;
         work_note_attachments::ensure_schema(&conn)?;
+        work_note_localization::ensure_schema(&conn)?;
         backup::install_sync_tracking(&conn)?;
+        device_sync_conflicts::ensure_schema(&conn)?;
         let data_dir = db_path
             .parent()
             .unwrap_or_else(|| Path::new("."))
@@ -4836,14 +4843,21 @@ fn request_error_status(error: &str) -> u16 {
         | "counseling_duplicate_teacher_note_id"
         | "work_note_page_id_required" | "work_note_parent_cycle" | "work_note_move_placement_invalid"
         | "work_note_attachment_id_required" | "work_note_attachment_path_invalid"
+        | "work_note_localization_identity_invalid" | "work_note_localization_snapshot_invalid"
+        | "work_note_localization_manifest_invalid" | "work_note_localization_tree_mismatch"
+        | "work_note_localization_attachment_mismatch" | "work_note_localization_attachment_count_mismatch"
+        | "work_note_localization_page_count_mismatch"
         | "backup_root_required" | "backup_root_inside_local_store"
         | "backup_manifest_required" | "backup_manifest_outside_configured_root" | "backup_db_required" => 400,
         "work_note_has_children" | "work_note_root_move_forbidden" | "work_note_root_sibling_forbidden"
-        | "work_note_move_target_changed" | "counseling_import_run_conflict" => 409,
+        | "work_note_move_target_changed" | "work_note_localization_identity_mismatch"
+        | "work_note_localization_state_invalid" | "work_note_localization_not_verified"
+        | "counseling_import_run_conflict" => 409,
         "student_photo_content_type_invalid" | "student_photo_data_invalid"
         | "student_photo_size_invalid" | "student_photo_digest_mismatch" => 400,
         "media_not_found" | "media_file_missing" | "work_note_not_found"
         | "work_note_attachment_not_found" | "work_note_attachment_file_missing"
+        | "work_note_localization_not_found"
         | "counseling_record_not_found" | "counseling_teacher_note_not_found" => 404,
         _ => 500,
     }
@@ -4926,6 +4940,23 @@ fn handle_request(
     pairing_key: String,
 ) {
     let origin = allowed_origin(&request);
+    match work_note_localization::handle_http_attachment(&mut request, &store, &browser_links, &pairing_key, &origin) {
+        Ok(Some(response)) => {
+            let _ = request.respond(response);
+            return;
+        }
+        Ok(None) => {}
+        Err(error) => {
+            let status = request_error_status(&error);
+            let response = json_response(status, json!({
+                "ok": false,
+                "error": if status >= 500 { "internal_error" } else { error.as_str() },
+                "details": error
+            }), &origin);
+            let _ = request.respond(response);
+            return;
+        }
+    }
     match work_note_attachments::handle_http_request(&mut request, &store, &browser_links, &pairing_key, &origin) {
         Ok(Some(response)) => {
             let _ = request.respond(response);
@@ -5086,6 +5117,43 @@ fn handle_request(
         if request.method() == &Method::Get && path == "/v1/work-notes/export" {
             let records = store.list_work_notes(query(&url, "tenantId"), String::new())?;
             return Ok((200, json!({ "ok": true, "records": records })));
+        }
+
+        if request.method() == &Method::Get && path == "/v1/work-note-localizations" {
+            let records = work_note_localization::list(&store, query(&url, "tenantId"))?;
+            return Ok((200, json!({ "ok": true, "records": records })));
+        }
+
+        if path.starts_with("/v1/work-note-localizations/") {
+            let parts = path.trim_matches('/').split('/').collect::<Vec<_>>();
+            if parts.len() >= 4 {
+                let document_id = parts[2].to_string();
+                if parts.len() == 4 && request.method() == &Method::Post {
+                    let mut body = read_body(&mut request)?;
+                    if let Some(object) = body.as_object_mut() {
+                        object.insert("documentId".to_string(), Value::String(document_id.clone()));
+                    }
+                    return match parts[3] {
+                        "begin" => Ok((200, json!({ "ok": true, "receipt": work_note_localization::begin(&store, body)? }))),
+                        "verify" => Ok((200, work_note_localization::verify(&store, body)?)),
+                        "finalize" => {
+                            let tenant_id = normalize_json_text(body.get("tenantId"), 160);
+                            Ok((200, work_note_localization::finalize(&store, tenant_id, document_id)?))
+                        }
+                        "cancel" => {
+                            let tenant_id = normalize_json_text(body.get("tenantId"), 160);
+                            Ok((200, json!({ "ok": true, "receipt": work_note_localization::cancel(&store, tenant_id, document_id)? })))
+                        }
+                        _ => Ok((404, json!({ "ok": false, "error": "not_found" }))),
+                    };
+                }
+                if parts.len() == 5 && parts[3] == "pages" && request.method() == &Method::Put {
+                    let body = read_body(&mut request)?;
+                    let tenant_id = normalize_json_text(body.get("tenantId"), 160);
+                    let page = work_note_localization::stage_page(&store, tenant_id, document_id, parts[4].to_string(), body)?;
+                    return Ok((200, json!({ "ok": true, "record": page })));
+                }
+            }
         }
 
         if request.method() == &Method::Post && path == "/v1/work-notes/reconcile-mobile-meeting-root" {
@@ -6949,6 +7017,12 @@ pub fn run() {
             data_explorer::search_local_data,
             data_explorer::open_local_data_attachment,
             data_explorer::open_local_data_directory,
+            work_note_reader::get_local_work_note_view,
+            device_sync_conflicts::list_device_sync_conflicts,
+            device_sync_conflicts::get_device_sync_conflict,
+            device_sync_conflicts::review_device_sync_conflicts,
+            device_sync_conflicts::delete_device_sync_conflicts,
+            device_sync_conflicts::export_device_sync_conflicts,
             open_teacher_settings_url,
             start_device_authorization,
             reopen_device_authorization,

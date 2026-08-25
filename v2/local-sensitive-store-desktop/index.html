@@ -186,6 +186,7 @@
                   <header class="data-detail-head"><h2 id="dataDetailTitle">-</h2><span><i class="fa-solid fa-shield-halved" aria-hidden="true"></i> 로컬 저장</span></header>
                   <dl class="data-detail-meta"><div><dt>학생</dt><dd id="dataDetailStudent">-</dd></div><div><dt>자료 종류</dt><dd id="dataDetailKind">-</dd></div><div><dt>저장 시간</dt><dd id="dataDetailSavedAt">-</dd></div></dl>
                   <section class="data-detail-body"><h3>원문 내용</h3><div id="dataDetailBody"></div></section>
+                  <button class="primary-action data-open-work-note" id="dataOpenWorkNote" type="button" hidden><i class="fa-solid fa-up-right-from-square" aria-hidden="true"></i> 업무 노트 전체 보기</button>
                   <button class="primary-action data-open-archive-board" id="dataOpenArchiveBoard" type="button" hidden><i class="fa-solid fa-up-right-from-square" aria-hidden="true"></i> 보드 열기</button>
                   <section class="data-attachments" id="dataAttachments"><h3>첨부파일 <span id="dataAttachmentCount">0개</span></h3><div id="dataAttachmentList"></div></section>
                   <details class="data-json-disclosure"><summary>원본 JSON 보기</summary><pre id="dataJsonDetail"></pre></details>
@@ -194,6 +195,20 @@
             </section>
 
             <footer class="data-local-status"><i class="fa-solid fa-circle-check" aria-hidden="true"></i><span id="dataExplorerLocalStatus">로컬 DB에서 불러옴 · 인터넷 연결 없이 열람 가능</span></footer>
+          </section>
+
+          <section class="work-note-reader" id="workNoteReader" aria-labelledby="workNoteReaderTitle" hidden>
+            <header class="work-note-reader-head">
+              <button id="workNoteReaderClose" type="button"><i class="fa-solid fa-arrow-left" aria-hidden="true"></i> 자료 탐색</button>
+              <div><h1 id="workNoteReaderTitle">업무 노트</h1><p id="workNoteReaderMeta">로컬 업무 노트를 불러오는 중입니다.</p></div>
+              <span><i class="fa-solid fa-shield-halved" aria-hidden="true"></i> 이 PC · 읽기 전용</span><button id="workNoteReaderHelp" type="button"><i class="fa-solid fa-circle-question"></i> 안내</button>
+            </header>
+            <div class="work-note-reader-layout">
+              <nav id="workNoteReaderTree" aria-label="업무 노트 문서 목록"></nav>
+              <main><header><span id="workNoteReaderEmoji">📄</span><div><h2 id="workNoteReaderPageTitle">업무 노트</h2><p id="workNoteReaderPath">-</p></div></header><div id="workNoteReaderProperties"></div><article id="workNoteReaderBody"></article></main>
+            </div>
+            <footer id="workNoteReaderStatus">로컬 DB 원문 · 인터넷 없이 열람 가능 · 편집은 교사 홈에서 합니다.</footer>
+            <aside class="local-reader-tutorial" id="workNoteReaderTutorial" hidden><header><span id="workNoteReaderTutorialStep">1 / 3</span><button id="workNoteReaderTutorialClose" type="button" aria-label="업무 노트 안내 닫기"><i class="fa-solid fa-xmark"></i></button></header><h2 id="workNoteReaderTutorialTitle">로컬 업무 노트 보기</h2><p id="workNoteReaderTutorialCopy"></p><footer><button id="workNoteReaderTutorialNext" type="button">다음</button></footer></aside>
           </section>
 
           <section class="archive-board-viewer" id="archiveBoardViewer" aria-labelledby="archiveBoardViewerTitle" hidden>
@@ -266,8 +281,17 @@
                 <span class="backup-device-sync-icon" aria-hidden="true"><i class="fa-solid fa-arrows-rotate"></i></span>
                 <div><h2 id="deviceSyncTitle">기기 간 최신 내용 동기화 <span class="status-badge badge-warning" id="deviceSyncBadge">확인 중</span></h2><p id="deviceSyncStatus" role="status">OneDrive와 서버 검증 상태를 확인하고 있습니다.</p></div>
               </div>
-              <dl class="backup-device-sync-metrics"><div><dt>서버 최신 세대</dt><dd id="deviceSyncLatestText">-</dd></div><div><dt>이 PC 반영 세대</dt><dd id="deviceSyncAppliedText">-</dd></div><div><dt>검증 상태</dt><dd id="deviceSyncVerifiedText">-</dd></div><div><dt title="동기화를 막는 오류가 아니라 이 PC에 보존된 과거 충돌 기록의 누적값입니다.">기록 충돌 보관(누적)</dt><dd id="deviceSyncConflictText">-</dd></div></dl>
-              <div class="backup-device-sync-actions"><button class="primary-action" data-action="run-device-sync" type="button">지금 동기화</button><button class="secondary-action" data-action="repair-device-sync" type="button" hidden>기기 동기화 다시 연결</button></div>
+              <dl class="backup-device-sync-metrics"><div><dt>서버 최신 세대</dt><dd id="deviceSyncLatestText">-</dd></div><div><dt>이 PC 반영 세대</dt><dd id="deviceSyncAppliedText">-</dd></div><div><dt>검증 상태</dt><dd id="deviceSyncVerifiedText">-</dd></div><div><dt title="미검토·현재 보관·지금까지 발생한 누적 건수를 구분해 표시합니다.">기록 충돌</dt><dd id="deviceSyncConflictText">-</dd></div></dl>
+              <div class="backup-device-sync-actions"><button class="primary-action" data-action="run-device-sync" type="button">지금 동기화</button><button class="secondary-action" id="deviceSyncConflictsOpen" type="button">충돌 기록 확인</button><button class="secondary-action" data-action="repair-device-sync" type="button" hidden>기기 동기화 다시 연결</button></div>
+            </section>
+
+            <section class="device-conflict-viewer" id="deviceConflictViewer" aria-labelledby="deviceConflictTitle" hidden>
+              <header><button id="deviceConflictClose" type="button"><i class="fa-solid fa-arrow-left"></i> 백업·복원</button><div><h1 id="deviceConflictTitle">기록 충돌 보관함</h1><p>동기화에서 밀린 이전 값을 확인·내보내고, 검토한 항목만 삭제할 수 있습니다.</p></div><button id="deviceConflictHelp" type="button"><i class="fa-solid fa-circle-question"></i> 안내</button></header>
+              <dl class="device-conflict-stats"><div><dt>미검토</dt><dd id="deviceConflictUnreviewed">0건</dd></div><div><dt>현재 보관</dt><dd id="deviceConflictRetained">0건</dd></div><div><dt>누적 발생</dt><dd id="deviceConflictLifetime">0건</dd></div></dl>
+              <div class="device-conflict-actions"><button id="deviceConflictReview" type="button">선택 항목 검토 완료</button><button id="deviceConflictExport" type="button">선택 항목 JSON 내보내기</button><button class="is-danger" id="deviceConflictDelete" type="button">검토한 선택 항목 삭제</button></div>
+              <div class="device-conflict-layout"><section><div id="deviceConflictList" role="listbox"></div></section><article id="deviceConflictDetail"><p>왼쪽에서 충돌 기록을 선택하세요.</p></article></div>
+              <footer id="deviceConflictStatus">충돌 기록은 동기화를 막지 않으며 이 PC에만 보관됩니다.</footer>
+              <aside class="local-reader-tutorial" id="deviceConflictTutorial" hidden><header><span id="deviceConflictTutorialStep">1 / 3</span><button id="deviceConflictTutorialClose" type="button" aria-label="충돌 기록 안내 닫기"><i class="fa-solid fa-xmark"></i></button></header><h2 id="deviceConflictTutorialTitle">충돌 기록 확인</h2><p id="deviceConflictTutorialCopy"></p><footer><button id="deviceConflictTutorialNext" type="button">다음</button></footer></aside>
             </section>
 
             <section class="backup-restore-panel" id="backupRestorePanel" aria-label="백업 복원 작업대">

@@ -9,6 +9,9 @@ import "./student-timeline.css";
 import "./backup-restore.css";
 import "./shared-archive.css";
 import "./archive-board-explorer.css";
+import "./work-note-reader.css";
+import "./device-sync-conflicts.css";
+import "./local-reader-tutorial.css";
 import "./health-dashboard.css";
 import "./settings-dashboard.css";
 import "./desktop-shell.css";
@@ -21,6 +24,8 @@ import { confirmBackupRestore } from "./backup-restore-confirmation";
 import { initBackupRestorePreview } from "./backup-restore-preview";
 import { initSharedArchivePreview } from "./shared-archive-preview";
 import { initArchiveBoardExplorer } from "./archive-board-explorer";
+import { initWorkNoteReader } from "./work-note-reader";
+import { initDeviceSyncConflicts } from "./device-sync-conflicts";
 import { initHealthDashboardPreview } from "./health-dashboard-preview";
 import { initSettingsDashboard, renderSettingsDashboard } from "./settings-dashboard";
 import { initSettingsDashboardPreview } from "./settings-dashboard-preview";
@@ -1168,7 +1173,9 @@ function bindUi() {
 
 const desktopShell = initDesktopShell();
 initArchiveBoardExplorer();
+initWorkNoteReader();
 const dataExplorer = initDataExplorer({ getTenantId: currentBackupTenantId });
+initDeviceSyncConflicts({ getTenantId: currentBackupTenantId });
 const studentTimeline = initStudentTimeline({ getTenantId: currentBackupTenantId });
 initHomeDashboard({
   onViewChange(view, context) {

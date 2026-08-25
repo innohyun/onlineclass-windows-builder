@@ -33,6 +33,8 @@ pub(crate) struct LocalSyncState {
     pub(crate) last_success_at_ms: i64,
     pub(crate) last_error: String,
     pub(crate) conflict_count: i64,
+    pub(crate) conflict_unreviewed_count: i64,
+    pub(crate) conflict_lifetime_count: i64,
 }
 
 #[derive(Clone)]
@@ -72,10 +74,10 @@ pub(crate) fn artifact_set_sha256(artifacts: &mut [ArtifactDigest]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-struct BackupTable {
-    name: &'static str,
-    columns: &'static [&'static str],
-    key_columns: &'static [&'static str],
+pub(crate) struct BackupTable {
+    pub(crate) name: &'static str,
+    pub(crate) columns: &'static [&'static str],
+    pub(crate) key_columns: &'static [&'static str],
     timestamp_column: &'static str,
     optional: bool,
 }
@@ -270,7 +272,7 @@ const BACKUP_TABLES: &[BackupTable] = &[
     },
 ];
 
-fn syncable_tables() -> impl Iterator<Item = &'static BackupTable> {
+pub(crate) fn syncable_tables() -> impl Iterator<Item = &'static BackupTable> {
     BACKUP_TABLES
         .iter()
         .filter(|table| table.name != "cloud_sync_runs")
@@ -515,7 +517,9 @@ pub(crate) fn local_sync_state(store: &SqliteStore, tenant_id: &str) -> Result<L
         "SELECT applied_generation, published_generation, latest_generation, latest_status,
                 last_content_sha256, COALESCE(first_dirty_at_ms, 0), COALESCE(last_dirty_at_ms, 0),
                 last_checked_at_ms, last_success_at_ms, last_error,
-                (SELECT COUNT(*) FROM local_store_device_sync_conflicts c WHERE c.tenant_id = s.tenant_id)
+                (SELECT COUNT(*) FROM local_store_device_sync_conflicts c WHERE c.tenant_id = s.tenant_id),
+                (SELECT COUNT(*) FROM local_store_device_sync_conflicts c WHERE c.tenant_id = s.tenant_id AND c.reviewed_at_ms IS NULL),
+                COALESCE((SELECT lifetime_count FROM local_store_device_sync_conflict_stats c WHERE c.tenant_id = s.tenant_id), 0)
          FROM local_store_device_sync_state s WHERE tenant_id = ?1",
         params![tenant_id],
         |row| Ok(LocalSyncState {
@@ -530,6 +534,8 @@ pub(crate) fn local_sync_state(store: &SqliteStore, tenant_id: &str) -> Result<L
             last_success_at_ms: row.get(8)?,
             last_error: row.get(9)?,
             conflict_count: row.get(10)?,
+            conflict_unreviewed_count: row.get(11)?,
+            conflict_lifetime_count: row.get(12)?,
         }),
     )
     .map_err(|e| format!("db_sync_state_read_failed:{e}"))

@@ -578,6 +578,9 @@ impl DeviceSyncManager {
             "lastSuccessAtMs": state.last_success_at_ms,
             "lastError": state.last_error,
             "conflictCount": state.conflict_count,
+            "conflictRetainedCount": state.conflict_count,
+            "conflictUnreviewedCount": state.conflict_unreviewed_count,
+            "conflictLifetimeCount": state.conflict_lifetime_count,
             "waitingForOneDrive": state.latest_generation > state.applied_generation,
         }))
     }

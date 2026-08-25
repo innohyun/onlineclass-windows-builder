@@ -534,6 +534,7 @@ fn archive_conflict(
     winning_generation: i64,
     payload_json: &str,
 ) -> Result<(), String> {
+    let captured_at_ms = now_ms();
     transaction
         .execute(
             "INSERT INTO local_store_device_sync_conflicts (
@@ -548,10 +549,11 @@ fn archive_conflict(
                 losing_generation,
                 winning_generation,
                 payload_json,
-                now_ms(),
+                captured_at_ms,
             ],
         )
         .map_err(|e| format!("restore_sync_conflict_archive_failed:{e}"))?;
+    crate::device_sync_conflicts::increment_lifetime(transaction, tenant_id, captured_at_ms)?;
     Ok(())
 }
 

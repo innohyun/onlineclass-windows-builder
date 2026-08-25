@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { openArchiveBoardViewer, searchArchiveBoards, type ArchiveBoardSummary } from "./archive-board-explorer";
+import { openWorkNoteReader } from "./work-note-reader";
 
 type LocalDataSection = {
   key: string;
@@ -423,6 +424,8 @@ export function initDataExplorer(options: ExplorerOptions) {
     detail.hidden = !record;
     const openBoardButton = element<HTMLButtonElement>("dataOpenArchiveBoard");
     openBoardButton.hidden = record?.sectionKey !== "archive-board";
+    const openWorkNoteButton = element<HTMLButtonElement>("dataOpenWorkNote");
+    openWorkNoteButton.hidden = record?.sectionKey !== "work-notes";
     if (!record) return;
     element("dataDetailTitle").textContent = recordTitle(record);
     element("dataDetailStudent").textContent = record.sectionKey === "work-notes" ? "학급 업무" : studentName(record);
@@ -595,6 +598,13 @@ export function initDataExplorer(options: ExplorerOptions) {
     if (!archiveId) return;
     void openArchiveBoardViewer(options.getTenantId().trim(), archiveId).catch((error) => {
       element("dataExplorerLocalStatus").textContent = `보관 보드 열기 실패: ${String((error as Error)?.message || error)}`;
+    });
+  });
+  element("dataOpenWorkNote").addEventListener("click", () => {
+    const pageId = firstText(records[selectedIndex]?.payload || {}, ["pageId"]);
+    if (!pageId) return;
+    void openWorkNoteReader(options.getTenantId().trim(), pageId).catch((error) => {
+      element("dataExplorerLocalStatus").textContent = `업무 노트 열기 실패: ${String((error as Error)?.message || error)}`;
     });
   });
   element("dataExplorerReset").addEventListener("click", reset);
