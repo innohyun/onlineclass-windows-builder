@@ -122,7 +122,13 @@ function renderNode(node: Block): Node | null {
 }
 
 function legacyNode(block: Block): Block {
-  if (block.content?.type) return block.content;
+  if (block.content?.type) {
+    const content = structuredClone(block.content);
+    if (content.type === 'attachmentBlock' && text(block.attachmentId).trim()) {
+      content.attrs = { ...(content.attrs || {}), attachmentId: text(block.attachmentId) };
+    }
+    return content;
+  }
   const content = [{ type: 'text', text: text(block.text) }];
   if (/^h[1-6]$/u.test(block.type)) return { type: 'heading', attrs: { level: Number(block.type.slice(1)) }, content };
   if (block.type === 'bullet' || block.type === 'number') return { type: block.type === 'bullet' ? 'bulletList' : 'orderedList', content: [{ type: 'listItem', content: [{ type: 'paragraph', content }] }] };
