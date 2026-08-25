@@ -36,13 +36,13 @@ pub(crate) struct LocalSyncState {
 }
 
 #[derive(Clone)]
-struct ArtifactDigest {
-    relative_path: String,
-    size: u64,
-    sha256: String,
+pub(crate) struct ArtifactDigest {
+    pub(crate) relative_path: String,
+    pub(crate) size: u64,
+    pub(crate) sha256: String,
 }
 
-fn sha256_file(path: &Path) -> Result<(u64, String), String> {
+pub(crate) fn sha256_file(path: &Path) -> Result<(u64, String), String> {
     use sha2::{Digest, Sha256};
     let mut file = File::open(path).map_err(|e| format!("backup_hash_open_failed:{e}"))?;
     let mut hasher = Sha256::new();
@@ -57,7 +57,7 @@ fn sha256_file(path: &Path) -> Result<(u64, String), String> {
     Ok((size, format!("{:x}", hasher.finalize())))
 }
 
-fn artifact_set_sha256(artifacts: &mut [ArtifactDigest]) -> String {
+pub(crate) fn artifact_set_sha256(artifacts: &mut [ArtifactDigest]) -> String {
     use sha2::{Digest, Sha256};
     artifacts.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
     let mut hasher = Sha256::new();
@@ -535,7 +535,7 @@ pub(crate) fn local_sync_state(store: &SqliteStore, tenant_id: &str) -> Result<L
     .map_err(|e| format!("db_sync_state_read_failed:{e}"))
 }
 
-pub(crate) fn tenant_content_sha256(store: &SqliteStore, tenant_id: &str) -> Result<String, String> {
+fn tenant_primary_content_sha256(store: &SqliteStore, tenant_id: &str) -> Result<String, String> {
     use sha2::{Digest, Sha256};
     seed_sync_records(store, tenant_id)?;
     let mut hasher = Sha256::new();
@@ -619,6 +619,21 @@ pub(crate) fn tenant_content_sha256(store: &SqliteStore, tenant_id: &str) -> Res
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+pub(crate) fn tenant_content_sha256(
+    store: &SqliteStore,
+    tenant_id: &str,
+) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    let primary = tenant_primary_content_sha256(store, tenant_id)?;
+    let archives = crate::shared_archive_sync::tenant_content_sha256(tenant_id)?;
+    let mut hasher = Sha256::new();
+    hasher.update(b"classaimate-device-sync-content-v4\0");
+    hasher.update(primary.as_bytes());
+    hasher.update([0]);
+    hasher.update(archives.as_bytes());
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
 pub(crate) fn mark_sync_published(
     store: &SqliteStore,
     tenant_id: &str,
@@ -628,7 +643,8 @@ pub(crate) fn mark_sync_published(
     latest_status: &str,
 ) -> Result<(), String> {
     let manifest = read_manifest(manifest_path)?;
-    let records = manifest
+    let authoritative = crate::backup_v4::projection(manifest_path, &manifest)?;
+    let records = authoritative
         .get("sync")
         .and_then(|sync| sync.get("records"))
         .and_then(Value::as_array)
@@ -747,6 +763,25 @@ pub(crate) fn mark_sync_error(store: &SqliteStore, tenant_id: &str, error: &str)
             params![tenant_id, normalize(error, 800)],
         );
     }
+}
+
+pub(crate) fn mark_external_sync_dirty(store: &SqliteStore, tenant_id: &str) -> Result<(), String> {
+    let timestamp = now_ms();
+    let conn = store
+        .conn
+        .lock()
+        .map_err(|_| "db_lock_failed".to_string())?;
+    install_sync_tracking(&conn)?;
+    conn.execute(
+        "INSERT INTO local_store_device_sync_state (tenant_id, first_dirty_at_ms, last_dirty_at_ms)
+         VALUES (?1, ?2, ?2)
+         ON CONFLICT(tenant_id) DO UPDATE SET
+           first_dirty_at_ms = COALESCE(first_dirty_at_ms, excluded.first_dirty_at_ms),
+           last_dirty_at_ms = excluded.last_dirty_at_ms",
+        params![tenant_id, timestamp],
+    )
+    .map_err(|e| format!("db_sync_external_dirty_failed:{e}"))?;
+    Ok(())
 }
 
 #[derive(Clone)]
@@ -1220,7 +1255,7 @@ fn resolve_manifest_path(store: &SqliteStore, tenant_id: &str, path_value: Optio
     Ok(resolved)
 }
 
-fn safe_relative_path(value: &str) -> Option<PathBuf> {
+pub(crate) fn safe_relative_path(value: &str) -> Option<PathBuf> {
     let path = PathBuf::from(value);
     if path.is_absolute() {
         return None;
@@ -1453,7 +1488,8 @@ fn backup_manifest_summary(path: &Path, fallback_tenant_id: &str) -> Option<Valu
         "source": manifest.get("source").cloned().unwrap_or_else(|| json!({})),
         "counts": manifest.get("counts").cloned().unwrap_or_else(|| json!({})),
         "media": manifest.get("media").cloned().unwrap_or_else(|| json!({})),
-        "workNoteAttachments": manifest.get("workNoteAttachments").cloned().unwrap_or_else(|| json!({}))
+        "workNoteAttachments": manifest.get("workNoteAttachments").cloned().unwrap_or_else(|| json!({})),
+        "archives": manifest.get("archives").cloned().unwrap_or_else(|| json!({}))
     }))
 }
 
@@ -1746,6 +1782,76 @@ pub(crate) fn run_with_kind(
         }));
     }
     let stats = store.stats(tenant_id.clone())?;
+    let archives = crate::shared_archive_sync::ensure_tenant_bundles(&tenant_id, &out_dir)?;
+    let counts = json!({
+        "observationCount": stats.get("observationCount").and_then(|value| value.as_i64()).unwrap_or(0),
+        "teacherCounselingSessionCount": stats.get("teacherCounselingSessionCount").and_then(|value| value.as_i64()).unwrap_or(0),
+        "studentPrivateDetailCount": stats.get("studentPrivateDetailCount").and_then(|value| value.as_i64()).unwrap_or(0),
+        "mathDailyAttemptCount": stats.get("mathDailyAttemptCount").and_then(|value| value.as_i64()).unwrap_or(0),
+        "mathDailyProfileCount": stats.get("mathDailyProfileCount").and_then(|value| value.as_i64()).unwrap_or(0),
+        "mathDailyReviewSessionCount": stats.get("mathDailyReviewSessionCount").and_then(|value| value.as_i64()).unwrap_or(0),
+        "mathDailyAssignmentCount": stats.get("mathDailyAssignmentCount").and_then(|value| value.as_i64()).unwrap_or(0),
+        "mathDailyAssignmentResultCount": stats.get("mathDailyAssignmentResultCount").and_then(|value| value.as_i64()).unwrap_or(0),
+        "mathDailyCacheRunCount": stats.get("mathDailyCacheRunCount").and_then(|value| value.as_i64()).unwrap_or(0),
+        "boardSnapshotCount": stats.get("boardSnapshotCount").and_then(|value| value.as_i64()).unwrap_or(0),
+        "boardMediaCount": stats.get("boardMediaCount").and_then(|value| value.as_i64()).unwrap_or(0),
+        "attendanceRecordCount": stats.get("attendanceRecordCount").and_then(|value| value.as_i64()).unwrap_or(0),
+        "attendanceNaisCheckCount": stats.get("attendanceNaisCheckCount").and_then(|value| value.as_i64()).unwrap_or(0),
+        "attendanceDocumentRequestCount": stats.get("attendanceDocumentRequestCount").and_then(|value| value.as_i64()).unwrap_or(0),
+        "counselingRecordCount": stats.get("counselingRecordCount").and_then(|value| value.as_i64()).unwrap_or(0),
+        "counselingTeacherNoteCount": stats.get("counselingTeacherNoteCount").and_then(|value| value.as_i64()).unwrap_or(0),
+        "evalAssignmentCount": stats.get("evalAssignmentCount").and_then(|value| value.as_i64()).unwrap_or(0),
+        "evalResultCount": stats.get("evalResultCount").and_then(|value| value.as_i64()).unwrap_or(0),
+        "studentRecordDraftSetCount": stats.get("studentRecordDraftSetCount").and_then(|value| value.as_i64()).unwrap_or(0),
+        "studentRecordDraftCount": stats.get("studentRecordDraftCount").and_then(|value| value.as_i64()).unwrap_or(0),
+        "importRunCount": stats.get("importRunCount").and_then(|value| value.as_i64()).unwrap_or(0),
+        "workNoteCount": stats.get("workNoteCount").and_then(|value| value.as_i64()).unwrap_or(0),
+        "workNoteAttachmentCount": attachment_count,
+        "cloudSyncRunCount": stats.get("cloudSyncRunCount").and_then(|value| value.as_i64()).unwrap_or(0),
+        "sharedArchiveCount": archives.get("count").and_then(Value::as_i64).unwrap_or(0),
+        "sharedArchiveBoardCount": archives.get("boardCount").and_then(Value::as_i64).unwrap_or(0),
+        "sharedArchiveAssignmentCount": archives.get("assignmentCount").and_then(Value::as_i64).unwrap_or(0),
+        "sharedArchiveFileCount": archives.get("fileCount").and_then(Value::as_i64).unwrap_or(0),
+    });
+    let database = json!({
+        "relativePath": db_relative_path.to_string_lossy().replace('\\', "/"),
+        "size": database_size,
+        "sha256": database_sha256
+    });
+    let media = json!({
+        "mode": "separate_folder_mirror",
+        "copied": copied,
+        "skipped": skipped,
+        "missing": missing,
+        "failed": failed,
+        "bytes": bytes,
+        "records": media_records
+    });
+    let work_note_attachments = json!({
+        "mode": "separate_folder_mirror",
+        "copied": attachments_copied,
+        "skipped": attachments_skipped,
+        "missing": attachments_missing,
+        "failed": attachments_failed,
+        "bytes": attachment_bytes,
+        "records": attachment_records
+    });
+    let (_, apply_index_size, apply_index_sha256) = crate::backup_v4::write_apply_index(
+        &staging_dir,
+        &tenant_id,
+        generation,
+        database.clone(),
+        sync.clone(),
+        media.clone(),
+        work_note_attachments.clone(),
+        archives.clone(),
+        counts.clone(),
+    )?;
+    artifacts.push(ArtifactDigest {
+        relative_path: crate::backup_v4::APPLY_INDEX_RELATIVE_PATH.to_string(),
+        size: apply_index_size,
+        sha256: apply_index_sha256.clone(),
+    });
     let artifact_set_sha256 = artifact_set_sha256(&mut artifacts);
     let artifact_records = artifacts.iter().map(|artifact| json!({
         "relativePath": artifact.relative_path,
@@ -1755,65 +1861,26 @@ pub(crate) fn run_with_kind(
     let snapshot_ok = failed == 0 && missing == 0 && attachments_failed == 0 && attachments_missing == 0;
     let manifest = json!({
         "ok": snapshot_ok,
-        "version": 3,
+        "version": 4,
         "kind": kind,
         "generation": generation,
         "tenantId": tenant_id,
         "backupId": backup_id,
         "createdAtMs": created_at_ms,
         "source": backup_source(store, created_at_ms),
-        "db": {
-            "relativePath": db_relative_path.to_string_lossy().replace('\\', "/"),
-            "size": database_size,
-            "sha256": database_sha256
+        "db": database,
+        "applyIndex": {
+            "relativePath": crate::backup_v4::APPLY_INDEX_RELATIVE_PATH,
+            "size": apply_index_size,
+            "sha256": apply_index_sha256,
         },
         "artifactSetSha256": artifact_set_sha256,
         "artifacts": artifact_records,
         "sync": sync,
-        "counts": {
-            "observationCount": stats.get("observationCount").and_then(|value| value.as_i64()).unwrap_or(0),
-            "teacherCounselingSessionCount": stats.get("teacherCounselingSessionCount").and_then(|value| value.as_i64()).unwrap_or(0),
-            "studentPrivateDetailCount": stats.get("studentPrivateDetailCount").and_then(|value| value.as_i64()).unwrap_or(0),
-            "mathDailyAttemptCount": stats.get("mathDailyAttemptCount").and_then(|value| value.as_i64()).unwrap_or(0),
-            "mathDailyProfileCount": stats.get("mathDailyProfileCount").and_then(|value| value.as_i64()).unwrap_or(0),
-            "mathDailyReviewSessionCount": stats.get("mathDailyReviewSessionCount").and_then(|value| value.as_i64()).unwrap_or(0),
-            "mathDailyAssignmentCount": stats.get("mathDailyAssignmentCount").and_then(|value| value.as_i64()).unwrap_or(0),
-            "mathDailyAssignmentResultCount": stats.get("mathDailyAssignmentResultCount").and_then(|value| value.as_i64()).unwrap_or(0),
-            "mathDailyCacheRunCount": stats.get("mathDailyCacheRunCount").and_then(|value| value.as_i64()).unwrap_or(0),
-            "boardSnapshotCount": stats.get("boardSnapshotCount").and_then(|value| value.as_i64()).unwrap_or(0),
-            "boardMediaCount": stats.get("boardMediaCount").and_then(|value| value.as_i64()).unwrap_or(0),
-            "attendanceRecordCount": stats.get("attendanceRecordCount").and_then(|value| value.as_i64()).unwrap_or(0),
-            "attendanceNaisCheckCount": stats.get("attendanceNaisCheckCount").and_then(|value| value.as_i64()).unwrap_or(0),
-            "attendanceDocumentRequestCount": stats.get("attendanceDocumentRequestCount").and_then(|value| value.as_i64()).unwrap_or(0),
-            "counselingRecordCount": stats.get("counselingRecordCount").and_then(|value| value.as_i64()).unwrap_or(0),
-            "counselingTeacherNoteCount": stats.get("counselingTeacherNoteCount").and_then(|value| value.as_i64()).unwrap_or(0),
-            "evalAssignmentCount": stats.get("evalAssignmentCount").and_then(|value| value.as_i64()).unwrap_or(0),
-            "evalResultCount": stats.get("evalResultCount").and_then(|value| value.as_i64()).unwrap_or(0),
-            "studentRecordDraftSetCount": stats.get("studentRecordDraftSetCount").and_then(|value| value.as_i64()).unwrap_or(0),
-            "studentRecordDraftCount": stats.get("studentRecordDraftCount").and_then(|value| value.as_i64()).unwrap_or(0),
-            "importRunCount": stats.get("importRunCount").and_then(|value| value.as_i64()).unwrap_or(0),
-            "workNoteCount": stats.get("workNoteCount").and_then(|value| value.as_i64()).unwrap_or(0),
-            "workNoteAttachmentCount": attachment_count,
-            "cloudSyncRunCount": stats.get("cloudSyncRunCount").and_then(|value| value.as_i64()).unwrap_or(0)
-        },
-        "media": {
-            "mode": "separate_folder_mirror",
-            "copied": copied,
-            "skipped": skipped,
-            "missing": missing,
-            "failed": failed,
-            "bytes": bytes,
-            "records": media_records
-        },
-        "workNoteAttachments": {
-            "mode": "separate_folder_mirror",
-            "copied": attachments_copied,
-            "skipped": attachments_skipped,
-            "missing": attachments_missing,
-            "failed": attachments_failed,
-            "bytes": attachment_bytes,
-            "records": attachment_records
-        },
+        "counts": counts,
+        "media": media,
+        "workNoteAttachments": work_note_attachments,
+        "archives": archives,
         "securityMode": "plain_warning"
     });
     let manifest_path = staging_dir.join("manifest.json");
@@ -1847,7 +1914,8 @@ pub(crate) fn run_with_kind(
         "source": manifest.get("source").cloned().unwrap_or_else(|| json!({})),
         "counts": manifest.get("counts").cloned().unwrap_or_else(|| json!({})),
         "media": manifest.get("media").cloned().unwrap_or_else(|| json!({})),
-        "workNoteAttachments": manifest.get("workNoteAttachments").cloned().unwrap_or_else(|| json!({}))
+        "workNoteAttachments": manifest.get("workNoteAttachments").cloned().unwrap_or_else(|| json!({})),
+        "archives": manifest.get("archives").cloned().unwrap_or_else(|| json!({}))
     });
     let mut config = read_config(store);
     let root_text = root.to_string_lossy().to_string();
@@ -1870,14 +1938,26 @@ pub(crate) fn run_now(store: &SqliteStore, tenant_id: String) -> Result<Value, S
 
 fn prune_auto_sync_snapshots(tenant_dir: &Path, now: i64) -> Result<(), String> {
     let snapshots_root = tenant_dir.join("snapshots");
-    let mut snapshots = manifest_paths_in_dir(tenant_dir)?.into_iter().filter_map(|path| {
-        let manifest = read_manifest(&path).ok()?;
-        if manifest.get("version").and_then(Value::as_i64) != Some(3)
-            || manifest.get("kind").and_then(Value::as_str) != Some("auto_sync") {
-            return None;
-        }
-        Some((path, manifest.get("createdAtMs").and_then(Value::as_i64).unwrap_or(0)))
-    }).collect::<Vec<_>>();
+    let mut snapshots = manifest_paths_in_dir(tenant_dir)?
+        .into_iter()
+        .filter_map(|path| {
+            let manifest = read_manifest(&path).ok()?;
+            if !matches!(
+                manifest.get("version").and_then(Value::as_i64),
+                Some(3) | Some(4)
+            ) || manifest.get("kind").and_then(Value::as_str) != Some("auto_sync")
+            {
+                return None;
+            }
+            Some((
+                path,
+                manifest
+                    .get("createdAtMs")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0),
+            ))
+        })
+        .collect::<Vec<_>>();
     snapshots.sort_by(|left, right| right.1.cmp(&left.1));
     let mut keep = HashSet::new();
     let mut days = HashSet::new();
@@ -1923,19 +2003,21 @@ pub(crate) fn auto_configure_onedrive(store: &SqliteStore, tenant_id: &str) -> R
     set_folder(store, tenant_id.to_string(), roots.remove(0).to_string_lossy().to_string())
 }
 
-fn verify_v3_manifest_path(path: &Path, tenant_id: &str, expected_generation: i64, expected_root: &str) -> Result<Value, String> {
-    let manifest = read_manifest(path)?;
-    if manifest.get("version").and_then(Value::as_i64) != Some(3)
-        || manifest.get("tenantId").and_then(Value::as_str) != Some(tenant_id)
-        || manifest.get("generation").and_then(Value::as_i64) != Some(expected_generation)
-        || manifest.get("artifactSetSha256").and_then(Value::as_str) != Some(expected_root) {
-        return Err("backup_manifest_checkpoint_mismatch".to_string());
-    }
-    let base = path.parent().ok_or_else(|| "backup_manifest_parent_missing".to_string())?;
+fn verify_snapshot_artifacts(
+    path: &Path,
+    manifest: &Value,
+    tenant_id: &str,
+    expected_generation: Option<i64>,
+    expected_root: &str,
+) -> Result<(), String> {
+    let base = path
+        .parent()
+        .ok_or_else(|| "backup_manifest_parent_missing".to_string())?;
     let commit = read_manifest(&base.join("commit.json"))?;
     if commit.get("tenantId").and_then(Value::as_str) != Some(tenant_id)
-        || commit.get("generation").and_then(Value::as_i64) != Some(expected_generation)
-        || commit.get("artifactSetSha256").and_then(Value::as_str) != Some(expected_root) {
+        || commit.get("generation").and_then(Value::as_i64) != expected_generation
+        || commit.get("artifactSetSha256").and_then(Value::as_str) != Some(expected_root)
+    {
         return Err("backup_commit_checkpoint_mismatch".to_string());
     }
     let mut verified = Vec::new();
@@ -1948,15 +2030,49 @@ fn verify_v3_manifest_path(path: &Path, tenant_id: &str, expected_generation: i6
         if size != expected_size || sha256 != expected_sha { return Err("backup_artifact_digest_mismatch".to_string()); }
         verified.push(ArtifactDigest { relative_path: relative.to_string(), size, sha256 });
     }
-    if artifact_set_sha256(&mut verified) != expected_root { return Err("backup_artifact_set_mismatch".to_string()); }
+    Ok(())
+}
+
+fn verify_checkpoint_manifest_path(
+    path: &Path,
+    tenant_id: &str,
+    expected_generation: i64,
+    expected_root: &str,
+) -> Result<Value, String> {
+    let manifest = read_manifest(path)?;
+    let version = manifest.get("version").and_then(Value::as_i64).unwrap_or(0);
+    if !matches!(version, 3 | 4)
+        || manifest.get("tenantId").and_then(Value::as_str) != Some(tenant_id)
+        || manifest.get("generation").and_then(Value::as_i64) != Some(expected_generation)
+        || manifest.get("artifactSetSha256").and_then(Value::as_str) != Some(expected_root)
+    {
+        return Err("backup_manifest_checkpoint_mismatch".to_string());
+    }
+    verify_snapshot_artifacts(
+        path,
+        &manifest,
+        tenant_id,
+        Some(expected_generation),
+        expected_root,
+    )?;
+    let authoritative = if version == 4 {
+        crate::backup_v4::verify_authoritative_index(
+            path,
+            &manifest,
+            tenant_id,
+            Some(expected_generation),
+        )?
+    } else {
+        manifest.clone()
+    };
     Ok(json!({
         "ok": true,
         "tenantId": tenant_id,
         "generation": expected_generation,
         "artifactSetSha256": expected_root,
         "manifestPath": path.to_string_lossy(),
-        "databaseSha256": manifest.get("db").and_then(|db| db.get("sha256")).and_then(Value::as_str).unwrap_or(""),
-        "contentSha256": manifest.get("sync").and_then(|sync| sync.get("contentSha256")).and_then(Value::as_str).unwrap_or("")
+        "databaseSha256": authoritative.get("db").and_then(|db| db.get("sha256")).and_then(Value::as_str).unwrap_or(""),
+        "contentSha256": authoritative.get("sync").and_then(|sync| sync.get("contentSha256")).and_then(Value::as_str).unwrap_or("")
     }))
 }
 
@@ -1972,12 +2088,18 @@ pub(crate) fn find_and_verify_generation(
     let tenant_dir = tenant_backup_dir(&backup_root_dir(root_text), tenant_id);
     let mut mismatch = None;
     for path in manifest_paths_in_dir(&tenant_dir)? {
-        let manifest = match read_manifest(&path) { Ok(value) => value, Err(_) => continue };
-        if manifest.get("version").and_then(Value::as_i64) != Some(3)
-            || manifest.get("generation").and_then(Value::as_i64) != Some(generation) {
+        let manifest = match read_manifest(&path) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        if !matches!(
+            manifest.get("version").and_then(Value::as_i64),
+            Some(3) | Some(4)
+        ) || manifest.get("generation").and_then(Value::as_i64) != Some(generation)
+        {
             continue;
         }
-        match verify_v3_manifest_path(&path, tenant_id, generation, artifact_set_sha256) {
+        match verify_checkpoint_manifest_path(&path, tenant_id, generation, artifact_set_sha256) {
             Ok(value) => return Ok(Some(value)),
             Err(error) => mismatch = Some(error),
         }
@@ -1999,7 +2121,10 @@ pub(crate) fn highest_local_generation(store: &SqliteStore, tenant_id: &str) -> 
             Ok(value) => value,
             Err(_) => continue,
         };
-        if manifest.get("version").and_then(Value::as_i64) != Some(3) {
+        if !matches!(
+            manifest.get("version").and_then(Value::as_i64),
+            Some(3) | Some(4)
+        ) {
             continue;
         }
         highest = highest.max(manifest.get("generation").and_then(Value::as_i64).unwrap_or(0));
@@ -2019,6 +2144,33 @@ pub(crate) fn run_from_body(store: &SqliteStore, body: Value) -> Result<Value, S
     run_now(store, tenant_id)
 }
 
+fn authoritative_restore_manifest(
+    manifest_path: &Path,
+    manifest: &Value,
+    tenant_id: &str,
+) -> Result<Value, String> {
+    if manifest.get("version").and_then(Value::as_i64) != Some(4) {
+        return Ok(manifest.clone());
+    }
+    if manifest.get("tenantId").and_then(Value::as_str) != Some(tenant_id) {
+        return Err("backup_manifest_tenant_mismatch".to_string());
+    }
+    let expected_root = manifest
+        .get("artifactSetSha256")
+        .and_then(Value::as_str)
+        .filter(|value| value.len() == 64)
+        .ok_or_else(|| "backup_artifact_set_required".to_string())?;
+    let generation = manifest.get("generation").and_then(Value::as_i64);
+    verify_snapshot_artifacts(
+        manifest_path,
+        manifest,
+        tenant_id,
+        generation,
+        expected_root,
+    )?;
+    crate::backup_v4::verify_authoritative_index(manifest_path, manifest, tenant_id, generation)
+}
+
 pub(crate) fn restore_preview(store: &SqliteStore, body: Value) -> Result<Value, String> {
     let tenant_id = normalize_tenant_id(body.get("tenantId"));
     if tenant_id.is_empty() {
@@ -2026,7 +2178,8 @@ pub(crate) fn restore_preview(store: &SqliteStore, body: Value) -> Result<Value,
     }
     let manifest_path = resolve_manifest_path(store, &tenant_id, body.get("manifestPath"))?;
     let manifest = read_manifest(&manifest_path)?;
-    let db_relative = manifest
+    let authoritative = authoritative_restore_manifest(&manifest_path, &manifest, &tenant_id)?;
+    let db_relative = authoritative
         .get("db")
         .and_then(|db| db.get("relativePath"))
         .and_then(|value| value.as_str())
@@ -2044,6 +2197,18 @@ pub(crate) fn restore_preview(store: &SqliteStore, body: Value) -> Result<Value,
             .unwrap_or(0);
         counts.insert(table.name.to_string(), json!(count));
     }
+    if let Some(archive_counts) = authoritative.get("counts").and_then(Value::as_object) {
+        for key in [
+            "sharedArchiveCount",
+            "sharedArchiveBoardCount",
+            "sharedArchiveAssignmentCount",
+            "sharedArchiveFileCount",
+        ] {
+            if let Some(value) = archive_counts.get(key) {
+                counts.insert(key.to_string(), value.clone());
+            }
+        }
+    }
     Ok(json!({
         "ok": true,
         "tenantId": tenant_id,
@@ -2052,8 +2217,9 @@ pub(crate) fn restore_preview(store: &SqliteStore, body: Value) -> Result<Value,
         "createdAtMs": manifest.get("createdAtMs").and_then(|value| value.as_i64()).unwrap_or(0),
         "source": manifest.get("source").cloned().unwrap_or_else(|| json!({})),
         "counts": counts,
-        "media": manifest.get("media").cloned().unwrap_or_else(|| json!({})),
-        "workNoteAttachments": manifest.get("workNoteAttachments").cloned().unwrap_or_else(|| json!({}))
+        "media": authoritative.get("media").cloned().unwrap_or_else(|| json!({})),
+        "workNoteAttachments": authoritative.get("workNoteAttachments").cloned().unwrap_or_else(|| json!({})),
+        "archives": authoritative.get("archives").cloned().unwrap_or_else(|| json!({}))
     }))
 }
 

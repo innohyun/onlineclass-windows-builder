@@ -392,4 +392,5 @@ export function initSharedArchive(options: { bridge?: ArchiveBridge; getTenantId
   });
   render();
   void loadArchives({ announce: false });
+  return { refresh: () => loadArchives({ announce: false }) };
 }

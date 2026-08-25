@@ -1,5 +1,5 @@
 use chrono::Utc;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};
@@ -11,13 +11,13 @@ use url::Url;
 const DB_FILE: &str = "onlineclass-shared-archive.sqlite";
 const FILE_DIR: &str = "shared-archive-files";
 
-fn paths() -> (PathBuf, PathBuf) {
+pub(crate) fn storage_paths() -> (PathBuf, PathBuf) {
     let root = super::default_data_dir();
     (root.join(DB_FILE), root.join(FILE_DIR))
 }
 
 pub(crate) fn open_db() -> Result<Connection, String> {
-    let (path, files) = paths();
+    let (path, files) = storage_paths();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("archive_dir_create_failed:{e}"))?;
     }
@@ -261,8 +261,22 @@ fn manifest_hash(manifest: &Value) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub(crate) fn import_shared_archive(base_url: String, code: String) -> Value {
-    match import_archive(&base_url, &code, "") {
+pub(crate) fn import_shared_archive(
+    state: tauri::State<'_, super::AppState>,
+    base_url: String,
+    code: String,
+) -> Value {
+    match import_archive(&base_url, &code, "").and_then(|value| {
+        let tenant_id = value.get("tenantId").and_then(Value::as_str).unwrap_or("");
+        let store = state
+            .store
+            .lock()
+            .map_err(|_| "db_lock_failed".to_string())?
+            .clone()
+            .ok_or_else(|| "local_store_unavailable".to_string())?;
+        super::backup::mark_external_sync_dirty(&store, tenant_id)?;
+        Ok(value)
+    }) {
         Ok(value) => value,
         Err(error) => json!({"ok":false,"error":error}),
     }
@@ -349,7 +363,22 @@ fn import_archive(base_url: &str, code: &str, expected_tenant_id: &str) -> Resul
             return Err("archive_record_verify_failed".to_string());
         }
     }
-    let (_, file_root) = paths();
+    let mut connection = open_db()?;
+    let existing = connection
+        .query_row(
+            "SELECT tenant_id,manifest_sha256 FROM shared_archives WHERE id=?1",
+            params![archive_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()
+        .map_err(|e| format!("archive_existing_read_failed:{e}"))?;
+    if let Some((existing_tenant_id, existing_manifest_sha256)) = existing.as_ref() {
+        if existing_tenant_id != archive_tenant_id || existing_manifest_sha256 != expected_manifest
+        {
+            return Err("archive_existing_manifest_mismatch".to_string());
+        }
+    }
+    let (_, file_root) = storage_paths();
     let archive_dir = file_root.join(archive_id);
     fs::create_dir_all(&archive_dir).map_err(|e| format!("archive_target_dir_failed:{e}"))?;
     let mut local_files = Vec::new();
@@ -366,15 +395,7 @@ fn import_archive(base_url: &str, code: &str, expected_tenant_id: &str) -> Resul
             &archive_dir,
         )?);
     }
-    let mut connection = open_db()?;
-    let existing: i64 = connection
-        .query_row(
-            "SELECT COUNT(*) FROM shared_archives WHERE id=?1",
-            params![archive_id],
-            |row| row.get(0),
-        )
-        .unwrap_or(0);
-    if existing == 0 {
+    if existing.is_none() {
         let tx = connection
             .transaction()
             .map_err(|e| format!("archive_db_transaction_failed:{e}"))?;
@@ -591,7 +612,7 @@ pub(crate) fn open_shared_archive_file(
             .query_row("SELECT file.local_path FROM shared_archive_files file JOIN shared_archives archive ON archive.id=file.archive_id WHERE file.archive_id=?1 AND file.ordinal=?2 AND archive.tenant_id=?3", params![archive_id, ordinal, tenant_id], |row| row.get(0))
             .map_err(|_| "archive_file_not_found".to_string())?;
         let target = PathBuf::from(path);
-        let (_, root) = paths();
+        let (_, root) = storage_paths();
         let canonical = target
             .canonicalize()
             .map_err(|e| format!("archive_file_path_failed:{e}"))?;

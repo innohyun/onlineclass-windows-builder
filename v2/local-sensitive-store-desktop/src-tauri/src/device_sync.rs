@@ -293,9 +293,7 @@ impl DeviceSyncManager {
             return Err("device_sync_checkpoint_invalid".to_string());
         }
         let status = checkpoint_status(Some(checkpoint));
-        if generation <= state.applied_generation
-            && (source_device_id == session.device_id || status == "verified")
-        {
+        if generation <= state.applied_generation && source_device_id == session.device_id {
             return Ok(());
         }
         let snapshot = self.verified_snapshot(
@@ -305,6 +303,20 @@ impl DeviceSyncManager {
             &database_sha256,
         )?;
         if generation <= state.applied_generation {
+            let manifest_path = PathBuf::from(
+                snapshot
+                    .get("manifestPath")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "backup_manifest_required".to_string())?,
+            );
+            backup::restore_generation(
+                &self.store,
+                &session.tenant_id,
+                &manifest_path,
+                generation,
+                &status,
+                recovery_generation.is_some(),
+            )?;
             let acknowledged = self.authorized_post(
                 session,
                 credential,
@@ -448,10 +460,10 @@ impl DeviceSyncManager {
         }
         let state = backup::local_sync_state(&self.store, &session.tenant_id)?;
         let now = now_ms();
-        let publish_due = state.first_dirty_at_ms > 0
-            && (force_publish
-                || now.saturating_sub(state.last_dirty_at_ms) >= IDLE_PUBLISH_MS
-                || now.saturating_sub(state.first_dirty_at_ms) >= MAX_DIRTY_MS);
+        let publish_due = force_publish
+            || (state.first_dirty_at_ms > 0
+                && (now.saturating_sub(state.last_dirty_at_ms) >= IDLE_PUBLISH_MS
+                    || now.saturating_sub(state.first_dirty_at_ms) >= MAX_DIRTY_MS));
         if publish_due {
             let base_generation = checkpoint_generation(latest.as_ref());
             let status = checkpoint_status(latest.as_ref());
@@ -620,7 +632,7 @@ impl DeviceSyncManager {
     pub(crate) fn start_background(self: &Arc<Self>) {
         let manager = Arc::clone(self);
         thread::spawn(move || {
-            let _ = manager.run_once(false);
+            let _ = manager.run_once(true);
             let mut last_tick = now_ms();
             loop {
                 thread::sleep(Duration::from_secs(BACKGROUND_TICK_SECS));

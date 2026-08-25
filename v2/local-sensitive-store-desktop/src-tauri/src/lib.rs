@@ -1,13 +1,16 @@
 use base64::{engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD}, Engine as _};
 use chrono::{DateTime, Utc};
 mod backup;
+mod backup_v4;
 mod cloud_sync;
 mod data_explorer;
 mod device_sync;
 mod device_sync_credential;
 mod desktop_preferences;
 mod shared_archive;
+mod shared_archive_apply;
 mod shared_archive_board;
+mod shared_archive_sync;
 mod student_private_photos;
 mod work_note_attachments;
 use rand::{distributions::Alphanumeric, Rng};
@@ -33,7 +36,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-08-24.3-archive-board-reader";
+pub(crate) const SERVICE_VERSION: &str = "2026-08-25.1-archive-device-sync-v4";
 const WORK_MEETING_ROOT_PAGE_ID: &str = "classaimate:work-meeting-minutes";
 const WORK_MEETING_ROOT_TITLE: &str = "업무 회의록";
 const WORK_MEETING_ROOT_INTRO: &str = "모바일에서 확정한 업무 회의록이 자동으로 들어옵니다.";

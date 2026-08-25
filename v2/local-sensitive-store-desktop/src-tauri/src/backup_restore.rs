@@ -224,14 +224,25 @@ where
     }
     let manifest_path = PathBuf::from(preview.get("manifestPath").and_then(|value| value.as_str()).unwrap_or(""));
     let manifest = read_manifest(&manifest_path)?;
-    let db_relative = manifest
+    let authoritative = authoritative_restore_manifest(&manifest_path, &manifest, &tenant_id)?;
+    let archive_result =
+        crate::backup_v4::apply_archives(&manifest_path, &authoritative, &tenant_id)?;
+    let db_relative = authoritative
         .get("db")
         .and_then(|db| db.get("relativePath"))
         .and_then(|value| value.as_str())
         .ok_or_else(|| "backup_db_required".to_string())?;
     let db_path = manifest_path.parent().unwrap_or_else(|| Path::new(".")).join(db_relative);
     let (staging_root, media_plans, media_missing, work_note_attachments_missing) =
-        stage_restore_media(store, &tenant_id, &manifest_path, &manifest, None, None, false)?;
+        stage_restore_media(
+            store,
+            &tenant_id,
+            &manifest_path,
+            &authoritative,
+            None,
+            None,
+            false,
+        )?;
     let applied_media = match apply_staged_media(&media_plans) {
         Ok(applied) => applied,
         Err(error) => {
@@ -335,6 +346,7 @@ where
         "mediaMissing": media_missing,
         "workNoteAttachmentsRestored": work_note_attachments_restored,
         "workNoteAttachmentsMissing": work_note_attachments_missing,
+        "archives": archive_result,
         "safetyBackup": safety_backup
     }))
 }
@@ -583,18 +595,28 @@ pub(super) fn restore_generation(
     force_all: bool,
 ) -> Result<Value, String> {
     let manifest = read_manifest(manifest_path)?;
-    if manifest.get("version").and_then(Value::as_i64) != Some(3)
-        || manifest.get("tenantId").and_then(Value::as_str) != Some(tenant_id)
+    if !matches!(
+        manifest.get("version").and_then(Value::as_i64),
+        Some(3) | Some(4)
+    ) || manifest.get("tenantId").and_then(Value::as_str) != Some(tenant_id)
         || generation < 1
     {
         return Err("backup_sync_manifest_invalid".to_string());
     }
+    let authoritative = authoritative_restore_manifest(manifest_path, &manifest, tenant_id)?;
+    let archive_result =
+        crate::backup_v4::apply_archives(manifest_path, &authoritative, tenant_id)?;
     seed_sync_records(store, tenant_id)?;
     let state = local_sync_state(store, tenant_id)?;
     if generation <= state.applied_generation {
-        return Ok(json!({ "ok": true, "applied": false, "generation": state.applied_generation }));
+        return Ok(json!({
+            "ok": true,
+            "applied": false,
+            "generation": state.applied_generation,
+            "archives": archive_result,
+        }));
     }
-    let records = parse_sync_records(&manifest, generation)?;
+    let records = parse_sync_records(&authoritative, generation)?;
     let mut applicable = records
         .iter()
         .filter(|record| force_all || state.applied_generation == 0 || record.changed_generation > state.applied_generation)
@@ -628,7 +650,7 @@ pub(super) fn restore_generation(
     {
         return Err("pre_restore_backup_failed:safety_backup_incomplete".to_string());
     }
-    let db_relative = manifest
+    let db_relative = authoritative
         .get("db")
         .and_then(|db| db.get("relativePath"))
         .and_then(Value::as_str)
@@ -641,7 +663,7 @@ pub(super) fn restore_generation(
         store,
         tenant_id,
         manifest_path,
-        &manifest,
+        &authoritative,
         Some(&allowed_media),
         Some(&allowed_attachments),
         true,
@@ -835,6 +857,7 @@ pub(super) fn restore_generation(
         "generation": generation,
         "imported": imported,
         "conflicts": conflicts,
+        "archives": archive_result,
         "safetyBackup": safety_backup,
     }))
 }
@@ -1105,7 +1128,16 @@ mod tests {
             .expect("create generation snapshot");
         let manifest_path = PathBuf::from(snapshot["manifestPath"].as_str().expect("manifest path"));
         let manifest = read_manifest(&manifest_path).expect("read manifest");
-        assert_eq!(manifest["version"], 3);
+        assert_eq!(manifest["version"], 4);
+        assert_eq!(
+            manifest["applyIndex"]["relativePath"],
+            "meta/apply-index.json"
+        );
+        assert!(manifest_path
+            .parent()
+            .expect("snapshot directory")
+            .join("meta/apply-index.json")
+            .is_file());
         assert_eq!(manifest["db"]["relativePath"], "db/local-sensitive.sqlite");
         assert!(manifest["db"].get("absolutePath").is_none());
         assert!(manifest_path.parent().expect("snapshot directory").join("commit.json").is_file());
@@ -1121,6 +1153,121 @@ mod tests {
         );
         drop(store);
         fs::remove_dir_all(base).expect("remove digest test directory");
+    }
+
+    #[test]
+    fn v4_ignores_unsealed_presentation_sync_and_rejects_tampered_apply_index() {
+        let (base, backup_root, store) = test_store();
+        set_folder(
+            &store,
+            "tenant-a".to_string(),
+            backup_root.to_string_lossy().to_string(),
+        )
+        .expect("set backup folder");
+        observation(&store, "sealed", "keep authoritative", 100);
+        let snapshot = run_with_kind(&store, "tenant-a".to_string(), "auto_sync", Some(1))
+            .expect("create generation snapshot");
+        let manifest_path =
+            PathBuf::from(snapshot["manifestPath"].as_str().expect("manifest path"));
+        let mut manifest = read_manifest(&manifest_path).expect("read manifest");
+        manifest["sync"]["records"][0]["tombstone"] = json!(true);
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .expect("tamper presentation manifest");
+        let artifact_root = snapshot["artifactSetSha256"]
+            .as_str()
+            .expect("artifact root");
+        assert!(
+            find_and_verify_generation(&store, "tenant-a", 1, artifact_root)
+                .expect("presentation fields are not restore authority")
+                .is_some()
+        );
+
+        let apply_index = manifest_path
+            .parent()
+            .unwrap()
+            .join("meta/apply-index.json");
+        fs::write(apply_index, b"{}").expect("tamper apply index");
+        assert_eq!(
+            find_and_verify_generation(&store, "tenant-a", 1, artifact_root)
+                .expect_err("apply index tamper must fail"),
+            "backup_artifact_digest_mismatch"
+        );
+        drop(store);
+        fs::remove_dir_all(base).expect("remove apply index test directory");
+    }
+
+    #[test]
+    fn legacy_v3_generation_remains_readable() {
+        let (base, backup_root, source) = test_store();
+        let target_dir = base.join("legacy-target");
+        fs::create_dir_all(&target_dir).expect("create target directory");
+        let target =
+            SqliteStore::open(target_dir.join("target.sqlite")).expect("open target store");
+        set_folder(
+            &source,
+            "tenant-a".to_string(),
+            backup_root.to_string_lossy().to_string(),
+        )
+        .expect("set source backup folder");
+        set_folder(
+            &target,
+            "tenant-a".to_string(),
+            backup_root.to_string_lossy().to_string(),
+        )
+        .expect("set target backup folder");
+        observation(&source, "legacy-v3", "legacy generation", 100);
+        let snapshot = run_with_kind(&source, "tenant-a".to_string(), "auto_sync", Some(1))
+            .expect("create compatible snapshot");
+        let manifest_path = PathBuf::from(snapshot["manifestPath"].as_str().unwrap());
+        let mut manifest = read_manifest(&manifest_path).unwrap();
+        manifest["version"] = json!(3);
+        manifest.as_object_mut().unwrap().remove("applyIndex");
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        let root = snapshot["artifactSetSha256"].as_str().unwrap();
+        assert!(find_and_verify_generation(&source, "tenant-a", 1, root)
+            .unwrap()
+            .is_some());
+        restore_generation(&target, "tenant-a", &manifest_path, 1, "announced", false)
+            .expect("restore legacy v3 generation");
+        assert!(observation_row(&target, "legacy-v3")
+            .unwrap()
+            .0
+            .contains("legacy generation"));
+        drop(source);
+        drop(target);
+        fs::remove_dir_all(base).expect("remove legacy v3 test directory");
+    }
+
+    #[test]
+    fn legacy_v2_manual_backup_remains_restorable() {
+        let (base, backup_root, store) = test_store();
+        set_folder(&store, "tenant-a".to_string(), backup_root.to_string_lossy().to_string())
+            .expect("set backup folder");
+        observation(&store, "legacy-v2", "legacy manual backup", 100);
+        let snapshot = run_now(&store, "tenant-a".to_string()).expect("create compatible backup");
+        let manifest_path = PathBuf::from(snapshot["manifestPath"].as_str().unwrap());
+        let mut manifest = read_manifest(&manifest_path).unwrap();
+        manifest["version"] = json!(2);
+        manifest.as_object_mut().unwrap().remove("applyIndex");
+        fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+        store.conn.lock().unwrap().execute(
+            "DELETE FROM lesson_observations WHERE tenant_id='tenant-a' AND doc_id='legacy-v2'",
+            [],
+        ).unwrap();
+        restore(&store, json!({
+            "tenantId": "tenant-a",
+            "manifestPath": manifest_path.to_string_lossy()
+        })).expect("restore legacy v2 manual backup");
+        assert!(observation_row(&store, "legacy-v2").unwrap().0.contains("legacy manual backup"));
+        drop(store);
+        fs::remove_dir_all(base).expect("remove legacy v2 test directory");
     }
 
     #[test]

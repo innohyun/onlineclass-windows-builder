@@ -66,6 +66,9 @@ export function deviceSyncErrorMessage(error?: string) {
   if (value.startsWith("restore_sync_merge_failed:counseling_teacher_notes:")) {
     return "상담 기록과 교사 메모의 연결 순서를 확인하지 못했습니다. 최신 앱에서 다시 동기화해 주세요. 복원 전 보호 백업과 현재 자료는 유지됩니다.";
   }
+  if (value.startsWith("archive_sync_") || value.startsWith("backup_apply_index_")) {
+    return "OneDrive의 보관본 무결성을 확인하지 못해 적용과 기기 확인을 중단했습니다. 현재 자료는 유지됩니다. OneDrive 동기화가 끝난 뒤 다시 시도해 주세요.";
+  }
   return value;
 }
 
@@ -109,12 +112,12 @@ export function renderDeviceSyncStatus(status: DeviceSyncStatus | null) {
     setText("deviceSyncStatus", "이 PC의 최근 변경 내용을 잠시 모은 뒤 자동으로 새 세대에 반영합니다.");
   } else if (status.latestStatus === "announced") {
     setBadge("다른 기기 확인 대기", "warning");
-    setText("deviceSyncStatus", "최신 내용은 OneDrive에 저장되었습니다. 다른 기기가 확인하면 검증 완료로 바뀝니다.");
+    setText("deviceSyncStatus", "최신 내용과 보관본은 OneDrive에 저장되었습니다. 다른 기기가 확인하면 검증 완료로 바뀝니다. 충돌 건수는 동기화를 막지 않는 누적 보관 기록입니다.");
   } else {
     setBadge("최신 상태", "ok");
     setText("deviceSyncStatus", status.lastSuccessAtMs
-      ? `${formatDateTime(status.lastSuccessAtMs)}에 최신 상태를 확인했습니다.`
-      : "현재 PC와 OneDrive의 최신 내용이 일치합니다.");
+      ? `${formatDateTime(status.lastSuccessAtMs)}에 자료와 보관본의 최신 상태를 확인했습니다. 충돌 건수는 누적 보관 기록입니다.`
+      : "현재 PC와 OneDrive의 자료·보관본이 일치합니다. 충돌 건수는 누적 보관 기록입니다.");
   }
   updateActionState();
 }

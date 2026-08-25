@@ -266,7 +266,7 @@
                 <span class="backup-device-sync-icon" aria-hidden="true"><i class="fa-solid fa-arrows-rotate"></i></span>
                 <div><h2 id="deviceSyncTitle">기기 간 최신 내용 동기화 <span class="status-badge badge-warning" id="deviceSyncBadge">확인 중</span></h2><p id="deviceSyncStatus" role="status">OneDrive와 서버 검증 상태를 확인하고 있습니다.</p></div>
               </div>
-              <dl class="backup-device-sync-metrics"><div><dt>서버 최신 세대</dt><dd id="deviceSyncLatestText">-</dd></div><div><dt>이 PC 반영 세대</dt><dd id="deviceSyncAppliedText">-</dd></div><div><dt>검증 상태</dt><dd id="deviceSyncVerifiedText">-</dd></div><div><dt>보존된 충돌</dt><dd id="deviceSyncConflictText">-</dd></div></dl>
+              <dl class="backup-device-sync-metrics"><div><dt>서버 최신 세대</dt><dd id="deviceSyncLatestText">-</dd></div><div><dt>이 PC 반영 세대</dt><dd id="deviceSyncAppliedText">-</dd></div><div><dt>검증 상태</dt><dd id="deviceSyncVerifiedText">-</dd></div><div><dt title="동기화를 막는 오류가 아니라 이 PC에 보존된 과거 충돌 기록의 누적값입니다.">기록 충돌 보관(누적)</dt><dd id="deviceSyncConflictText">-</dd></div></dl>
               <div class="backup-device-sync-actions"><button class="primary-action" data-action="run-device-sync" type="button">지금 동기화</button><button class="secondary-action" data-action="repair-device-sync" type="button" hidden>기기 동기화 다시 연결</button></div>
             </section>
 
@@ -280,7 +280,7 @@
               <section class="backup-preview-column" aria-labelledby="backupPreviewTitle">
                 <header><h2 id="backupPreviewTitle">복원 미리보기</h2></header>
                 <div class="restore-preview-details" id="backupPreviewDetails" aria-label="선택 백업 PC와 자료 건수"><p class="restore-preview-empty">복원할 백업을 선택하면 PC 정보와 자료 건수가 표시됩니다.</p></div>
-                <dl class="restore-preview-grid" id="backupPreviewGrid" aria-label="복원 자료 묶음"><div><dt>관찰·상담</dt><dd id="backupPreviewCare">-</dd></div><div><dt>출결·증빙</dt><dd id="backupPreviewAttendance">-</dd></div><div><dt>평가·학습</dt><dd id="backupPreviewLearning">-</dd></div><div><dt>학생부</dt><dd id="backupPreviewStudentRecord">-</dd></div><div><dt>게시판</dt><dd id="backupPreviewBoard">-</dd></div><div><dt>첨부파일</dt><dd id="backupPreviewAttachments">-</dd></div></dl>
+                <dl class="restore-preview-grid" id="backupPreviewGrid" aria-label="복원 자료 묶음"><div><dt>관찰·상담</dt><dd id="backupPreviewCare">-</dd></div><div><dt>출결·증빙</dt><dd id="backupPreviewAttendance">-</dd></div><div><dt>평가·학습</dt><dd id="backupPreviewLearning">-</dd></div><div><dt>학생부</dt><dd id="backupPreviewStudentRecord">-</dd></div><div><dt>게시판</dt><dd id="backupPreviewBoard">-</dd></div><div><dt>첨부파일</dt><dd id="backupPreviewAttachments">-</dd></div><div><dt>읽기 전용 보관본</dt><dd id="backupPreviewArchives">-</dd></div></dl>
                 <aside class="backup-merge-callout"><i class="fa-solid fa-circle-info" aria-hidden="true"></i><div><strong>현재 PC의 더 최신 기록은 유지하고, 선택한 백업을 병합합니다.</strong><span>복원 전 현재 상태를 자동으로 한 번 더 백업합니다.</span></div></aside>
                 <div class="backup-restore-actions"><button class="secondary-action" data-action="choose-backup-folder" type="button">백업 폴더에서 다시 찾기</button><button class="primary-action" data-action="restore-backup" type="button">선택 백업 복원</button></div>
               </section>

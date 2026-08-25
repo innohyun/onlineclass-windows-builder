@@ -97,6 +97,7 @@ let backupPreview: BackupPreview | null = null;
 let backupRestoreMessage = "";
 let backupRestoreTone: BadgeTone = "neutral";
 const busyActions = new Set<ActionName>();
+let sharedArchive = { refresh: async () => undefined as void };
 
 function byId<T extends HTMLElement>(id: string): T {
   const el = document.getElementById(id);
@@ -322,6 +323,10 @@ function backupBoardMediaCount(counts?: Record<string, number>, media?: BackupIt
   return records;
 }
 
+function backupArchiveCount(counts?: Record<string, number>) {
+  return countFrom(counts, ["sharedArchiveCount"]);
+}
+
 function backupAttendanceCount(counts?: Record<string, number>) {
   return [
     ["attendance_records", "attendanceRecordCount"],
@@ -401,6 +406,7 @@ function backupRowSummary(backup: BackupItem) {
     `학생부 ${numberText(backupStudentRecordCount(counts))}건`,
     `게시판 ${numberText(backupBoardSnapshotCount(counts))}건`,
     `첨부 ${numberText(backupBoardMediaCount(counts, media))}개`,
+    `보관본 ${numberText(backupArchiveCount(counts))}개`,
   ];
   return parts.join(" · ");
 }
@@ -841,6 +847,7 @@ function renderBackupRestorePanel() {
   setText("backupPreviewStudentRecord", backupList.length ? `${numberText(backupStudentRecordCount(counts))}건` : "-");
   setText("backupPreviewBoard", backupList.length ? `${numberText(backupBoardSnapshotCount(counts))}건` : "-");
   setText("backupPreviewAttachments", backupList.length ? `${numberText(backupBoardMediaCount(counts, media))}개` : "-");
+  setText("backupPreviewArchives", backupList.length ? `${numberText(backupArchiveCount(counts))}개` : "-");
   const detailsEl = byId<HTMLElement>("backupPreviewDetails");
   if (!backupList.length) {
     detailsEl.innerHTML = `<p class="restore-preview-empty">복원할 백업을 선택하면 PC 정보와 상세 건수가 표시됩니다.</p>`;
@@ -1123,7 +1130,14 @@ function bindUi() {
   byId<HTMLButtonElement>("deviceAuthReopen").addEventListener("click", () => void deviceAuthorization.reopen());
   actionButtons("refresh-status").forEach((button) => button.addEventListener("click", refreshAll));
   actionButtons("run-sync").forEach((button) => button.addEventListener("click", runCloudSyncNow));
-  actionButtons("run-device-sync").forEach((button) => button.addEventListener("click", () => void runDeviceSyncNow(loadBackupStatus)));
+  actionButtons("run-device-sync").forEach((button) => button.addEventListener("click", () => void runDeviceSyncNow(async () => {
+    await Promise.all([
+      loadBackupStatus(),
+      dataExplorer.refresh(),
+      sharedArchive.refresh(),
+      loadHomeOverview(currentBackupTenantId()),
+    ]);
+  })));
   actionButtons("repair-device-sync").forEach((button) => button.addEventListener("click", () => void deviceAuthorization.start()));
   actionButtons("run-backup").forEach((button) => button.addEventListener("click", runBackupNow));
   actionButtons("restore-backup").forEach((button) => button.addEventListener("click", restoreSelectedBackup));
@@ -1171,7 +1185,7 @@ if (designPreview !== "settings") {
 }
 renderAppVersion();
 if (designPreview === "archive") initSharedArchivePreview();
-else initSharedArchive({ getTenantId: currentBackupTenantId });
+else sharedArchive = initSharedArchive({ getTenantId: currentBackupTenantId });
 if (designPreview === "auth") {
   document.querySelector<HTMLButtonElement>('.sidebar-link[data-app-view-target="settings"]')?.click();
   deviceAuthorization.render({ ok: true, status: "pending", expiresAtMs: Date.now() + 10 * 60 * 1000 });
