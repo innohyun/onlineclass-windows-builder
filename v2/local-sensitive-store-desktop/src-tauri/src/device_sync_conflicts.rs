@@ -65,6 +65,53 @@ fn stats(store: &SqliteStore, tenant_id: &str) -> Result<Value, String> {
     ).map_err(|error| format!("device_sync_conflict_stats_failed:{error}"))
 }
 
+fn preview_text(sources: &[&Value], keys: &[&str]) -> Option<String> {
+    for source in sources {
+        for key in keys {
+            if let Some(value) = source.get(key) {
+                let text = match value {
+                    Value::String(value) => value.trim().to_string(),
+                    Value::Number(value) => value.to_string(),
+                    _ => String::new(),
+                };
+                if !text.is_empty() { return Some(text); }
+            }
+        }
+    }
+    None
+}
+
+fn preview_number(sources: &[&Value], keys: &[&str]) -> Option<i64> {
+    for source in sources {
+        for key in keys {
+            if let Some(value) = source.get(key) {
+                if let Some(number) = value.as_i64() { return Some(number); }
+                if let Some(number) = value.as_str().and_then(|text| text.parse::<i64>().ok()) { return Some(number); }
+            }
+        }
+    }
+    None
+}
+
+fn conflict_preview(payload_json: &str) -> Value {
+    let outer = serde_json::from_str::<Value>(payload_json).unwrap_or_else(|_| json!({}));
+    let nested = outer.get("payload_json").and_then(Value::as_str)
+        .and_then(|value| serde_json::from_str::<Value>(value).ok()).unwrap_or_else(|| json!({}));
+    let sources = [&nested, &outer];
+    json!({
+        "title": preview_text(&sources, &["title", "pageTitle", "assignmentTitle", "name"]),
+        "emoji": preview_text(&sources, &["emoji"]),
+        "studentName": preview_text(&sources, &["studentName", "displayName"]),
+        "studentCode": preview_text(&sources, &["studentCode", "student_code", "studentId", "student_id"]),
+        "classNo": preview_number(&sources, &["classNo", "class_no", "number"]),
+        "dateKey": preview_text(&sources, &["dateKey", "date_key", "date", "scheduledDate", "scheduled_date"]),
+        "subject": preview_text(&sources, &["subject", "curriculum", "topic", "category"]),
+        "fileName": preview_text(&sources, &["fileName", "file_name"]),
+        "status": preview_text(&sources, &["status", "kind"]),
+        "summary": preview_text(&sources, &["summary", "description", "observation", "reason", "content", "draftText", "text"]),
+    })
+}
+
 fn current_payload(store: &SqliteStore, tenant_id: &str, table_name: &str, record_key: &str) -> Result<Option<Value>, String> {
     let table = backup::syncable_tables().find(|table| table.name == table_name)
         .ok_or_else(|| "device_sync_conflict_table_unknown".to_string())?;
@@ -91,12 +138,13 @@ pub(crate) fn list_device_sync_conflicts(state: tauri::State<'_, AppState>, tena
     let result = (|| -> Result<Value, String> {
         let tenant_id = tenant(tenant_id)?; let store = store(state)?;
         let conn = store.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
-        let mut statement = conn.prepare("SELECT conflict_id,table_name,record_key,losing_generation,winning_generation,captured_at_ms,reviewed_at_ms FROM local_store_device_sync_conflicts WHERE tenant_id=?1 ORDER BY captured_at_ms DESC,conflict_id")
+        let mut statement = conn.prepare("SELECT conflict_id,table_name,record_key,losing_generation,winning_generation,captured_at_ms,reviewed_at_ms,payload_json FROM local_store_device_sync_conflicts WHERE tenant_id=?1 ORDER BY captured_at_ms DESC,conflict_id")
             .map_err(|error| format!("device_sync_conflict_list_prepare_failed:{error}"))?;
         let rows = statement.query_map(params![tenant_id], |row| Ok(json!({ "conflictId": row.get::<_, String>(0)?,
             "tableName": row.get::<_, String>(1)?, "recordKey": row.get::<_, String>(2)?,
             "losingGeneration": row.get::<_, i64>(3)?, "winningGeneration": row.get::<_, i64>(4)?,
-            "capturedAtMs": row.get::<_, i64>(5)?, "reviewedAtMs": row.get::<_, Option<i64>>(6)? })))
+            "capturedAtMs": row.get::<_, i64>(5)?, "reviewedAtMs": row.get::<_, Option<i64>>(6)?,
+            "preview": conflict_preview(&row.get::<_, String>(7)?) })))
             .map_err(|error| format!("device_sync_conflict_list_failed:{error}"))?;
         let mut records = Vec::new(); for row in rows { records.push(row.map_err(|error| format!("device_sync_conflict_list_row_failed:{error}"))?); }
         drop(statement); drop(conn);
@@ -166,5 +214,18 @@ mod tests {
         ensure_schema(&conn).unwrap();
         let lifetime: i64 = conn.query_row("SELECT lifetime_count FROM local_store_device_sync_conflict_stats WHERE tenant_id='tenant-a'", [], |row| row.get(0)).unwrap();
         assert_eq!(lifetime, 120);
+    }
+
+    #[test]
+    fn conflict_preview_uses_human_record_identity_without_returning_the_full_payload() {
+        let work_note = conflict_preview(r#"{"page_id":"internal-page","title":"학교업무 기억 노트","emoji":"📁","document_json":"[{\"text\":\"민감 원문\"}]"}"#);
+        assert_eq!(work_note["title"], "학교업무 기억 노트");
+        assert_eq!(work_note["emoji"], "📁");
+        assert!(work_note.get("document_json").is_none());
+
+        let student_draft = conflict_preview(r#"{"draft_id":"internal-draft","class_no":22,"student_code":"S22","payload_json":"{\"studentName\":\"김하늘\",\"title\":\"행동특성 초안\",\"content\":\"책임감 있게 참여함\"}"}"#);
+        assert_eq!(student_draft["studentName"], "김하늘");
+        assert_eq!(student_draft["classNo"], 22);
+        assert_eq!(student_draft["title"], "행동특성 초안");
     }
 }
