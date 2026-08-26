@@ -264,6 +264,13 @@ const BACKUP_TABLES: &[BackupTable] = &[
         optional: true,
     },
     BackupTable {
+        name: "lesson_plan_bindings",
+        columns: &["tenant_id", "plan_id", "page_id", "plan_kind", "date_key", "start_period", "end_period", "subject", "binding_revision", "updated_at_ms"],
+        key_columns: &["tenant_id", "plan_id"],
+        timestamp_column: "updated_at_ms",
+        optional: true,
+    },
+    BackupTable {
         name: "cloud_sync_runs",
         columns: &["tenant_id", "run_id", "payload_json", "started_at_ms", "finished_at_ms"],
         key_columns: &["tenant_id", "run_id"],
@@ -1064,6 +1071,19 @@ fn backup_schema_sql(prefix: &str) -> String {
           created_at_ms INTEGER NOT NULL,
           updated_at_ms INTEGER NOT NULL,
           PRIMARY KEY (tenant_id, attachment_id)
+        );
+        CREATE TABLE IF NOT EXISTS {prefix}lesson_plan_bindings (
+          tenant_id TEXT NOT NULL,
+          plan_id TEXT NOT NULL,
+          page_id TEXT NOT NULL,
+          plan_kind TEXT NOT NULL,
+          date_key TEXT NOT NULL,
+          start_period INTEGER NOT NULL,
+          end_period INTEGER NOT NULL,
+          subject TEXT NOT NULL,
+          binding_revision INTEGER NOT NULL,
+          updated_at_ms INTEGER NOT NULL,
+          PRIMARY KEY (tenant_id, plan_id)
         );
         CREATE TABLE IF NOT EXISTS {prefix}cloud_sync_runs (
           tenant_id TEXT NOT NULL,

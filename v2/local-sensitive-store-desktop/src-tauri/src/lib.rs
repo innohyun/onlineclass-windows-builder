@@ -16,6 +16,7 @@ mod work_note_attachments;
 mod work_note_localization;
 mod work_note_reader;
 mod device_sync_conflicts;
+mod lesson_plan_bindings;
 use rand::{distributions::Alphanumeric, Rng};
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, ToSql};
 use serde::{Deserialize, Serialize};
@@ -39,7 +40,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-08-26.4-readable-device-conflicts";
+pub(crate) const SERVICE_VERSION: &str = "2026-08-26.5-lesson-plan-bindings";
 const WORK_MEETING_ROOT_PAGE_ID: &str = "classaimate:work-meeting-minutes";
 const WORK_MEETING_ROOT_TITLE: &str = "업무 회의록";
 const WORK_MEETING_ROOT_INTRO: &str = "모바일에서 확정한 업무 회의록이 자동으로 들어옵니다.";
@@ -103,6 +104,7 @@ const LOCAL_SENSITIVE_STORE_ROUTES: &[&str] = &[
     "/v1/import-runs",
     "/v1/work-notes",
     "/v1/work-notes/move",
+    "/v1/lesson-plan-bindings",
     "/v1/work-notes/reconcile-mobile-meeting-root",
     "/v1/work-notes/reconcile-system-folders",
     "/v1/work-note-attachments",
@@ -125,7 +127,7 @@ const LOCAL_SENSITIVE_STORE_ROUTES: &[&str] = &[
     "/v1/shared-archives/import",
     "/v1/shared-archives/import-jobs",
 ];
-const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 8] = [
+const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 9] = [
     "non_lesson_observations",
     "teacher_local_records",
     "work_notes",
@@ -134,6 +136,7 @@ const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 8] = [
     "onedrive_device_sync",
     "work_note_localization_staging_v1",
     "work_note_system_folders_v1",
+    "lesson_plan_bindings_v1",
 ];
 
 #[derive(Clone, Debug, Serialize)]
@@ -1958,6 +1961,7 @@ impl SqliteStore {
         .map_err(|e| format!("db_schema_failed:{e}"))?;
         work_note_attachments::ensure_schema(&conn)?;
         work_note_localization::ensure_schema(&conn)?;
+        lesson_plan_bindings::ensure_schema(&conn)?;
         backup::install_sync_tracking(&conn)?;
         device_sync_conflicts::ensure_schema(&conn)?;
         let data_dir = db_path
@@ -1988,8 +1992,8 @@ impl SqliteStore {
     fn upsert_work_note(&self, mut input: Value) -> Result<Value, String> {
         let tenant_id = normalize_tenant_id(input.get("tenantId"));
         let page_id = normalize_id_segment(input.get("pageId").or_else(|| input.get("id")), 180);
-        let parent_id = normalize_id_segment(input.get("parentId"), 180);
-        let title = {
+        let mut parent_id = normalize_id_segment(input.get("parentId"), 180);
+        let mut title = {
             let value = normalize_json_text(input.get("title"), 240);
             if value.is_empty() { "제목 없음".to_string() } else { value }
         };
@@ -1997,7 +2001,7 @@ impl SqliteStore {
             let value = normalize_json_text(input.get("emoji"), 16);
             if value.is_empty() { "📄".to_string() } else { value }
         };
-        let position = input.get("position").and_then(Value::as_i64).unwrap_or(0).max(0);
+        let mut position = input.get("position").and_then(Value::as_i64).unwrap_or(0).max(0);
         let properties = input.get("properties").cloned().unwrap_or_else(|| json!({}));
         let blocks = input.get("blocks").cloned().unwrap_or_else(|| json!([]));
         let markdown = input.get("markdown").and_then(Value::as_str).unwrap_or("").chars().take(2_000_000).collect::<String>();
@@ -2010,6 +2014,12 @@ impl SqliteStore {
             return Err("work_note_system_folder_protected".to_string());
         }
         if parent_id == page_id { return Err("work_note_parent_cycle".to_string()); }
+        if let Some((stored_parent, stored_title, stored_position)) =
+            lesson_plan_bindings::stored_page_structure(self, &tenant_id, &page_id)? {
+            parent_id = stored_parent.unwrap_or_default();
+            title = stored_title;
+            position = stored_position;
+        }
         if let Some(object) = input.as_object_mut() {
             object.insert("tenantId".to_string(), Value::String(tenant_id.clone()));
             object.insert("pageId".to_string(), Value::String(page_id.clone()));
@@ -2091,6 +2101,11 @@ impl SqliteStore {
             return Err("work_note_system_folder_protected".to_string());
         }
         let conn = self.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
+        let bound: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM lesson_plan_bindings WHERE tenant_id=?1 AND page_id=?2",
+            params![tenant,page], |row| row.get(0),
+        ).map_err(|error| format!("db_lesson_plan_binding_read_failed:{error}"))?;
+        if bound > 0 { return Err("lesson_plan_page_protected".to_string()); }
         let child: i64 = conn.query_row("SELECT COUNT(*) FROM work_note_pages WHERE tenant_id=?1 AND parent_id=?2", params![tenant,page], |row| row.get(0)).map_err(|e| format!("db_work_note_child_check_failed:{e}"))?;
         if child > 0 { return Err("work_note_has_children".to_string()); }
         drop(conn);
@@ -2116,6 +2131,14 @@ impl SqliteStore {
         if source_id == target_id || source_id == "root"
             || [WORK_MEETING_ROOT_PAGE_ID, WORK_REFERENCE_ROOT_PAGE_ID].contains(&source_id.as_str()) {
             return Err("work_note_root_move_forbidden".to_string());
+        }
+        {
+            let conn = self.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
+            let bound: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM lesson_plan_bindings WHERE tenant_id=?1 AND page_id=?2",
+                params![tenant,source_id], |row| row.get(0),
+            ).map_err(|error| format!("db_lesson_plan_binding_read_failed:{error}"))?;
+            if bound > 0 { return Err("lesson_plan_page_protected".to_string()); }
         }
         if placement != "inside" && target_id == "root" { return Err("work_note_root_sibling_forbidden".to_string()); }
         let records = self.list_work_notes(tenant.clone(), String::new())?;
@@ -5162,6 +5185,17 @@ fn handle_request(
 
         if request.method() == &Method::Get && path == "/v1/work-notes" {
             let records = store.list_work_notes(query(&url, "tenantId"), query(&url, "query"))?;
+            return Ok((200, json!({ "ok": true, "records": records })));
+        }
+
+        if request.method() == &Method::Get && path == "/v1/lesson-plan-bindings" {
+            let records = lesson_plan_bindings::list(&store, query(&url, "tenantId"))?;
+            return Ok((200, json!({ "ok": true, "records": records })));
+        }
+
+        if request.method() == &Method::Put && path == "/v1/lesson-plan-bindings" {
+            let body = read_body(&mut request)?;
+            let records = lesson_plan_bindings::upsert(&store, body)?;
             return Ok((200, json!({ "ok": true, "records": records })));
         }
 

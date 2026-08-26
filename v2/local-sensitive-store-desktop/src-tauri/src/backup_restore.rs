@@ -265,6 +265,9 @@ where
     }
     let result = (|| -> Result<i64, String> {
         let transaction = conn.transaction().map_err(|e| format!("restore_transaction_begin_failed:{e}"))?;
+        if manual_restore_has_lesson_binding_conflict(&transaction, &tenant_id)? {
+            return Err("lesson_plan_binding_revision_conflict".to_string());
+        }
         let mut imported = 0i64;
         for table in BACKUP_TABLES {
             if !table_exists(&transaction, table.name)? || !attached_table_exists(&transaction, "restore", table.name)? {
@@ -282,16 +285,17 @@ where
                 .map(|column| format!("{column} = excluded.{column}"))
                 .collect::<Vec<String>>()
                 .join(", ");
+            let merge_guard = restore_merge_guard(table);
             let sql = format!(
                 "INSERT INTO main.{name} ({columns})
                  SELECT {columns} FROM restore.{name} WHERE tenant_id = ?1
                  ON CONFLICT({keys}) DO UPDATE SET {update_set}
-                 WHERE excluded.{timestamp} >= main.{name}.{timestamp}",
+                 WHERE {merge_guard}",
                 name = table.name,
                 columns = columns,
                 keys = table.key_columns.join(", "),
                 update_set = update_set,
-                timestamp = table.timestamp_column
+                merge_guard = merge_guard,
             );
             imported += transaction
                 .execute(&sql, params![tenant_id])
@@ -509,6 +513,88 @@ fn attached_record_json(
         .map_err(|e| format!("restore_sync_attached_record_failed:{}:{e}", table.name))
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LessonBindingMerge {
+    Incoming,
+    Equivalent,
+    Stale,
+    RevisionConflict,
+}
+
+fn lesson_binding_merge(current: &str, incoming: &str) -> Option<LessonBindingMerge> {
+    let current: Value = serde_json::from_str(current).ok()?;
+    let incoming: Value = serde_json::from_str(incoming).ok()?;
+    let current_revision = current.get("binding_revision")?.as_i64()?;
+    let incoming_revision = incoming.get("binding_revision")?.as_i64()?;
+    if incoming_revision > current_revision {
+        return Some(LessonBindingMerge::Incoming);
+    }
+    if incoming_revision < current_revision {
+        return Some(LessonBindingMerge::Stale);
+    }
+    let equivalent = ["page_id", "plan_kind", "date_key", "start_period", "end_period", "subject"]
+        .iter()
+        .all(|key| current.get(*key) == incoming.get(*key));
+    Some(if equivalent {
+        LessonBindingMerge::Equivalent
+    } else {
+        LessonBindingMerge::RevisionConflict
+    })
+}
+
+fn restore_merge_guard(table: &BackupTable) -> String {
+    if table.name != "lesson_plan_bindings" {
+        return format!(
+            "excluded.{timestamp} >= main.{name}.{timestamp}",
+            timestamp = table.timestamp_column,
+            name = table.name,
+        );
+    }
+    format!(
+        "(excluded.binding_revision > main.{name}.binding_revision OR (
+           excluded.binding_revision = main.{name}.binding_revision
+           AND excluded.page_id = main.{name}.page_id
+           AND excluded.plan_kind = main.{name}.plan_kind
+           AND excluded.date_key = main.{name}.date_key
+           AND excluded.start_period = main.{name}.start_period
+           AND excluded.end_period = main.{name}.end_period
+           AND excluded.subject = main.{name}.subject
+           AND excluded.updated_at_ms >= main.{name}.updated_at_ms
+         ))",
+        name = table.name,
+    )
+}
+
+fn manual_restore_has_lesson_binding_conflict(
+    transaction: &rusqlite::Transaction<'_>,
+    tenant_id: &str,
+) -> Result<bool, String> {
+    if !table_exists(transaction, "lesson_plan_bindings")?
+        || !attached_table_exists(transaction, "restore", "lesson_plan_bindings")?
+    {
+        return Ok(false);
+    }
+    transaction
+        .query_row(
+            "SELECT EXISTS(
+               SELECT 1 FROM main.lesson_plan_bindings current
+               JOIN restore.lesson_plan_bindings incoming
+                 ON incoming.tenant_id=current.tenant_id AND incoming.plan_id=current.plan_id
+               WHERE current.tenant_id=?1
+                 AND current.binding_revision=incoming.binding_revision
+                 AND NOT (
+                   current.page_id=incoming.page_id AND current.plan_kind=incoming.plan_kind
+                   AND current.date_key=incoming.date_key AND current.start_period=incoming.start_period
+                   AND current.end_period=incoming.end_period AND current.subject=incoming.subject
+                 )
+             )",
+            params![tenant_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|value| value == 1)
+        .map_err(|error| format!("restore_lesson_plan_binding_check_failed:{error}"))
+}
+
 fn local_record_is_dirty(
     transaction: &rusqlite::Transaction<'_>,
     tenant_id: &str,
@@ -722,9 +808,33 @@ pub(super) fn restore_generation(
                         .ok_or_else(|| "backup_sync_record_missing".to_string())?,
                 )
             };
+            let binding_merge = if table.name == "lesson_plan_bindings" {
+                current
+                    .as_deref()
+                    .zip(incoming.as_deref())
+                    .and_then(|(current, incoming)| lesson_binding_merge(current, incoming))
+            } else {
+                None
+            };
+            if matches!(binding_merge, Some(LessonBindingMerge::Stale | LessonBindingMerge::RevisionConflict)) {
+                if binding_merge == Some(LessonBindingMerge::RevisionConflict) {
+                    archive_conflict(
+                        &transaction,
+                        tenant_id,
+                        record,
+                        generation,
+                        state.applied_generation,
+                        incoming.as_deref().unwrap_or("{}"),
+                    )?;
+                    conflicts += 1;
+                }
+                upsert_sync_record(&transaction, tenant_id, record)?;
+                continue;
+            }
             if local_record_is_dirty(&transaction, tenant_id, record)?
                 && current.is_some()
                 && current.as_ref() != incoming.as_ref()
+                && binding_merge != Some(LessonBindingMerge::Equivalent)
             {
                 archive_conflict(
                     &transaction,
@@ -772,12 +882,18 @@ pub(super) fn restore_generation(
                     .map(|column| format!("{column} = excluded.{column}"))
                     .collect::<Vec<_>>()
                     .join(", ");
+                let merge_guard = if table.name == "lesson_plan_bindings" {
+                    format!(" WHERE {}", restore_merge_guard(table))
+                } else {
+                    String::new()
+                };
                 let sql = format!(
                     "INSERT INTO main.{name} ({columns})
                      SELECT {columns} FROM restore.{name} WHERE tenant_id = ?1 AND {where_clause}
-                     ON CONFLICT({keys}) DO UPDATE SET {update_set}",
+                     ON CONFLICT({keys}) DO UPDATE SET {update_set}{merge_guard}",
                     name = table.name,
                     keys = table.key_columns.join(", "),
+                    merge_guard = merge_guard,
                 );
                 imported += transaction
                     .execute(&sql, params_from_iter(values))
@@ -896,6 +1012,33 @@ mod tests {
         ).ok()
     }
 
+    fn lesson_binding(store: &SqliteStore, date_key: &str, revision: i64, updated_at: i64) {
+        crate::lesson_plan_bindings::upsert(store, json!({
+            "tenantId": "tenant-a",
+            "bindings": [{
+                "planId": "lesson-plan-sync-0001",
+                "pageId": "lesson-page-sync-0001",
+                "planKind": "lesson",
+                "dateKey": date_key,
+                "startPeriod": 2,
+                "endPeriod": 2,
+                "subject": "국어",
+                "bindingRevision": revision,
+                "updatedAt": updated_at,
+            }]
+        })).expect("upsert lesson binding");
+    }
+
+    fn lesson_binding_revision(store: &SqliteStore) -> (String, i64) {
+        let conn = store.conn.lock().expect("lock lesson binding store");
+        conn.query_row(
+            "SELECT date_key,binding_revision FROM lesson_plan_bindings
+             WHERE tenant_id='tenant-a' AND plan_id='lesson-plan-sync-0001'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).expect("read lesson binding")
+    }
+
     #[test]
     fn generation_merge_keeps_other_keys_archives_same_key_and_applies_tombstone() {
         let base = std::env::temp_dir().join(format!(
@@ -924,6 +1067,7 @@ mod tests {
         .expect("configure target backup");
 
         observation(&source, "shared", "source generation one", 100);
+        lesson_binding(&source, "2026-08-24", 4, 100);
         let generation_one = run_with_kind(&source, "tenant-a".to_string(), "auto_sync", Some(1))
             .expect("create generation one");
         let content_one = tenant_content_sha256(&source, "tenant-a").expect("source content root");
@@ -939,6 +1083,7 @@ mod tests {
 
         observation(&target, "shared", "target unsynced edit", 200);
         observation(&target, "target-only", "preserve me", 200);
+        lesson_binding(&target, "2026-08-26", 5, 200);
         let applied = restore_generation(
             &target,
             "tenant-a",
@@ -957,6 +1102,7 @@ mod tests {
             .expect("target-only row")
             .0
             .contains("preserve me"));
+        assert_eq!(lesson_binding_revision(&target), ("2026-08-26".to_string(), 5));
 
         source
             .conn
@@ -980,6 +1126,7 @@ mod tests {
         .expect("apply generation two tombstone");
         assert!(observation_row(&target, "shared").is_none());
         assert!(observation_row(&target, "target-only").is_some());
+        assert_eq!(lesson_binding_revision(&target), ("2026-08-26".to_string(), 5));
         let tombstone: i64 = target
             .conn
             .lock()
@@ -1007,6 +1154,7 @@ mod tests {
             .0
             .contains("source generation one"));
         assert!(observation_row(&target, "target-only").is_some());
+        assert_eq!(lesson_binding_revision(&target), ("2026-08-26".to_string(), 5));
         drop(source);
         drop(target);
         fs::remove_dir_all(base).expect("remove generation merge test directory");
@@ -1353,6 +1501,36 @@ mod tests {
         restored.file.read_to_end(&mut bytes).expect("read restored attachment");
         assert_eq!(bytes, b"pdf-fixture");
         fs::remove_dir_all(base).expect("remove test directory");
+    }
+
+    #[test]
+    fn manual_restore_rejects_equal_lesson_binding_revision_conflict() {
+        let (base, backup_root, store) = test_store();
+        set_folder(&store, "tenant-a".to_string(), backup_root.to_string_lossy().to_string())
+            .expect("set backup folder");
+        lesson_binding(&store, "2026-08-24", 4, 100);
+        let selected = run_now(&store, "tenant-a".to_string()).expect("backup lesson binding");
+        store
+            .conn
+            .lock()
+            .expect("lock lesson binding")
+            .execute(
+                "UPDATE lesson_plan_bindings SET date_key='2026-08-26',updated_at_ms=200
+                 WHERE tenant_id='tenant-a' AND plan_id='lesson-plan-sync-0001'",
+                [],
+            )
+            .expect("create equal revision conflict");
+        let error = restore(
+            &store,
+            json!({
+                "tenantId": "tenant-a",
+                "manifestPath": selected.get("manifestPath").and_then(Value::as_str).unwrap_or("")
+            }),
+        )
+        .expect_err("manual restore must reject equal revision conflict");
+        assert_eq!(error, "lesson_plan_binding_revision_conflict");
+        assert_eq!(lesson_binding_revision(&store), ("2026-08-26".to_string(), 4));
+        fs::remove_dir_all(base).expect("remove lesson binding restore test directory");
     }
 
     #[test]
