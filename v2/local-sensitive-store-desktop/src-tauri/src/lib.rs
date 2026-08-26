@@ -17,7 +17,7 @@ mod work_note_localization;
 mod work_note_reader;
 mod device_sync_conflicts;
 use rand::{distributions::Alphanumeric, Rng};
-use rusqlite::{params, params_from_iter, Connection, ToSql};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension, ToSql};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -39,10 +39,13 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-08-26.2-work-note-attachment-repair";
+pub(crate) const SERVICE_VERSION: &str = "2026-08-26.3-work-note-system-folders";
 const WORK_MEETING_ROOT_PAGE_ID: &str = "classaimate:work-meeting-minutes";
 const WORK_MEETING_ROOT_TITLE: &str = "업무 회의록";
 const WORK_MEETING_ROOT_INTRO: &str = "모바일에서 확정한 업무 회의록이 자동으로 들어옵니다.";
+const WORK_REFERENCE_ROOT_PAGE_ID: &str = "classaimate:work-reference-materials";
+const WORK_REFERENCE_ROOT_TITLE: &str = "업무 참고자료";
+const WORK_REFERENCE_ROOT_INTRO: &str = "모바일에서 전사문만 사용한 업무 참고자료가 자동으로 들어옵니다.";
 const DB_FILE_NAME: &str = "onlineclass-sensitive.sqlite";
 const KEY_FILE_NAME: &str = "pairing-key.txt";
 const BROWSER_LINK_FILE_NAME: &str = "browser-link-tokens.json";
@@ -101,6 +104,7 @@ const LOCAL_SENSITIVE_STORE_ROUTES: &[&str] = &[
     "/v1/work-notes",
     "/v1/work-notes/move",
     "/v1/work-notes/reconcile-mobile-meeting-root",
+    "/v1/work-notes/reconcile-system-folders",
     "/v1/work-note-attachments",
     "/v1/work-notes/import",
     "/v1/work-notes/export",
@@ -121,7 +125,7 @@ const LOCAL_SENSITIVE_STORE_ROUTES: &[&str] = &[
     "/v1/shared-archives/import",
     "/v1/shared-archives/import-jobs",
 ];
-const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 7] = [
+const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 8] = [
     "non_lesson_observations",
     "teacher_local_records",
     "work_notes",
@@ -129,6 +133,7 @@ const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 7] = [
     "counseling_local_authority",
     "onedrive_device_sync",
     "work_note_localization_staging_v1",
+    "work_note_system_folders_v1",
 ];
 
 #[derive(Clone, Debug, Serialize)]
@@ -2001,6 +2006,9 @@ impl SqliteStore {
         let created_at_ms = input.get("createdAtMs").and_then(Value::as_i64).filter(|value| *value > 0).unwrap_or(updated_at_ms);
         if tenant_id.is_empty() { return Err("tenant_id_required".to_string()); }
         if page_id.is_empty() { return Err("work_note_page_id_required".to_string()); }
+        if [WORK_MEETING_ROOT_PAGE_ID, WORK_REFERENCE_ROOT_PAGE_ID].contains(&page_id.as_str()) {
+            return Err("work_note_system_folder_protected".to_string());
+        }
         if parent_id == page_id { return Err("work_note_parent_cycle".to_string()); }
         if let Some(object) = input.as_object_mut() {
             object.insert("tenantId".to_string(), Value::String(tenant_id.clone()));
@@ -2079,6 +2087,9 @@ impl SqliteStore {
         let page = normalize_id_segment(Some(&Value::String(page_id)), 180);
         if tenant.is_empty() { return Err("tenant_id_required".to_string()); }
         if page.is_empty() { return Err("work_note_page_id_required".to_string()); }
+        if [WORK_MEETING_ROOT_PAGE_ID, WORK_REFERENCE_ROOT_PAGE_ID].contains(&page.as_str()) {
+            return Err("work_note_system_folder_protected".to_string());
+        }
         let conn = self.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
         let child: i64 = conn.query_row("SELECT COUNT(*) FROM work_note_pages WHERE tenant_id=?1 AND parent_id=?2", params![tenant,page], |row| row.get(0)).map_err(|e| format!("db_work_note_child_check_failed:{e}"))?;
         if child > 0 { return Err("work_note_has_children".to_string()); }
@@ -2102,7 +2113,10 @@ impl SqliteStore {
         if tenant.is_empty() { return Err("tenant_id_required".to_string()); }
         if source_id.is_empty() || target_id.is_empty() { return Err("work_note_page_id_required".to_string()); }
         if !["before", "inside", "after"].contains(&placement.as_str()) { return Err("work_note_move_placement_invalid".to_string()); }
-        if source_id == target_id || source_id == "root" { return Err("work_note_root_move_forbidden".to_string()); }
+        if source_id == target_id || source_id == "root"
+            || [WORK_MEETING_ROOT_PAGE_ID, WORK_REFERENCE_ROOT_PAGE_ID].contains(&source_id.as_str()) {
+            return Err("work_note_root_move_forbidden".to_string());
+        }
         if placement != "inside" && target_id == "root" { return Err("work_note_root_sibling_forbidden".to_string()); }
         let records = self.list_work_notes(tenant.clone(), String::new())?;
         let pages = records.iter().map(|value| Page {
@@ -2192,6 +2206,43 @@ impl SqliteStore {
         transaction.commit().map_err(|e| format!("db_work_note_commit_failed:{e}"))?;
         drop(conn);
         Ok(json!({"ok":true,"deduplicated":deduplicated,"preserved":preserved,"records":self.list_work_notes(tenant,String::new())?}))
+    }
+
+    fn reconcile_system_folders(&self, tenant_id: String) -> Result<Value, String> {
+        let meeting = self.reconcile_mobile_meeting_root(tenant_id.clone(), true)?;
+        let tenant = normalize_tenant_id(Some(&Value::String(tenant_id)));
+        if tenant.is_empty() { return Err("tenant_id_required".to_string()); }
+        let now = Utc::now().timestamp_millis();
+        let mut conn = self.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
+        let transaction = conn.transaction().map_err(|e| format!("db_work_note_transaction_failed:{e}"))?;
+        let existing_kind: Option<String> = transaction.query_row(
+            "SELECT json_extract(properties_json,'$.systemKind') FROM work_note_pages WHERE tenant_id=?1 AND page_id=?2",
+            params![tenant, WORK_REFERENCE_ROOT_PAGE_ID], |row| row.get::<_, Option<String>>(0),
+        ).optional().map_err(|e| format!("db_work_note_query_failed:{e}"))?.flatten();
+        if existing_kind.is_some_and(|kind| kind != "work_reference_materials_folder") {
+            return Err("work_note_reference_root_conflict".to_string());
+        }
+        let properties = json!({"systemKind":"work_reference_materials_folder","schemaVersion":1,"tags":[WORK_REFERENCE_ROOT_TITLE]}).to_string();
+        let blocks = json!([
+            {"id":"work-reference-root-intro","type":"callout","text":WORK_REFERENCE_ROOT_INTRO},
+            {"id":"work-reference-root-end","type":"text","text":""}
+        ]).to_string();
+        let markdown = format!("# {WORK_REFERENCE_ROOT_TITLE}\n\n{WORK_REFERENCE_ROOT_INTRO}");
+        transaction.execute(r#"INSERT INTO work_note_pages
+            (tenant_id,page_id,parent_id,title,emoji,position,properties_json,document_json,markdown,created_at_ms,updated_at_ms)
+            VALUES(?1,?2,NULL,?3,'📚',1,?4,?5,?6,?7,?7)
+            ON CONFLICT(tenant_id,page_id) DO UPDATE SET parent_id=NULL,title=excluded.title,emoji=excluded.emoji,
+              position=1,properties_json=excluded.properties_json,document_json=excluded.document_json,
+              markdown=excluded.markdown,updated_at_ms=excluded.updated_at_ms"#,
+            params![tenant,WORK_REFERENCE_ROOT_PAGE_ID,WORK_REFERENCE_ROOT_TITLE,properties,blocks,markdown,now],
+        ).map_err(|e| format!("db_work_note_upsert_failed:{e}"))?;
+        transaction.execute("DELETE FROM work_note_pages_fts WHERE tenant_id=?1 AND page_id=?2",
+            params![tenant,WORK_REFERENCE_ROOT_PAGE_ID]).map_err(|e| format!("db_work_note_fts_delete_failed:{e}"))?;
+        transaction.execute("INSERT INTO work_note_pages_fts(tenant_id,page_id,title,markdown) VALUES(?1,?2,?3,?4)",
+            params![tenant,WORK_REFERENCE_ROOT_PAGE_ID,WORK_REFERENCE_ROOT_TITLE,markdown]).map_err(|e| format!("db_work_note_fts_insert_failed:{e}"))?;
+        transaction.commit().map_err(|e| format!("db_work_note_commit_failed:{e}"))?;
+        drop(conn);
+        Ok(json!({"ok":true,"meeting":meeting,"records":self.list_work_notes(tenant,String::new())?}))
     }
 
     pub(crate) fn upsert_observation(&self, input: Value) -> Result<Value, String> {
@@ -5161,6 +5212,12 @@ fn handle_request(
             let tenant_id = normalize_json_text(body.get("tenantId"), 160);
             let ensure_root = body.get("ensureRoot").and_then(Value::as_bool).unwrap_or(false);
             return Ok((200, store.reconcile_mobile_meeting_root(tenant_id, ensure_root)?));
+        }
+
+        if request.method() == &Method::Post && path == "/v1/work-notes/reconcile-system-folders" {
+            let body = read_body(&mut request)?;
+            let tenant_id = normalize_json_text(body.get("tenantId"), 160);
+            return Ok((200, store.reconcile_system_folders(tenant_id)?));
         }
 
         if request.method() == &Method::Post && path == "/v1/work-notes/move" {

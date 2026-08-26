@@ -34,6 +34,7 @@ pub(crate) fn ensure_schema(conn: &Connection) -> Result<(), String> {
           created_at_ms INTEGER NOT NULL,
           updated_at_ms INTEGER NOT NULL,
           completed_at_ms INTEGER,
+          destination_parent_id TEXT,
           PRIMARY KEY (tenant_id, document_id)
         );
         CREATE TABLE IF NOT EXISTS work_note_localization_pages (
@@ -63,7 +64,17 @@ pub(crate) fn ensure_schema(conn: &Connection) -> Result<(), String> {
         CREATE INDEX IF NOT EXISTS idx_work_note_localization_receipts_tenant
           ON work_note_localization_receipts (tenant_id, status, updated_at_ms DESC);
         "#,
-    ).map_err(|error| format!("db_work_note_localization_schema_failed:{error}"))
+    ).map_err(|error| format!("db_work_note_localization_schema_failed:{error}"))?;
+    let has_destination = conn.prepare("PRAGMA table_info(work_note_localization_receipts)")
+        .and_then(|mut statement| statement.query_map([], |row| row.get::<_, String>(1))
+            .and_then(|rows| rows.collect::<Result<Vec<_>, _>>()))
+        .map_err(|error| format!("db_work_note_localization_schema_inspect_failed:{error}"))?
+        .iter().any(|column| column == "destination_parent_id");
+    if !has_destination {
+        conn.execute("ALTER TABLE work_note_localization_receipts ADD COLUMN destination_parent_id TEXT", [])
+            .map_err(|error| format!("db_work_note_localization_schema_upgrade_failed:{error}"))?;
+    }
+    Ok(())
 }
 
 fn now_ms() -> i64 { Utc::now().timestamp_millis() }
@@ -119,7 +130,7 @@ fn final_relative(tenant_id: &str, attachment_id: &str, file_name: &str) -> Path
 fn receipt(store: &SqliteStore, tenant_id: &str, document_id: &str) -> Result<Option<Value>, String> {
     let conn = store.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
     conn.query_row(
-        "SELECT tenant_id,document_id,root_page_id,document_title,prepared_revision,snapshot_sha256,expected_page_count,status,verified_page_count,verified_attachment_count,created_at_ms,updated_at_ms,completed_at_ms FROM work_note_localization_receipts WHERE tenant_id=?1 AND document_id=?2",
+        "SELECT tenant_id,document_id,root_page_id,document_title,prepared_revision,snapshot_sha256,expected_page_count,status,verified_page_count,verified_attachment_count,created_at_ms,updated_at_ms,completed_at_ms,destination_parent_id FROM work_note_localization_receipts WHERE tenant_id=?1 AND document_id=?2",
         params![tenant_id, document_id], |row| Ok(json!({
             "tenantId": row.get::<_, String>(0)?, "documentId": row.get::<_, String>(1)?,
             "rootPageId": row.get::<_, String>(2)?, "documentTitle": row.get::<_, String>(3)?,
@@ -128,6 +139,7 @@ fn receipt(store: &SqliteStore, tenant_id: &str, document_id: &str) -> Result<Op
             "verifiedPageCount": row.get::<_, i64>(8)?, "verifiedAttachmentCount": row.get::<_, i64>(9)?,
             "createdAtMs": row.get::<_, i64>(10)?, "updatedAtMs": row.get::<_, i64>(11)?,
             "completedAtMs": row.get::<_, Option<i64>>(12)?,
+            "destinationParentId": row.get::<_, Option<String>>(13)?,
         })),
     ).optional().map_err(|error| format!("db_work_note_localization_receipt_failed:{error}"))
 }
@@ -137,7 +149,7 @@ pub(crate) fn list(store: &SqliteStore, tenant_id: String) -> Result<Vec<Value>,
     if tenant.is_empty() { return Err("tenant_id_required".to_string()); }
     let conn = store.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
     let mut statement = conn.prepare(
-        "SELECT document_id,root_page_id,document_title,prepared_revision,snapshot_sha256,expected_page_count,status,verified_page_count,verified_attachment_count,created_at_ms,updated_at_ms,completed_at_ms FROM work_note_localization_receipts WHERE tenant_id=?1 ORDER BY updated_at_ms DESC,document_id",
+        "SELECT document_id,root_page_id,document_title,prepared_revision,snapshot_sha256,expected_page_count,status,verified_page_count,verified_attachment_count,created_at_ms,updated_at_ms,completed_at_ms,destination_parent_id FROM work_note_localization_receipts WHERE tenant_id=?1 ORDER BY updated_at_ms DESC,document_id",
     ).map_err(|error| format!("db_work_note_localization_list_prepare_failed:{error}"))?;
     let rows = statement.query_map(params![tenant], |row| Ok(json!({
         "tenantId": tenant, "documentId": row.get::<_, String>(0)?, "rootPageId": row.get::<_, String>(1)?,
@@ -146,6 +158,7 @@ pub(crate) fn list(store: &SqliteStore, tenant_id: String) -> Result<Vec<Value>,
         "status": row.get::<_, String>(6)?, "verifiedPageCount": row.get::<_, i64>(7)?,
         "verifiedAttachmentCount": row.get::<_, i64>(8)?, "createdAtMs": row.get::<_, i64>(9)?,
         "updatedAtMs": row.get::<_, i64>(10)?, "completedAtMs": row.get::<_, Option<i64>>(11)?,
+        "destinationParentId": row.get::<_, Option<String>>(12)?,
     }))).map_err(|error| format!("db_work_note_localization_list_failed:{error}"))?;
     rows.map(|row| row.map_err(|error| format!("db_work_note_localization_list_row_failed:{error}"))).collect()
 }
@@ -161,9 +174,23 @@ pub(crate) fn begin(store: &SqliteStore, body: Value) -> Result<Value, String> {
     let prepared_revision = body.get("preparedRevision").and_then(Value::as_i64).unwrap_or(0);
     let snapshot_sha256 = safe_sha(&normalize_json_text(body.get("snapshotSha256"), 64))?;
     let expected_page_count = body.get("expectedPageCount").and_then(Value::as_i64).unwrap_or(0);
+    let destination_parent_id = match body.get("destinationParentId") {
+        Some(Value::String(value)) if !value.trim().is_empty() => Some(safe_id(value.trim(), 180)?),
+        _ => None,
+    };
     if tenant_id.is_empty() { return Err("tenant_id_required".to_string()); }
     if prepared_revision < 1 || !(1..=5000).contains(&expected_page_count) {
         return Err("work_note_localization_manifest_invalid".to_string());
+    }
+    if destination_parent_id.as_deref() == Some(root_page_id.as_str()) {
+        return Err("work_note_localization_destination_invalid".to_string());
+    }
+    if let Some(parent_id) = &destination_parent_id {
+        let exists = store.conn.lock().map_err(|_| "db_lock_failed".to_string())?.query_row(
+            "SELECT EXISTS(SELECT 1 FROM work_note_pages WHERE tenant_id=?1 AND page_id=?2)",
+            params![tenant_id, parent_id], |row| row.get::<_, i64>(0),
+        ).map_err(|error| format!("db_work_note_localization_destination_failed:{error}"))?;
+        if exists != 1 { return Err("work_note_localization_destination_not_found".to_string()); }
     }
     let previous = receipt(store, &tenant_id, &document_id)?;
     if let Some(previous) = &previous {
@@ -186,8 +213,8 @@ pub(crate) fn begin(store: &SqliteStore, body: Value) -> Result<Value, String> {
                 .map_err(|error| format!("db_work_note_localization_reset_attachments_failed:{error}"))?;
         }
         transaction.execute(
-            "INSERT INTO work_note_localization_receipts (tenant_id,document_id,root_page_id,document_title,prepared_revision,snapshot_sha256,expected_page_count,status,created_at_ms,updated_at_ms) VALUES (?1,?2,?3,?4,?5,?6,?7,'copying',?8,?8) ON CONFLICT(tenant_id,document_id) DO UPDATE SET root_page_id=excluded.root_page_id,document_title=excluded.document_title,prepared_revision=excluded.prepared_revision,snapshot_sha256=excluded.snapshot_sha256,expected_page_count=excluded.expected_page_count,status='copying',verified_page_count=0,verified_attachment_count=0,updated_at_ms=excluded.updated_at_ms,completed_at_ms=NULL",
-            params![tenant_id, document_id, root_page_id, document_title, prepared_revision, snapshot_sha256, expected_page_count, now],
+            "INSERT INTO work_note_localization_receipts (tenant_id,document_id,root_page_id,document_title,prepared_revision,snapshot_sha256,expected_page_count,status,created_at_ms,updated_at_ms,destination_parent_id) VALUES (?1,?2,?3,?4,?5,?6,?7,'copying',?8,?8,?9) ON CONFLICT(tenant_id,document_id) DO UPDATE SET root_page_id=excluded.root_page_id,document_title=excluded.document_title,prepared_revision=excluded.prepared_revision,snapshot_sha256=excluded.snapshot_sha256,expected_page_count=excluded.expected_page_count,status='copying',verified_page_count=0,verified_attachment_count=0,updated_at_ms=excluded.updated_at_ms,completed_at_ms=NULL,destination_parent_id=excluded.destination_parent_id",
+            params![tenant_id, document_id, root_page_id, document_title, prepared_revision, snapshot_sha256, expected_page_count, now, destination_parent_id],
         ).map_err(|error| format!("db_work_note_localization_begin_upsert_failed:{error}"))?;
         transaction.commit().map_err(|error| format!("db_work_note_localization_begin_commit_failed:{error}"))?;
     }
@@ -447,14 +474,28 @@ pub(crate) fn finalize(store: &SqliteStore, tenant_id: String, document_id: Stri
     }
     let pages = staged_pages(store, &tenant_id, &document_id)?;
     let attachments = staged_attachments(store, &tenant_id, &document_id)?;
+    let destination_parent_id = current.get("destinationParentId").and_then(Value::as_str).map(str::to_string);
+    let staged_ids = pages.iter().filter_map(|page| page.get("pageId").and_then(Value::as_str)).collect::<HashSet<_>>();
+    if destination_parent_id.as_deref().is_some_and(|parent_id| staged_ids.contains(parent_id)) {
+        return Err("work_note_localization_destination_invalid".to_string());
+    }
     let published = publish_files(store, &tenant_id, &attachments)?;
     let now = now_ms();
     let result = (|| -> Result<(), String> {
         let mut conn = store.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
         let transaction = conn.transaction().map_err(|error| format!("db_work_note_localization_finalize_begin_failed:{error}"))?;
+        if let Some(parent_id) = &destination_parent_id {
+            let exists = transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM work_note_pages WHERE tenant_id=?1 AND page_id=?2)",
+                params![tenant_id, parent_id], |row| row.get::<_, i64>(0),
+            ).map_err(|error| format!("db_work_note_localization_destination_failed:{error}"))?;
+            if exists != 1 { return Err("work_note_localization_destination_not_found".to_string()); }
+        }
         for page in &pages {
             let page_id = page.get("pageId").and_then(Value::as_str).unwrap_or("");
-            let parent_id = page.get("parentId").and_then(Value::as_str);
+            let parent_id = if page_id == current.get("rootPageId").and_then(Value::as_str).unwrap_or("") {
+                destination_parent_id.as_deref()
+            } else { page.get("parentId").and_then(Value::as_str) };
             let title = page.get("title").and_then(Value::as_str).unwrap_or("제목 없음");
             let emoji = page.get("emoji").and_then(Value::as_str).unwrap_or("📄");
             let position = page.get("position").and_then(Value::as_i64).unwrap_or(0);
@@ -622,6 +663,55 @@ mod tests {
         let published: i64 = store.conn.lock().unwrap().query_row(
             "SELECT COUNT(*) FROM work_note_pages WHERE tenant_id='tenant-a'", [], |row| row.get(0)).unwrap();
         assert_eq!(published, 0);
+        drop(store);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn destination_folder_is_revalidated_and_applied_only_at_atomic_finalize() {
+        let directory = std::env::temp_dir().join(format!("classaimate-localization-{}", crate::random_url_token()));
+        fs::create_dir_all(&directory).unwrap();
+        let db_path = directory.join("store.sqlite3");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE work_note_pages (tenant_id TEXT NOT NULL,page_id TEXT NOT NULL,parent_id TEXT,title TEXT NOT NULL,emoji TEXT NOT NULL,position INTEGER NOT NULL,properties_json TEXT NOT NULL,document_json TEXT NOT NULL,markdown TEXT NOT NULL,created_at_ms INTEGER NOT NULL,updated_at_ms INTEGER NOT NULL,PRIMARY KEY(tenant_id,page_id));
+             CREATE VIRTUAL TABLE work_note_pages_fts USING fts5(tenant_id UNINDEXED,page_id UNINDEXED,title,markdown);
+             CREATE TABLE work_note_attachments (tenant_id TEXT NOT NULL,attachment_id TEXT NOT NULL,page_id TEXT NOT NULL,block_id TEXT NOT NULL,file_name TEXT NOT NULL,content_type TEXT NOT NULL,byte_size INTEGER NOT NULL,sha256 TEXT NOT NULL,local_path TEXT NOT NULL,created_at_ms INTEGER NOT NULL,updated_at_ms INTEGER NOT NULL,PRIMARY KEY(tenant_id,attachment_id));",
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO work_note_pages VALUES ('tenant-a','destination-a',NULL,'최근 폴더','📁',0,'{}','[]','',1,1)", [],
+        ).unwrap();
+        ensure_schema(&conn).unwrap();
+        let store = SqliteStore { conn: Mutex::new(conn), db_path, data_dir: directory.clone() };
+        let started = begin(&store, json!({ "tenantId":"tenant-a","documentId":"document-a","rootPageId":"root-a",
+            "documentTitle":"참고자료","preparedRevision":2,"snapshotSha256":"a".repeat(64),"expectedPageCount":2,
+            "destinationParentId":"destination-a" })).unwrap();
+        assert_eq!(started["destinationParentId"], "destination-a");
+        for page in [
+            json!({"pageId":"root-a","parentId":null,"title":"참고자료","blocks":[],"markdown":""}),
+            json!({"pageId":"child-a","parentId":"root-a","title":"하위 자료","blocks":[],"markdown":""}),
+        ] { stage_page(&store, "tenant-a".into(), "document-a".into(), page["pageId"].as_str().unwrap().into(), page).unwrap(); }
+        verify(&store, json!({"tenantId":"tenant-a","documentId":"document-a","attachments":[]})).unwrap();
+
+        store.conn.lock().unwrap().execute(
+            "DELETE FROM work_note_pages WHERE tenant_id='tenant-a' AND page_id='destination-a'", [],
+        ).unwrap();
+        assert_eq!(finalize(&store, "tenant-a".into(), "document-a".into()).unwrap_err(),
+            "work_note_localization_destination_not_found");
+        let unpublished: i64 = store.conn.lock().unwrap().query_row(
+            "SELECT COUNT(*) FROM work_note_pages WHERE tenant_id='tenant-a'", [], |row| row.get(0)).unwrap();
+        assert_eq!(unpublished, 0);
+
+        store.conn.lock().unwrap().execute(
+            "INSERT INTO work_note_pages VALUES ('tenant-a','destination-a',NULL,'최근 폴더','📁',0,'{}','[]','',1,1)", [],
+        ).unwrap();
+        finalize(&store, "tenant-a".into(), "document-a".into()).unwrap();
+        let root_parent: Option<String> = store.conn.lock().unwrap().query_row(
+            "SELECT parent_id FROM work_note_pages WHERE tenant_id='tenant-a' AND page_id='root-a'", [], |row| row.get(0)).unwrap();
+        let child_parent: Option<String> = store.conn.lock().unwrap().query_row(
+            "SELECT parent_id FROM work_note_pages WHERE tenant_id='tenant-a' AND page_id='child-a'", [], |row| row.get(0)).unwrap();
+        assert_eq!(root_parent.as_deref(), Some("destination-a"));
+        assert_eq!(child_parent.as_deref(), Some("root-a"));
         drop(store);
         fs::remove_dir_all(directory).unwrap();
     }
