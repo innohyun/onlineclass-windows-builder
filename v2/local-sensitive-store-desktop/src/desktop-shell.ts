@@ -6,7 +6,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 const SHELL_HEIGHT = 56;
 const TEACHER_WEBVIEW_LABEL = "teacher-home";
 const TEACHER_HOME_URL = "https://t.classaimate.com/admin/";
-const TUTORIAL_KEY = "classaimateDesktopShellTutorial:v4";
+const TUTORIAL_KEY = "classaimateDesktopShellTutorial:v5";
 
 type ShellMode = "teacher" | "local";
 
@@ -212,7 +212,7 @@ export function initDesktopShell() {
     },
     {
       target: localButton,
-      text: "로컬 자료함은 SQLite 민감자료·업무노트·첨부와 읽기 전용 보드·과제 보관본을 한 번에 확인하는 공간입니다. OneDrive 기기 동기화는 이 자료와 보관본을 함께 검증해 학교·집 PC에 맞춥니다.",
+      text: "로컬 자료함은 같은 SQLite를 수업자료·업무자료·학생별 보기로 나눠 찾는 공간입니다. 분류 때문에 데이터나 백업이 복제되지는 않으며 OneDrive 기기 동기화는 원본과 읽기 전용 보관본을 함께 검증합니다.",
     },
   ];
 

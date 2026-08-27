@@ -2,6 +2,7 @@ use base64::{engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_
 use chrono::{DateTime, Utc};
 mod backup;
 mod backup_v4;
+mod backup_v5;
 mod cloud_sync;
 mod data_explorer;
 mod device_sync;
@@ -17,6 +18,7 @@ mod work_note_localization;
 mod work_note_reader;
 mod device_sync_conflicts;
 mod lesson_plan_bindings;
+mod local_workspaces;
 use rand::{distributions::Alphanumeric, Rng};
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, ToSql};
 use serde::{Deserialize, Serialize};
@@ -40,7 +42,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-08-26.5-lesson-plan-bindings";
+pub(crate) const SERVICE_VERSION: &str = "2026-08-27.1-local-vault-backup-v5";
 const WORK_MEETING_ROOT_PAGE_ID: &str = "classaimate:work-meeting-minutes";
 const WORK_MEETING_ROOT_TITLE: &str = "업무 회의록";
 const WORK_MEETING_ROOT_INTRO: &str = "모바일에서 확정한 업무 회의록이 자동으로 들어옵니다.";
@@ -6469,6 +6471,34 @@ fn get_backup_status(state: tauri::State<'_, AppState>, tenant_id: String) -> Va
 }
 
 #[tauri::command]
+fn get_backup_storage_overview(state: tauri::State<'_, AppState>, tenant_id: String) -> Value {
+    let Some(store) = state.store.lock().ok().and_then(|store| store.clone()) else {
+        return json!({ "ok": false, "error": "local_store_unavailable" });
+    };
+    backup::storage_overview(&store, tenant_id).unwrap_or_else(|error| json!({ "ok": false, "error": error }))
+}
+
+#[tauri::command]
+fn preview_legacy_backup_cleanup(state: tauri::State<'_, AppState>, tenant_id: String) -> Value {
+    let Some(store) = state.store.lock().ok().and_then(|store| store.clone()) else {
+        return json!({ "ok": false, "error": "local_store_unavailable" });
+    };
+    backup::preview_legacy_cleanup(&store, tenant_id).unwrap_or_else(|error| json!({ "ok": false, "error": error }))
+}
+
+#[tauri::command]
+fn apply_legacy_backup_cleanup(
+    state: tauri::State<'_, AppState>,
+    tenant_id: String,
+    preview_token: String,
+) -> Value {
+    let Some(store) = state.store.lock().ok().and_then(|store| store.clone()) else {
+        return json!({ "ok": false, "error": "local_store_unavailable" });
+    };
+    backup::apply_legacy_cleanup(&store, tenant_id, preview_token).unwrap_or_else(|error| json!({ "ok": false, "error": error }))
+}
+
+#[tauri::command]
 fn set_backup_folder(state: tauri::State<'_, AppState>, tenant_id: String, folder_path: String) -> Value {
     state
         .store
@@ -7096,6 +7126,9 @@ pub fn run() {
             set_desktop_preference,
             run_cloud_sync,
             get_backup_status,
+            get_backup_storage_overview,
+            preview_legacy_backup_cleanup,
+            apply_legacy_backup_cleanup,
             set_backup_folder,
             run_local_backup,
             discover_backup_tenants,
@@ -7108,6 +7141,9 @@ pub fn run() {
             data_explorer::search_local_data,
             data_explorer::open_local_data_attachment,
             data_explorer::open_local_data_directory,
+            local_workspaces::get_local_workspace_tree,
+            local_workspaces::get_local_workspace_page,
+            local_workspaces::search_local_workspace,
             work_note_reader::get_local_work_note_view,
             device_sync_conflicts::list_device_sync_conflicts,
             device_sync_conflicts::get_device_sync_conflict,

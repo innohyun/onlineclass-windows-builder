@@ -102,3 +102,27 @@ export type CommandResult = {
   ok: boolean;
   error?: string;
 };
+
+export type BackupStorageOverview = {
+  ok: boolean;
+  snapshotVersion?: number;
+  currentOriginalBytes?: number;
+  currentOriginalCount?: number;
+  uniqueObjectCount?: number;
+  uniqueObjectBytes?: number;
+  databaseHistoryBytes?: number;
+  legacySnapshotCount?: number;
+  legacySnapshotBytes?: number;
+  legacyReclaimableBytes?: number;
+  legacyCleanupCandidateCount?: number;
+  largestFiles?: Array<{ kind?: string; name?: string; localPath?: string; bytes?: number }>;
+  error?: string;
+};
+
+export type LegacyCleanupPreview = {
+  ok: boolean;
+  previewToken?: string;
+  candidateCount?: number;
+  reclaimableBytes?: number;
+  error?: string;
+};

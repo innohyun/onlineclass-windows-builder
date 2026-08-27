@@ -6,7 +6,7 @@ use std::fs;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -37,7 +37,7 @@ pub(crate) struct LocalSyncState {
     pub(crate) conflict_lifetime_count: i64,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct ArtifactDigest {
     pub(crate) relative_path: String,
     pub(crate) size: u64,
@@ -1346,8 +1346,89 @@ pub(crate) fn status(store: &SqliteStore, tenant_id: String) -> Result<Value, St
         "latestBackup": latest_backup,
         "backups": backups,
         "securityMode": "plain_warning",
-        "mediaMode": "separate_folder_mirror"
+        "mediaMode": "content_addressed_objects_v5"
     }))
+}
+
+fn configured_tenant_dir(store: &SqliteStore, tenant_id: &str) -> Result<PathBuf, String> {
+    let config = read_config(store);
+    let root_text = config
+        .get("tenants")
+        .and_then(|tenants| tenants.get(tenant_id))
+        .and_then(|tenant| tenant.get("backupRootDir"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if root_text.trim().is_empty() { return Err("backup_not_configured".to_string()); }
+    Ok(tenant_backup_dir(&assert_backup_root_allowed(store, backup_root_dir(root_text))?, tenant_id))
+}
+
+fn pinned_sync_generations(store: &SqliteStore, tenant_id: &str) -> Result<HashSet<i64>, String> {
+    let conn = store.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
+    let values = conn.query_row(
+        "SELECT applied_generation,published_generation,latest_generation FROM local_store_device_sync_state WHERE tenant_id=?1",
+        params![tenant_id],
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?)),
+    ).unwrap_or((0, 0, 0));
+    Ok([values.0, values.1, values.2]
+        .into_iter()
+        .filter(|generation| *generation > 0)
+        .collect())
+}
+
+pub(crate) fn storage_overview(store: &SqliteStore, tenant_id: String) -> Result<Value, String> {
+    let tenant_id = normalize_tenant_id(Some(&Value::String(tenant_id)));
+    if tenant_id.is_empty() { return Err("tenant_id_required".to_string()); }
+    let tenant_dir = configured_tenant_dir(store, &tenant_id)?;
+    let scan = crate::backup_v5::scan_storage(&tenant_dir);
+    let preview = crate::backup_v5::legacy_cleanup_preview(&tenant_dir, &pinned_sync_generations(store, &tenant_id)?);
+    let mut current_files = HashMap::<String, Value>::new();
+    for row in list_media_rows(store, &tenant_id)? {
+        current_files.entry(row.local_path.clone()).or_insert_with(|| json!({
+            "kind": "게시판 첨부", "name": row.file_name, "localPath": row.local_path, "bytes": row.size.max(0)
+        }));
+    }
+    for row in list_work_note_attachment_rows(store, &tenant_id)? {
+        current_files.entry(row.local_path.clone()).or_insert_with(|| json!({
+            "kind": "자료 첨부", "name": row.file_name, "localPath": row.local_path, "bytes": row.size.max(0)
+        }));
+    }
+    let current_original_count = current_files.len();
+    let current_original_bytes = current_files.values().map(|item| item.get("bytes").and_then(Value::as_i64).unwrap_or(0)).sum::<i64>();
+    let mut largest_files = current_files.into_values().filter(|item| item.get("bytes").and_then(Value::as_i64).unwrap_or(0) >= 100 * 1024 * 1024).collect::<Vec<_>>();
+    largest_files.sort_by(|left, right| right.get("bytes").and_then(Value::as_i64).unwrap_or(0).cmp(&left.get("bytes").and_then(Value::as_i64).unwrap_or(0)));
+    largest_files.truncate(10);
+    Ok(json!({
+        "ok": true,
+        "tenantId": tenant_id,
+        "snapshotVersion": crate::backup_v5::SNAPSHOT_VERSION,
+        "currentOriginalBytes": current_original_bytes,
+        "currentOriginalCount": current_original_count,
+        "uniqueObjectCount": scan.object_count,
+        "uniqueObjectBytes": scan.object_bytes,
+        "databaseHistoryBytes": scan.database_history_bytes,
+        "legacySnapshotCount": scan.legacy_snapshot_count,
+        "legacySnapshotBytes": scan.legacy_snapshot_bytes,
+        "legacyReclaimableBytes": preview.get("reclaimableBytes").cloned().unwrap_or(json!(0)),
+        "legacyCleanupCandidateCount": preview.get("candidateCount").cloned().unwrap_or(json!(0)),
+        "largeFileThresholdBytes": 100 * 1024 * 1024,
+        "largestFiles": largest_files,
+        "retention": { "recent": 10, "dailyDays": 30, "monthlyMonths": 12, "preRestore": 5, "manual": "explicit_delete_only" }
+    }))
+}
+
+pub(crate) fn preview_legacy_cleanup(store: &SqliteStore, tenant_id: String) -> Result<Value, String> {
+    let tenant_id = normalize_tenant_id(Some(&Value::String(tenant_id)));
+    if tenant_id.is_empty() { return Err("tenant_id_required".to_string()); }
+    let tenant_dir = configured_tenant_dir(store, &tenant_id)?;
+    Ok(crate::backup_v5::legacy_cleanup_preview(&tenant_dir, &pinned_sync_generations(store, &tenant_id)?))
+}
+
+pub(crate) fn apply_legacy_cleanup(store: &SqliteStore, tenant_id: String, preview_token: String) -> Result<Value, String> {
+    let tenant_id = normalize_tenant_id(Some(&Value::String(tenant_id)));
+    if tenant_id.is_empty() { return Err("tenant_id_required".to_string()); }
+    if preview_token.len() != 64 { return Err("backup_legacy_cleanup_preview_required".to_string()); }
+    let tenant_dir = configured_tenant_dir(store, &tenant_id)?;
+    crate::backup_v5::apply_legacy_cleanup(&tenant_dir, &pinned_sync_generations(store, &tenant_id)?, &preview_token)
 }
 
 fn manifest_paths_in_dir(dir: &Path) -> Result<Vec<PathBuf>, String> {
@@ -1639,6 +1720,22 @@ pub(crate) fn run_with_kind(
     kind: &str,
     generation: Option<i64>,
 ) -> Result<Value, String> {
+    run_with_kind_version(
+        store,
+        tenant_id,
+        kind,
+        generation,
+        crate::backup_v5::SNAPSHOT_VERSION,
+    )
+}
+
+pub(crate) fn run_with_kind_version(
+    store: &SqliteStore,
+    tenant_id: String,
+    kind: &str,
+    generation: Option<i64>,
+    snapshot_version: i64,
+) -> Result<Value, String> {
     let tenant_id = normalize_tenant_id(Some(&Value::String(tenant_id)));
     if tenant_id.is_empty() {
         return Err("tenant_id_required".to_string());
@@ -1648,6 +1745,9 @@ pub(crate) fn run_with_kind(
     }
     if generation.is_some_and(|value| value < 1) {
         return Err("backup_generation_invalid".to_string());
+    }
+    if !matches!(snapshot_version, 4 | 5) {
+        return Err("backup_snapshot_version_invalid".to_string());
     }
     let config = read_config(store);
     let root_text = config
@@ -1666,8 +1766,10 @@ pub(crate) fn run_with_kind(
     let snapshot_dir = snapshots_dir.join(&backup_id);
     if staging_dir.exists() { fs::remove_dir_all(&staging_dir).map_err(|e| format!("backup_staging_cleanup_failed:{e}"))?; }
     fs::create_dir_all(staging_dir.join("db")).map_err(|e| format!("backup_dir_failed:{e}"))?;
-    fs::create_dir_all(staging_dir.join("board-media")).map_err(|e| format!("backup_media_dir_failed:{e}"))?;
-    fs::create_dir_all(staging_dir.join("work-note-attachments")).map_err(|e| format!("backup_work_note_attachment_dir_failed:{e}"))?;
+    if snapshot_version == 4 {
+        fs::create_dir_all(staging_dir.join("board-media")).map_err(|e| format!("backup_media_dir_failed:{e}"))?;
+        fs::create_dir_all(staging_dir.join("work-note-attachments")).map_err(|e| format!("backup_work_note_attachment_dir_failed:{e}"))?;
+    }
     let sync = match generation {
         Some(value) => sync_manifest(store, &tenant_id, value)?,
         None => Value::Null,
@@ -1681,6 +1783,9 @@ pub(crate) fn run_with_kind(
         size: database_size,
         sha256: database_sha256.clone(),
     }];
+    let mut artifact_paths = HashSet::from([
+        db_relative_path.to_string_lossy().replace('\\', "/"),
+    ]);
 
     let media_rows = list_media_rows(store, &tenant_id)?;
     let mut media_records = Vec::new();
@@ -1691,29 +1796,35 @@ pub(crate) fn run_with_kind(
     let mut bytes = 0i64;
     for row in media_rows {
         let ext = media_extension(&row);
-        let backup_relative_path = PathBuf::from("board-media")
+        let legacy_relative_path = PathBuf::from("board-media")
             .join(&backup_id)
             .join(safe_segment(&row.board_id, "board"))
             .join(format!("{}.{}", safe_segment(&row.media_id, "media"), ext));
         let source_path = store.data_dir.join(&row.local_path);
-        let target_path = staging_dir.join(&backup_relative_path);
         let mut status = "copied";
+        let mut artifact = None;
         match fs::metadata(&source_path) {
             Ok(source_meta) => {
-                if let Some(parent) = target_path.parent() {
-                    fs::create_dir_all(parent).map_err(|e| format!("backup_media_target_dir_failed:{e}"))?;
-                }
-                let same = fs::metadata(&target_path)
-                    .map(|target_meta| target_meta.len() == source_meta.len())
-                    .unwrap_or(false);
-                if same {
-                    skipped += 1;
-                    status = "skipped";
-                } else if let Err(_) = fs::copy(&source_path, &target_path) {
-                    failed += 1;
-                    status = "failed";
+                if snapshot_version == crate::backup_v5::SNAPSHOT_VERSION {
+                    match crate::backup_v5::put_object(&out_dir, &source_path, &backup_id) {
+                        Ok(object) => {
+                            if object.created { copied += 1; } else { skipped += 1; status = "skipped"; }
+                            artifact = Some(object.artifact);
+                        }
+                        Err(_) => { failed += 1; status = "failed"; }
+                    }
                 } else {
-                    copied += 1;
+                    let target_path = staging_dir.join(&legacy_relative_path);
+                    if let Some(parent) = target_path.parent() {
+                        fs::create_dir_all(parent).map_err(|e| format!("backup_media_target_dir_failed:{e}"))?;
+                    }
+                    if fs::copy(&source_path, &target_path).is_err() {
+                        failed += 1; status = "failed";
+                    } else {
+                        copied += 1;
+                        let digest = sha256_file(&target_path)?;
+                        artifact = Some(ArtifactDigest { relative_path: legacy_relative_path.to_string_lossy().replace('\\', "/"), size: digest.0, sha256: digest.1 });
+                    }
                 }
                 bytes += source_meta.len() as i64;
             }
@@ -1722,21 +1833,19 @@ pub(crate) fn run_with_kind(
                 status = "missing";
             }
         }
-        let (artifact_size, artifact_sha256) = if matches!(status, "copied" | "skipped") {
-            let digest = sha256_file(&target_path)?;
-            artifacts.push(ArtifactDigest {
-                relative_path: backup_relative_path.to_string_lossy().replace('\\', "/"),
-                size: digest.0,
-                sha256: digest.1.clone(),
-            });
-            (digest.0 as i64, digest.1)
-        } else { (0, String::new()) };
+        let (backup_relative_path, artifact_size, artifact_sha256) = if let Some(artifact) = artifact {
+            let relative = artifact.relative_path.clone();
+            let size = artifact.size as i64;
+            let sha256 = artifact.sha256.clone();
+            if artifact_paths.insert(relative.clone()) { artifacts.push(artifact); }
+            (relative, size, sha256)
+        } else { (legacy_relative_path.to_string_lossy().replace('\\', "/"), 0, String::new()) };
         media_records.push(json!({
             "boardId": row.board_id,
             "postId": row.post_id,
             "mediaId": row.media_id,
             "localPath": row.local_path,
-            "backupRelativePath": backup_relative_path.to_string_lossy().replace('\\', "/"),
+            "backupRelativePath": backup_relative_path,
             "contentType": row.content_type,
             "fileName": row.file_name,
             "size": if artifact_size > 0 { artifact_size } else { row.size },
@@ -1754,27 +1863,35 @@ pub(crate) fn run_with_kind(
     let mut attachments_failed = 0i64;
     let mut attachment_bytes = 0i64;
     for row in attachment_rows {
-        let backup_relative_path = PathBuf::from("work-note-attachments")
+        let legacy_relative_path = PathBuf::from("work-note-attachments")
             .join(&backup_id)
             .join(safe_segment(&row.attachment_id, "attachment"))
             .join(safe_segment(&row.file_name, "attachment.bin"));
         let source_path = store.data_dir.join(&row.local_path);
-        let target_path = staging_dir.join(&backup_relative_path);
         let mut status = "copied";
+        let mut artifact = None;
         match fs::metadata(&source_path) {
             Ok(source_meta) => {
-                if let Some(parent) = target_path.parent() {
-                    fs::create_dir_all(parent).map_err(|e| format!("backup_work_note_attachment_target_dir_failed:{e}"))?;
-                }
-                let same = fs::metadata(&target_path).map(|target| target.len() == source_meta.len()).unwrap_or(false);
-                if same {
-                    attachments_skipped += 1;
-                    status = "skipped";
-                } else if fs::copy(&source_path, &target_path).is_err() {
-                    attachments_failed += 1;
-                    status = "failed";
+                if snapshot_version == crate::backup_v5::SNAPSHOT_VERSION {
+                    match crate::backup_v5::put_object(&out_dir, &source_path, &backup_id) {
+                        Ok(object) => {
+                            if object.created { attachments_copied += 1; } else { attachments_skipped += 1; status = "skipped"; }
+                            artifact = Some(object.artifact);
+                        }
+                        Err(_) => { attachments_failed += 1; status = "failed"; }
+                    }
                 } else {
-                    attachments_copied += 1;
+                    let target_path = staging_dir.join(&legacy_relative_path);
+                    if let Some(parent) = target_path.parent() {
+                        fs::create_dir_all(parent).map_err(|e| format!("backup_work_note_attachment_target_dir_failed:{e}"))?;
+                    }
+                    if fs::copy(&source_path, &target_path).is_err() {
+                        attachments_failed += 1; status = "failed";
+                    } else {
+                        attachments_copied += 1;
+                        let digest = sha256_file(&target_path)?;
+                        artifact = Some(ArtifactDigest { relative_path: legacy_relative_path.to_string_lossy().replace('\\', "/"), size: digest.0, sha256: digest.1 });
+                    }
                 }
                 attachment_bytes += source_meta.len() as i64;
             }
@@ -1783,15 +1900,13 @@ pub(crate) fn run_with_kind(
                 status = "missing";
             }
         }
-        let (artifact_size, artifact_sha256) = if matches!(status, "copied" | "skipped") {
-            let digest = sha256_file(&target_path)?;
-            artifacts.push(ArtifactDigest {
-                relative_path: backup_relative_path.to_string_lossy().replace('\\', "/"),
-                size: digest.0,
-                sha256: digest.1.clone(),
-            });
-            (digest.0 as i64, digest.1)
-        } else { (0, String::new()) };
+        let (backup_relative_path, artifact_size, artifact_sha256) = if let Some(artifact) = artifact {
+            let relative = artifact.relative_path.clone();
+            let size = artifact.size as i64;
+            let sha256 = artifact.sha256.clone();
+            if artifact_paths.insert(relative.clone()) { artifacts.push(artifact); }
+            (relative, size, sha256)
+        } else { (legacy_relative_path.to_string_lossy().replace('\\', "/"), 0, String::new()) };
         attachment_records.push(json!({
             "attachmentId": row.attachment_id,
             "pageId": row.page_id,
@@ -1801,7 +1916,7 @@ pub(crate) fn run_with_kind(
             "size": if artifact_size > 0 { artifact_size } else { row.size },
             "sha256": if artifact_sha256.is_empty() { row.sha256 } else { artifact_sha256 },
             "localPath": row.local_path,
-            "backupRelativePath": backup_relative_path.to_string_lossy().replace('\\', "/"),
+            "backupRelativePath": backup_relative_path,
             "createdAtMs": row.created_at_ms,
             "updatedAtMs": row.updated_at_ms,
             "status": status
@@ -1845,7 +1960,7 @@ pub(crate) fn run_with_kind(
         "sha256": database_sha256
     });
     let media = json!({
-        "mode": "separate_folder_mirror",
+        "mode": if snapshot_version == 5 { "content_addressed_objects" } else { "separate_folder_mirror" },
         "copied": copied,
         "skipped": skipped,
         "missing": missing,
@@ -1854,7 +1969,7 @@ pub(crate) fn run_with_kind(
         "records": media_records
     });
     let work_note_attachments = json!({
-        "mode": "separate_folder_mirror",
+        "mode": if snapshot_version == 5 { "content_addressed_objects" } else { "separate_folder_mirror" },
         "copied": attachments_copied,
         "skipped": attachments_skipped,
         "missing": attachments_missing,
@@ -1887,7 +2002,7 @@ pub(crate) fn run_with_kind(
     let snapshot_ok = failed == 0 && missing == 0 && attachments_failed == 0 && attachments_missing == 0;
     let manifest = json!({
         "ok": snapshot_ok,
-        "version": 4,
+        "version": snapshot_version,
         "kind": kind,
         "generation": generation,
         "tenantId": tenant_id,
@@ -1954,7 +2069,17 @@ pub(crate) fn run_with_kind(
         "lastResult": result
     });
     write_config(store, config)?;
-    if kind == "auto_sync" { prune_auto_sync_snapshots(&out_dir, created_at_ms)?; }
+    if snapshot_version == crate::backup_v5::SNAPSHOT_VERSION {
+        crate::backup_v5::prune_snapshots(&out_dir, created_at_ms)?;
+        let references = artifacts
+            .iter()
+            .filter(|artifact| artifact.relative_path.starts_with("objects/sha256/"))
+            .map(|artifact| artifact.relative_path.clone())
+            .collect::<HashSet<_>>();
+        let _ = crate::backup_v5::quarantine_unreferenced_objects(&out_dir, &references, created_at_ms)?;
+    } else if kind == "auto_sync" {
+        prune_auto_sync_snapshots(&out_dir, created_at_ms)?;
+    }
     Ok(result)
 }
 
@@ -2052,7 +2177,9 @@ fn verify_snapshot_artifacts(
         let safe = safe_relative_path(relative).ok_or_else(|| "backup_artifact_path_invalid".to_string())?;
         let expected_size = artifact.get("size").and_then(Value::as_u64).ok_or_else(|| "backup_artifact_size_required".to_string())?;
         let expected_sha = artifact.get("sha256").and_then(Value::as_str).ok_or_else(|| "backup_artifact_hash_required".to_string())?;
-        let (size, sha256) = sha256_file(&base.join(safe))?;
+        let version = manifest.get("version").and_then(Value::as_i64).unwrap_or(0);
+        let artifact_path = crate::backup_v5::artifact_path(path, version, &safe)?;
+        let (size, sha256) = sha256_file(&artifact_path)?;
         if size != expected_size || sha256 != expected_sha { return Err("backup_artifact_digest_mismatch".to_string()); }
         verified.push(ArtifactDigest { relative_path: relative.to_string(), size, sha256 });
     }
@@ -2067,7 +2194,7 @@ fn verify_checkpoint_manifest_path(
 ) -> Result<Value, String> {
     let manifest = read_manifest(path)?;
     let version = manifest.get("version").and_then(Value::as_i64).unwrap_or(0);
-    if !matches!(version, 3 | 4)
+    if !matches!(version, 3 | 4 | 5)
         || manifest.get("tenantId").and_then(Value::as_str) != Some(tenant_id)
         || manifest.get("generation").and_then(Value::as_i64) != Some(expected_generation)
         || manifest.get("artifactSetSha256").and_then(Value::as_str) != Some(expected_root)
@@ -2081,7 +2208,7 @@ fn verify_checkpoint_manifest_path(
         Some(expected_generation),
         expected_root,
     )?;
-    let authoritative = if version == 4 {
+    let authoritative = if matches!(version, 4 | 5) {
         crate::backup_v4::verify_authoritative_index(
             path,
             &manifest,
@@ -2120,7 +2247,7 @@ pub(crate) fn find_and_verify_generation(
         };
         if !matches!(
             manifest.get("version").and_then(Value::as_i64),
-            Some(3) | Some(4)
+            Some(3) | Some(4) | Some(5)
         ) || manifest.get("generation").and_then(Value::as_i64) != Some(generation)
         {
             continue;
@@ -2149,7 +2276,7 @@ pub(crate) fn highest_local_generation(store: &SqliteStore, tenant_id: &str) -> 
         };
         if !matches!(
             manifest.get("version").and_then(Value::as_i64),
-            Some(3) | Some(4)
+            Some(3) | Some(4) | Some(5)
         ) {
             continue;
         }
@@ -2175,7 +2302,7 @@ fn authoritative_restore_manifest(
     manifest: &Value,
     tenant_id: &str,
 ) -> Result<Value, String> {
-    if manifest.get("version").and_then(Value::as_i64) != Some(4) {
+    if !matches!(manifest.get("version").and_then(Value::as_i64), Some(4) | Some(5)) {
         return Ok(manifest.clone());
     }
     if manifest.get("tenantId").and_then(Value::as_str) != Some(tenant_id) {

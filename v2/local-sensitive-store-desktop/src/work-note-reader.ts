@@ -3,12 +3,16 @@ import { invoke } from '@tauri-apps/api/core';
 type WorkNotePage = { pageId: string; parentId?: string | null; title: string; emoji: string; position: number; properties?: Record<string, unknown>; blocks?: Block[]; markdown?: string; updatedAtMs?: number };
 type WorkNoteAttachment = { attachmentId: string; mediaId: string; pageId: string; blockId: string; fileName: string; contentType: string; size: number };
 type WorkNoteView = { ok?: boolean; rootPageId?: string; selectedPageId?: string; pages?: WorkNotePage[]; attachments?: WorkNoteAttachment[]; error?: string };
+type LocalWorkspace = 'lesson_materials' | 'work_materials';
+type WorkspaceTree = { ok?: boolean; pages?: WorkNotePage[]; error?: string };
+type WorkspacePage = { ok?: boolean; page?: WorkNotePage; attachments?: WorkNoteAttachment[]; error?: string };
 type Block = Record<string, any>;
 
 let tenantId = '';
 let pages = new Map<string, WorkNotePage>();
 let attachments: WorkNoteAttachment[] = [];
 let currentPageId = '';
+let workspaceMode: LocalWorkspace | '' = '';
 const tutorialVersion = 'local-work-note-reader-v1';
 const tutorialSteps = [
   { target: 'workNoteReaderTree', title: '문서와 하위 문서', copy: '왼쪽에서 로컬로 옮긴 전체 문서 구조를 확인하고 페이지를 선택합니다.' },
@@ -182,19 +186,39 @@ function closeTutorial() { tutorialIndex = -1; document.querySelectorAll('.local
 export async function openWorkNoteReader(nextTenantId: string, pageId: string) {
   const result = await invoke<WorkNoteView>('get_local_work_note_view', { tenantId: nextTenantId, pageId });
   if (result?.ok === false) throw new Error(result.error || 'work_note_reader_failed');
-  tenantId = nextTenantId; pages = new Map((result.pages || []).map((page) => [page.pageId, page])); attachments = result.attachments || [];
+  workspaceMode = ''; tenantId = nextTenantId; pages = new Map((result.pages || []).map((page) => [page.pageId, page])); attachments = result.attachments || [];
   el('workNoteReader').hidden = false; renderPage(result.selectedPageId || result.rootPageId || pageId);
   if (localStorage.getItem(tutorialVersion) !== 'done') openTutorial();
 }
 
+async function loadWorkspacePage(pageId: string) {
+  if (!workspaceMode || !pageId) return;
+  el('workNoteReaderStatus').textContent = '선택한 원문과 첨부 정보를 불러오는 중입니다.';
+  const result = await invoke<WorkspacePage>('get_local_workspace_page', { tenantId, workspace: workspaceMode, pageId });
+  if (result?.ok === false || !result.page) throw new Error(result.error || 'local_workspace_page_failed');
+  pages.set(result.page.pageId, result.page); attachments = result.attachments || []; renderPage(result.page.pageId);
+  el('workNoteReaderStatus').textContent = '로컬 DB 원문 · 인터넷 없이 열람 가능 · 편집은 교사 홈에서 합니다.';
+}
+
+export async function openWorkspaceWorkNoteReader(nextTenantId: string, workspace: LocalWorkspace, requestedPageId = '') {
+  const result = await invoke<WorkspaceTree>('get_local_workspace_tree', { tenantId: nextTenantId, workspace });
+  if (result?.ok === false) throw new Error(result.error || 'local_workspace_tree_failed');
+  workspaceMode = workspace; tenantId = nextTenantId; pages = new Map((result.pages || []).map((page) => [page.pageId, page])); attachments = [];
+  const firstRoot = [...pages.values()].find((page) => !page.parentId) || [...pages.values()][0];
+  const pageId = requestedPageId && pages.has(requestedPageId) ? requestedPageId : firstRoot?.pageId || '';
+  if (!pageId) throw new Error('local_workspace_empty');
+  el('workNoteReader').hidden = false;
+  await loadWorkspacePage(pageId);
+}
+
 export function initWorkNoteReader() {
-  el('workNoteReaderClose').addEventListener('click', () => { el('workNoteReader').hidden = true; pages.clear(); attachments = []; closeTutorial(); });
+  el('workNoteReaderClose').addEventListener('click', () => { el('workNoteReader').hidden = true; pages.clear(); attachments = []; workspaceMode = ''; closeTutorial(); });
   el('workNoteReaderHelp').addEventListener('click', openTutorial);
   el('workNoteReaderTutorialClose').addEventListener('click', closeTutorial);
   el('workNoteReaderTutorialNext').addEventListener('click', () => { if (tutorialIndex >= tutorialSteps.length - 1) { localStorage.setItem(tutorialVersion, 'done'); closeTutorial(); } else { tutorialIndex += 1; renderTutorial(); } });
-  el('workNoteReaderTree').addEventListener('click', (event) => { const button = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-page-id]'); if (button?.dataset.pageId) renderPage(button.dataset.pageId); });
+  el('workNoteReaderTree').addEventListener('click', (event) => { const button = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-page-id]'); if (!button?.dataset.pageId) return; if (workspaceMode) void loadWorkspacePage(button.dataset.pageId).catch(() => { el('workNoteReaderStatus').textContent = '선택한 페이지를 불러오지 못했습니다.'; }); else renderPage(button.dataset.pageId); });
   el('workNoteReaderBody').addEventListener('click', (event) => {
-    const page = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-page-id]'); if (page?.dataset.pageId) { renderPage(page.dataset.pageId); return; }
+    const page = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-page-id]'); if (page?.dataset.pageId) { if (workspaceMode) void loadWorkspacePage(page.dataset.pageId); else renderPage(page.dataset.pageId); return; }
     const file = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-attachment-id]'); if (!file?.dataset.attachmentId) return; file.disabled = true;
     void invoke<{ ok?: boolean; error?: string }>('open_local_data_attachment', { tenantId, mediaId: file.dataset.attachmentId, attachmentKind: 'work-note' })
       .then((result) => { el('workNoteReaderStatus').textContent = result?.ok === false ? '첨부파일을 열지 못했습니다.' : '첨부파일을 이 PC의 기본 프로그램으로 열었습니다.'; })

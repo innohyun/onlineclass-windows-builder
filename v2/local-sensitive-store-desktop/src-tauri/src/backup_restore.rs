@@ -137,7 +137,11 @@ fn stage_restore_media(
         let Some(local_path) = safe_relative_path(&local_path_text) else {
             continue;
         };
-        let source_path = manifest_path.parent().unwrap_or_else(|| Path::new(".")).join(backup_relative_path);
+        let source_path = crate::backup_v5::artifact_path(
+            manifest_path,
+            manifest.get("version").and_then(Value::as_i64).unwrap_or(0),
+            &backup_relative_path,
+        )?;
         if !source_path.is_file() {
             media_missing += 1;
             continue;
@@ -188,7 +192,11 @@ fn stage_restore_media(
         { continue; }
         let Some(backup_relative_path) = safe_relative_path(&backup_relative) else { continue; };
         let Some(local_path) = safe_relative_path(&local_path_text) else { continue; };
-        let source_path = manifest_path.parent().unwrap_or_else(|| Path::new(".")).join(backup_relative_path);
+        let source_path = crate::backup_v5::artifact_path(
+            manifest_path,
+            manifest.get("version").and_then(Value::as_i64).unwrap_or(0),
+            &backup_relative_path,
+        )?;
         if !source_path.is_file() { attachment_missing += 1; continue; }
         let staged_path = staged_dir.join(format!("attachment-{index}-{}", safe_segment(&attachment_id, "attachment")));
         if let Some(parent) = staged_path.parent() { fs::create_dir_all(parent).map_err(|e| format!("restore_work_note_attachment_stage_dir_failed:{e}"))?; }
@@ -685,7 +693,7 @@ pub(super) fn restore_generation(
     let manifest = read_manifest(manifest_path)?;
     if !matches!(
         manifest.get("version").and_then(Value::as_i64),
-        Some(3) | Some(4)
+        Some(3) | Some(4) | Some(5)
     ) || manifest.get("tenantId").and_then(Value::as_str) != Some(tenant_id)
         || generation < 1
     {
@@ -1278,7 +1286,7 @@ mod tests {
             .expect("create generation snapshot");
         let manifest_path = PathBuf::from(snapshot["manifestPath"].as_str().expect("manifest path"));
         let manifest = read_manifest(&manifest_path).expect("read manifest");
-        assert_eq!(manifest["version"], 4);
+        assert_eq!(manifest["version"], 5);
         assert_eq!(
             manifest["applyIndex"]["relativePath"],
             "meta/apply-index.json"
@@ -1306,7 +1314,7 @@ mod tests {
     }
 
     #[test]
-    fn v4_ignores_unsealed_presentation_sync_and_rejects_tampered_apply_index() {
+    fn authoritative_index_ignores_unsealed_presentation_sync_and_rejects_tampering() {
         let (base, backup_root, store) = test_store();
         set_folder(
             &store,

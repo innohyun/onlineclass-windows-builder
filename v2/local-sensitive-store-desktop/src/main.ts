@@ -15,6 +15,7 @@ import "./local-reader-tutorial.css";
 import "./health-dashboard.css";
 import "./settings-dashboard.css";
 import "./desktop-shell.css";
+import "./local-workspaces.css";
 import { initSharedArchive } from "./shared-archive";
 import { initHomeDashboard, loadHomeOverview, renderHomeStatus } from "./home-dashboard";
 import { createDeviceAuthorizationController, type DeviceAuthorizationResult } from "./device-authorization";
@@ -31,6 +32,8 @@ import { initSettingsDashboard, renderSettingsDashboard } from "./settings-dashb
 import { initSettingsDashboardPreview } from "./settings-dashboard-preview";
 import { loadDeviceSyncStatus, renderDeviceSyncStatus, runDeviceSyncNow } from "./device-sync-ui";
 import { initDesktopShell } from "./desktop-shell";
+import { initLocalWorkspaces } from "./local-workspaces";
+import { initBackupStorage } from "./backup-storage";
 import type { BackupDiscovery, BackupItem, BackupPreview, BackupSource, BackupStatus, CommandResult } from "./backup-types";
 
 declare const __APP_VERSION__: string;
@@ -142,6 +145,7 @@ function numberText(value?: number) {
 function numeric(value?: number) {
   return Number(value || 0) || 0;
 }
+
 
 function actionButtons(action: ActionName) {
   return Array.from(document.querySelectorAll<HTMLButtonElement>(`button[data-action="${action}"]`));
@@ -888,6 +892,7 @@ async function loadBackupStatus() {
     selectedBackupManifestPath = "";
     backupPreview = null;
     renderBackupStatus({ ok: true, configured: false });
+    backupStorage.clear();
     return;
   }
   const status = await invoke<BackupStatus>("get_backup_status", { tenantId });
@@ -895,6 +900,7 @@ async function loadBackupStatus() {
     backupList = normalizeBackupList(status.backups || (status.latestBackup ? [status.latestBackup] : []));
   });
   renderBackupStatus(status);
+  await backupStorage.refresh();
   if (selectedBackupManifestPath) {
     void loadBackupPreview(selectedBackupManifestPath);
   }
@@ -906,6 +912,7 @@ function renderBackupLoadError(error: unknown) {
   selectedBackupManifestPath = "";
   backupPreview = null;
   renderBackupStatus({ ok: false, configured: false, error: backupLoadError });
+  backupStorage.error(backupLoadError);
 }
 
 function applyBackupDiscovery(discovery: BackupDiscovery, selectedFolder: string) {
@@ -1177,8 +1184,14 @@ initWorkNoteReader();
 const dataExplorer = initDataExplorer({ getTenantId: currentBackupTenantId });
 initDeviceSyncConflicts({ getTenantId: currentBackupTenantId });
 const studentTimeline = initStudentTimeline({ getTenantId: currentBackupTenantId });
+const localWorkspaces = initLocalWorkspaces({ getTenantId: currentBackupTenantId });
+const backupStorage = initBackupStorage({
+  getTenantId: currentBackupTenantId,
+  isConfigured: () => designPreview === "backup" || backupSnapshot?.configured === true,
+});
 initHomeDashboard({
   onViewChange(view, context) {
+    if (view === "lesson-materials" || view === "work-materials") void localWorkspaces.open(view);
     if (view === "data") void dataExplorer.open({ group: context.group, sectionKey: context.sectionKey, hasAttachment: context.attachment });
     if (view === "students") void studentTimeline.open();
   },
@@ -1198,11 +1211,14 @@ if (designPreview === "auth") {
   deviceAuthorization.render({ ok: true, status: "pending", expiresAtMs: Date.now() + 10 * 60 * 1000 });
 } else if (designPreview === "data") {
   document.querySelector<HTMLButtonElement>('.sidebar-link[data-app-view-target="data"]')?.click();
+} else if (designPreview === "lesson-materials" || designPreview === "work-materials") {
+  document.querySelector<HTMLButtonElement>(`.sidebar-link[data-app-view-target="${designPreview}"]`)?.click();
 } else if (designPreview === "students") {
   document.querySelector<HTMLButtonElement>('.sidebar-link[data-app-view-target="students"]')?.click();
 } else if (designPreview === "backup") {
   document.querySelector<HTMLButtonElement>('.sidebar-link[data-app-view-target="backup"]')?.click();
   initBackupRestorePreview();
+  void backupStorage.refresh();
 } else if (designPreview === "archive") {
   document.querySelector<HTMLButtonElement>('.sidebar-link[data-app-view-target="archive"]')?.click();
 } else if (designPreview === "health") {

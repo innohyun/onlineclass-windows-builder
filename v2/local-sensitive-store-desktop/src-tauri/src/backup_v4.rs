@@ -66,7 +66,8 @@ pub(crate) fn write_apply_index(
 }
 
 pub(crate) fn projection(manifest_path: &Path, manifest: &Value) -> Result<Value, String> {
-    if manifest.get("version").and_then(Value::as_i64) != Some(4) {
+    let version = manifest.get("version").and_then(Value::as_i64).unwrap_or(0);
+    if !matches!(version, 4 | 5) {
         return Ok(manifest.clone());
     }
     let relative = manifest
@@ -85,7 +86,7 @@ pub(crate) fn projection(manifest_path: &Path, manifest: &Value) -> Result<Value
         return Err("backup_apply_index_manifest_mismatch".to_string());
     }
     Ok(json!({
-        "version": 4,
+        "version": version,
         "tenantId": index.get("tenantId").cloned().unwrap_or(Value::Null),
         "generation": index.get("generation").cloned().unwrap_or(Value::Null),
         "db": index.get("database").cloned().unwrap_or(Value::Null),
@@ -160,6 +161,7 @@ fn require_artifact(
 fn verify_mapped_files(
     artifacts: &HashMap<String, (u64, String)>,
     records: &Value,
+    allow_shared_paths: bool,
 ) -> Result<(), String> {
     let records = records
         .get("records")
@@ -175,7 +177,7 @@ fn verify_mapped_files(
             .get("backupRelativePath")
             .and_then(Value::as_str)
             .ok_or_else(|| "backup_apply_artifact_path_required".to_string())?;
-        if !paths.insert(relative.to_string()) {
+        if !allow_shared_paths && !paths.insert(relative.to_string()) {
             return Err("backup_apply_artifact_path_duplicate".to_string());
         }
         require_artifact(artifacts, record, "backupRelativePath")?;
@@ -204,8 +206,9 @@ pub(crate) fn verify_authoritative_index(
         return Err("backup_apply_index_checkpoint_mismatch".to_string());
     }
     require_artifact(&artifacts, &authoritative["db"], "relativePath")?;
-    verify_mapped_files(&artifacts, &authoritative["media"])?;
-    verify_mapped_files(&artifacts, &authoritative["workNoteAttachments"])?;
+    let allow_shared_paths = manifest.get("version").and_then(Value::as_i64) == Some(5);
+    verify_mapped_files(&artifacts, &authoritative["media"], allow_shared_paths)?;
+    verify_mapped_files(&artifacts, &authoritative["workNoteAttachments"], allow_shared_paths)?;
     if generation.is_some() {
         let sync = authoritative
             .get("sync")
@@ -237,7 +240,7 @@ pub(crate) fn apply_archives(
     authoritative: &Value,
     tenant_id: &str,
 ) -> Result<Value, String> {
-    if authoritative.get("version").and_then(Value::as_i64) != Some(4) {
+    if !matches!(authoritative.get("version").and_then(Value::as_i64), Some(4) | Some(5)) {
         return Ok(json!({
             "ok": true,
             "archiveImported": 0,

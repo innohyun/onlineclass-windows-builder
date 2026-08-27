@@ -17,6 +17,7 @@ const IDLE_PUBLISH_MS: i64 = 30 * 1000;
 const MAX_DIRTY_MS: i64 = 5 * 60 * 1000;
 const SAFETY_CHECK_MS: i64 = 6 * 60 * 60 * 1000;
 const BACKGROUND_TICK_SECS: u64 = 15;
+const SNAPSHOT_FORMAT_MAX: i64 = 5;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -182,6 +183,7 @@ impl DeviceSyncManager {
                 .get(&format!("{}{path}", api_root()))
                 .set("Authorization", &format!("Bearer {credential}"))
                 .set("X-Local-Store-Device-Id", &session.device_id)
+                .set("X-Local-Store-Snapshot-Max", &SNAPSHOT_FORMAT_MAX.to_string())
                 .call(),
         )
     }
@@ -198,6 +200,7 @@ impl DeviceSyncManager {
                 .post(&format!("{}{path}", api_root()))
                 .set("Authorization", &format!("Bearer {credential}"))
                 .set("X-Local-Store-Device-Id", &session.device_id)
+                .set("X-Local-Store-Snapshot-Max", &SNAPSHOT_FORMAT_MAX.to_string())
                 .send_json(body),
         )
     }
@@ -213,6 +216,7 @@ impl DeviceSyncManager {
                 .delete(&format!("{}{path}", api_root()))
                 .set("Authorization", &format!("Bearer {credential}"))
                 .set("X-Local-Store-Device-Id", &session.device_id)
+                .set("X-Local-Store-Snapshot-Max", &SNAPSHOT_FORMAT_MAX.to_string())
                 .call(),
         )
     }
@@ -221,12 +225,15 @@ impl DeviceSyncManager {
         &self,
         session: &DeviceSyncSession,
         credential: &str,
-    ) -> Result<Option<Value>, String> {
+    ) -> Result<(Option<Value>, i64), String> {
         let data = self.authorized_get(session, credential, "/checkpoints/latest")?;
-        Ok(data
-            .get("checkpoint")
-            .cloned()
-            .filter(|value| !value.is_null()))
+        let checkpoint = data.get("checkpoint").cloned().filter(|value| !value.is_null());
+        let snapshot_version = data
+            .pointer("/snapshotPolicy/maxWritableSnapshotVersion")
+            .and_then(Value::as_i64)
+            .unwrap_or(4)
+            .clamp(4, SNAPSHOT_FORMAT_MAX);
+        Ok((checkpoint, snapshot_version))
     }
 
     fn verified_snapshot(
@@ -387,6 +394,7 @@ impl DeviceSyncManager {
         credential: &str,
         base_generation: i64,
         latest_status: &str,
+        snapshot_version: i64,
     ) -> Result<(), String> {
         let content_sha256 = backup::tenant_content_sha256(&self.store, &session.tenant_id)?;
         let state = backup::local_sync_state(&self.store, &session.tenant_id)?;
@@ -395,11 +403,12 @@ impl DeviceSyncManager {
             return Ok(());
         }
         let generation = base_generation + 1;
-        let snapshot = backup::run_with_kind(
+        let snapshot = backup::run_with_kind_version(
             &self.store,
             session.tenant_id.clone(),
             "auto_sync",
             Some(generation),
+            snapshot_version,
         )?;
         if snapshot.get("ok").and_then(Value::as_bool) != Some(true) {
             return Err("device_sync_snapshot_incomplete".to_string());
@@ -420,6 +429,7 @@ impl DeviceSyncManager {
                 "baseGeneration": base_generation,
                 "artifactSetSha256": artifact_root,
                 "databaseSha256": database_sha256,
+                "snapshotVersion": snapshot_version,
             }),
         )?;
         let manifest_path = Path::new(
@@ -448,7 +458,7 @@ impl DeviceSyncManager {
         };
         let credential = self.credential(&session)?;
         let _ = backup::auto_configure_onedrive(&self.store, &session.tenant_id)?;
-        let mut latest = self.latest_checkpoint(&session, &credential)?;
+        let (mut latest, mut snapshot_version) = self.latest_checkpoint(&session, &credential)?;
         backup::mark_sync_latest(
             &self.store,
             &session.tenant_id,
@@ -467,10 +477,10 @@ impl DeviceSyncManager {
         if publish_due {
             let base_generation = checkpoint_generation(latest.as_ref());
             let status = checkpoint_status(latest.as_ref());
-            match self.publish(&session, &credential, base_generation, &status) {
+            match self.publish(&session, &credential, base_generation, &status, snapshot_version) {
                 Ok(()) => {}
                 Err(error) if error.starts_with("device_sync_http_409:") => {
-                    latest = self.latest_checkpoint(&session, &credential)?;
+                    (latest, snapshot_version) = self.latest_checkpoint(&session, &credential)?;
                     if let Some(checkpoint) = latest.as_ref() {
                         self.apply_checkpoint(&session, &credential, checkpoint)?;
                     }
@@ -481,6 +491,7 @@ impl DeviceSyncManager {
                             &credential,
                             checkpoint_generation(latest.as_ref()),
                             &checkpoint_status(latest.as_ref()),
+                            snapshot_version,
                         )?;
                     }
                 }
