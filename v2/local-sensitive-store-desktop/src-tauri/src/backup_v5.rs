@@ -474,6 +474,22 @@ fn legacy_cleanup_candidates(
         .collect()
 }
 
+pub(crate) fn legacy_cleanup_summary(
+    tenant_dir: &Path,
+    pinned_generations: &HashSet<i64>,
+) -> Value {
+    let candidates = legacy_cleanup_candidates(tenant_dir, pinned_generations);
+    let reclaimable_bytes = candidates
+        .iter()
+        .map(|(manifest, _, _)| manifest.parent().map(directory_size).unwrap_or(0))
+        .sum::<i64>();
+    json!({
+        "ok": true,
+        "candidateCount": candidates.len(),
+        "reclaimableBytes": reclaimable_bytes
+    })
+}
+
 pub(crate) fn legacy_cleanup_preview(
     tenant_dir: &Path,
     pinned_generations: &HashSet<i64>,

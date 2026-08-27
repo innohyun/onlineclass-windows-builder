@@ -900,7 +900,6 @@ async function loadBackupStatus() {
     backupList = normalizeBackupList(status.backups || (status.latestBackup ? [status.latestBackup] : []));
   });
   renderBackupStatus(status);
-  await backupStorage.refresh();
   if (selectedBackupManifestPath) {
     void loadBackupPreview(selectedBackupManifestPath);
   }
@@ -1194,6 +1193,7 @@ initHomeDashboard({
     if (view === "lesson-materials" || view === "work-materials") void localWorkspaces.open(view);
     if (view === "data") void dataExplorer.open({ group: context.group, sectionKey: context.sectionKey, hasAttachment: context.attachment });
     if (view === "students") void studentTimeline.open();
+    if (view === "backup") void backupStorage.refresh();
   },
   onSearch(query) {
     void dataExplorer.open({ query });

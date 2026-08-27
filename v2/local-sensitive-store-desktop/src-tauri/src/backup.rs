@@ -1380,7 +1380,7 @@ pub(crate) fn storage_overview(store: &SqliteStore, tenant_id: String) -> Result
     if tenant_id.is_empty() { return Err("tenant_id_required".to_string()); }
     let tenant_dir = configured_tenant_dir(store, &tenant_id)?;
     let scan = crate::backup_v5::scan_storage(&tenant_dir);
-    let preview = crate::backup_v5::legacy_cleanup_preview(&tenant_dir, &pinned_sync_generations(store, &tenant_id)?);
+    let cleanup = crate::backup_v5::legacy_cleanup_summary(&tenant_dir, &pinned_sync_generations(store, &tenant_id)?);
     let mut current_files = HashMap::<String, Value>::new();
     for row in list_media_rows(store, &tenant_id)? {
         current_files.entry(row.local_path.clone()).or_insert_with(|| json!({
@@ -1408,8 +1408,8 @@ pub(crate) fn storage_overview(store: &SqliteStore, tenant_id: String) -> Result
         "databaseHistoryBytes": scan.database_history_bytes,
         "legacySnapshotCount": scan.legacy_snapshot_count,
         "legacySnapshotBytes": scan.legacy_snapshot_bytes,
-        "legacyReclaimableBytes": preview.get("reclaimableBytes").cloned().unwrap_or(json!(0)),
-        "legacyCleanupCandidateCount": preview.get("candidateCount").cloned().unwrap_or(json!(0)),
+        "legacyReclaimableBytes": cleanup.get("reclaimableBytes").cloned().unwrap_or(json!(0)),
+        "legacyCleanupCandidateCount": cleanup.get("candidateCount").cloned().unwrap_or(json!(0)),
         "largeFileThresholdBytes": 100 * 1024 * 1024,
         "largestFiles": largest_files,
         "retention": { "recent": 10, "dailyDays": 30, "monthlyMonths": 12, "preRestore": 5, "manual": "explicit_delete_only" }

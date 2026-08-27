@@ -42,7 +42,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-08-27.1-local-vault-backup-v5";
+pub(crate) const SERVICE_VERSION: &str = "2026-08-27.2-backup-scan-responsive";
 const WORK_MEETING_ROOT_PAGE_ID: &str = "classaimate:work-meeting-minutes";
 const WORK_MEETING_ROOT_TITLE: &str = "업무 회의록";
 const WORK_MEETING_ROOT_INTRO: &str = "모바일에서 확정한 업무 회의록이 자동으로 들어옵니다.";
@@ -6460,42 +6460,64 @@ fn run_cloud_sync(state: tauri::State<'_, AppState>) -> Value {
 }
 
 #[tauri::command]
-fn get_backup_status(state: tauri::State<'_, AppState>, tenant_id: String) -> Value {
-    state
-        .store
-        .lock()
-        .ok()
-        .and_then(|store| store.clone())
-        .and_then(|store| backup::status(&store, tenant_id).ok())
-        .unwrap_or_else(|| json!({ "ok": false, "error": "backup_unavailable" }))
-}
-
-#[tauri::command]
-fn get_backup_storage_overview(state: tauri::State<'_, AppState>, tenant_id: String) -> Value {
+async fn get_backup_status(
+    state: tauri::State<'_, AppState>,
+    tenant_id: String,
+) -> Result<Value, String> {
     let Some(store) = state.store.lock().ok().and_then(|store| store.clone()) else {
-        return json!({ "ok": false, "error": "local_store_unavailable" });
+        return Ok(json!({ "ok": false, "error": "local_store_unavailable" }));
     };
-    backup::storage_overview(&store, tenant_id).unwrap_or_else(|error| json!({ "ok": false, "error": error }))
+    Ok(match tauri::async_runtime::spawn_blocking(move || backup::status(&store, tenant_id)).await {
+        Ok(Ok(value)) => value,
+        Ok(Err(error)) => json!({ "ok": false, "error": error }),
+        Err(_) => json!({ "ok": false, "error": "backup_status_failed" }),
+    })
 }
 
 #[tauri::command]
-fn preview_legacy_backup_cleanup(state: tauri::State<'_, AppState>, tenant_id: String) -> Value {
+async fn get_backup_storage_overview(
+    state: tauri::State<'_, AppState>,
+    tenant_id: String,
+) -> Result<Value, String> {
     let Some(store) = state.store.lock().ok().and_then(|store| store.clone()) else {
-        return json!({ "ok": false, "error": "local_store_unavailable" });
+        return Ok(json!({ "ok": false, "error": "local_store_unavailable" }));
     };
-    backup::preview_legacy_cleanup(&store, tenant_id).unwrap_or_else(|error| json!({ "ok": false, "error": error }))
+    Ok(match tauri::async_runtime::spawn_blocking(move || backup::storage_overview(&store, tenant_id)).await {
+        Ok(Ok(value)) => value,
+        Ok(Err(error)) => json!({ "ok": false, "error": error }),
+        Err(_) => json!({ "ok": false, "error": "backup_storage_scan_failed" }),
+    })
 }
 
 #[tauri::command]
-fn apply_legacy_backup_cleanup(
+async fn preview_legacy_backup_cleanup(
+    state: tauri::State<'_, AppState>,
+    tenant_id: String,
+) -> Result<Value, String> {
+    let Some(store) = state.store.lock().ok().and_then(|store| store.clone()) else {
+        return Ok(json!({ "ok": false, "error": "local_store_unavailable" }));
+    };
+    Ok(match tauri::async_runtime::spawn_blocking(move || backup::preview_legacy_cleanup(&store, tenant_id)).await {
+        Ok(Ok(value)) => value,
+        Ok(Err(error)) => json!({ "ok": false, "error": error }),
+        Err(_) => json!({ "ok": false, "error": "backup_cleanup_preview_failed" }),
+    })
+}
+
+#[tauri::command]
+async fn apply_legacy_backup_cleanup(
     state: tauri::State<'_, AppState>,
     tenant_id: String,
     preview_token: String,
-) -> Value {
+) -> Result<Value, String> {
     let Some(store) = state.store.lock().ok().and_then(|store| store.clone()) else {
-        return json!({ "ok": false, "error": "local_store_unavailable" });
+        return Ok(json!({ "ok": false, "error": "local_store_unavailable" }));
     };
-    backup::apply_legacy_cleanup(&store, tenant_id, preview_token).unwrap_or_else(|error| json!({ "ok": false, "error": error }))
+    Ok(match tauri::async_runtime::spawn_blocking(move || backup::apply_legacy_cleanup(&store, tenant_id, preview_token)).await {
+        Ok(Ok(value)) => value,
+        Ok(Err(error)) => json!({ "ok": false, "error": error }),
+        Err(_) => json!({ "ok": false, "error": "backup_cleanup_failed" }),
+    })
 }
 
 #[tauri::command]
@@ -6532,14 +6554,19 @@ fn discover_backup_tenants(state: tauri::State<'_, AppState>, folder_path: Strin
 }
 
 #[tauri::command]
-fn list_local_backups(state: tauri::State<'_, AppState>, tenant_id: String, limit: i64) -> Value {
-    state
-        .store
-        .lock()
-        .ok()
-        .and_then(|store| store.clone())
-        .and_then(|store| backup::list_backups(&store, tenant_id, limit).ok())
-        .unwrap_or_else(|| json!({ "ok": false, "backups": [], "error": "backup_list_failed" }))
+async fn list_local_backups(
+    state: tauri::State<'_, AppState>,
+    tenant_id: String,
+    limit: i64,
+) -> Result<Value, String> {
+    let Some(store) = state.store.lock().ok().and_then(|store| store.clone()) else {
+        return Ok(json!({ "ok": false, "backups": [], "error": "local_store_unavailable" }));
+    };
+    Ok(match tauri::async_runtime::spawn_blocking(move || backup::list_backups(&store, tenant_id, limit)).await {
+        Ok(Ok(value)) => value,
+        Ok(Err(error)) => json!({ "ok": false, "backups": [], "error": error }),
+        Err(_) => json!({ "ok": false, "backups": [], "error": "backup_list_failed" }),
+    })
 }
 
 #[tauri::command]
