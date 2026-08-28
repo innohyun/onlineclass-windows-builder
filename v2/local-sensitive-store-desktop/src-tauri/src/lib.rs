@@ -14,6 +14,7 @@ mod shared_archive_board;
 mod shared_archive_sync;
 mod student_private_photos;
 mod student_record_mcp;
+mod classaimate_mcp_write_jobs;
 mod work_note_attachments;
 mod work_note_localization;
 mod work_note_reader;
@@ -43,7 +44,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-08-28.2-main-binary-selection";
+pub(crate) const SERVICE_VERSION: &str = "2026-08-28.3-classaimate-public-mcp";
 const WORK_MEETING_ROOT_PAGE_ID: &str = "classaimate:work-meeting-minutes";
 const WORK_MEETING_ROOT_TITLE: &str = "업무 회의록";
 const WORK_MEETING_ROOT_INTRO: &str = "모바일에서 확정한 업무 회의록이 자동으로 들어옵니다.";
@@ -109,6 +110,8 @@ const LOCAL_SENSITIVE_STORE_ROUTES: &[&str] = &[
     "/v1/student-record-mcp/connection/activate",
     "/v1/student-record-mcp/connection/disconnect",
     "/v1/student-record-mcp/selections",
+    "/v1/classaimate-mcp/write-jobs/apply",
+    "/v1/classaimate-mcp/counseling-drafts",
     "/v1/import-runs",
     "/v1/work-notes",
     "/v1/work-notes/move",
@@ -135,7 +138,7 @@ const LOCAL_SENSITIVE_STORE_ROUTES: &[&str] = &[
     "/v1/shared-archives/import",
     "/v1/shared-archives/import-jobs",
 ];
-const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 11] = [
+const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 13] = [
     "non_lesson_observations",
     "teacher_local_records",
     "work_notes",
@@ -147,6 +150,8 @@ const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 11] = [
     "lesson_plan_bindings_v1",
     "student_record_draft_batch_v1",
     "student_record_mcp_v1",
+    "classaimate_public_mcp_write_jobs_v1",
+    "teacher_counseling_mcp_drafts_v1",
 ];
 
 #[derive(Clone, Debug, Serialize)]
@@ -1972,6 +1977,7 @@ impl SqliteStore {
         work_note_attachments::ensure_schema(&conn)?;
         work_note_localization::ensure_schema(&conn)?;
         lesson_plan_bindings::ensure_schema(&conn)?;
+        classaimate_mcp_write_jobs::ensure_schema(&conn)?;
         backup::install_sync_tracking(&conn)?;
         device_sync_conflicts::ensure_schema(&conn)?;
         let data_dir = db_path
@@ -4981,7 +4987,9 @@ fn request_error_status(error: &str) -> u16 {
         "body_too_large" => 413,
         "EVIDENCE_LIMIT_EXCEEDED" => 413,
         "SELECTION_EXPIRED" | "WORK_BUNDLE_EXPIRED" => 410,
-        "WORK_BUNDLE_CONSUMED" | "DRAFT_CONFLICT" => 409,
+        "WORK_BUNDLE_CONSUMED" | "DRAFT_CONFLICT" | "IDEMPOTENCY_CONFLICT" => 409,
+        "classaimate_mcp_write_job_invalid" => 400,
+        "COUNSELING_SOURCE_NOT_FOUND" | "WORK_NOTE_PARENT_NOT_FOUND" => 404,
         "LOCAL_SELECTION_REQUIRED" | "PII_OUTPUT_BLOCKED" => 400,
         "tenant_id_required" | "date_required" | "period_required" | "student_code_required"
         | "doc_id_required" | "cloud_sync_session_required" | "conflict_identity_required"
@@ -5149,6 +5157,47 @@ fn handle_request(
 
         if request.method() == &Method::Get && path == "/v1/health" {
             return Ok((200, health_payload(&store, authorized)));
+        }
+
+        if path.starts_with("/v1/classaimate-mcp/") {
+            let tenant = browser_tenant
+                .clone()
+                .ok_or_else(|| "browser_token_required".to_string())?;
+            if request.method() == &Method::Get
+                && path == "/v1/classaimate-mcp/counseling-drafts"
+            {
+                let requested = query(&url, "tenantId");
+                if requested != tenant {
+                    return Err("tenant_scope_mismatch".to_string());
+                }
+                let counseling_ref = query(&url, "counselingRef");
+                let limit = query(&url, "limit").parse::<i64>().unwrap_or(20);
+                return Ok((
+                    200,
+                    json!({
+                        "ok": true,
+                        "drafts": classaimate_mcp_write_jobs::list_counseling_drafts(
+                            &store,
+                            &tenant,
+                            &counseling_ref,
+                            limit,
+                        )?
+                    }),
+                ));
+            }
+            if request.method() == &Method::Post
+                && path == "/v1/classaimate-mcp/write-jobs/apply"
+            {
+                let body = scope_body_to_tenant(read_body(&mut request)?, Some(&tenant))?;
+                let applied = classaimate_mcp_write_jobs::apply(&store, &body)?;
+                let mut payload = applied.as_object().cloned().unwrap_or_default();
+                payload.insert("ok".to_string(), Value::Bool(true));
+                return Ok((200, Value::Object(payload)));
+            }
+            return Ok((
+                404,
+                json!({ "ok": false, "error": "classaimate_mcp_route_not_found" }),
+            ));
         }
 
         if path.starts_with("/v1/student-record-mcp/") {
