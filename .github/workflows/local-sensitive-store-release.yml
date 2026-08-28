@@ -103,21 +103,26 @@ jobs:
           $startedAt = (Get-Date).AddMinutes(-1)
           $installed = Start-Process -FilePath $installer.FullName -ArgumentList '/S' -Wait -PassThru
           if ($installed.ExitCode -ne 0) { throw "Silent installer failed with $($installed.ExitCode)." }
+          $tauriConfig = Get-Content "src-tauri/tauri.conf.json" -Raw | ConvertFrom-Json
+          $expectedMainNames = @('local-sensitive-store-desktop.exe', "$($tauriConfig.productName).exe")
           $shortcutRoots = @((Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'), [Environment]::GetFolderPath('Desktop'), (Join-Path $env:PUBLIC 'Desktop'))
           $shell = New-Object -ComObject WScript.Shell
           $shortcut = $null
           foreach ($candidate in Get-ChildItem $shortcutRoots -Filter '*.lnk' -Recurse -ErrorAction SilentlyContinue | Where-Object LastWriteTime -ge $startedAt) {
             $resolved = $shell.CreateShortcut($candidate.FullName)
-            if ([IO.Path]::GetFileName($resolved.TargetPath) -ieq 'local-sensitive-store-desktop.exe') { $shortcut = [pscustomobject]@{ File = $candidate; Target = $resolved.TargetPath }; break }
             if ([IO.Path]::GetFileName($resolved.TargetPath) -ieq 'classaimate-student-record-mcp.exe') { throw "Installer shortcut points to MCP sidecar." }
+            if ($expectedMainNames -icontains [IO.Path]::GetFileName($resolved.TargetPath)) { $shortcut = [pscustomobject]@{ File = $candidate; Target = $resolved.TargetPath }; break }
           }
           if (-not $shortcut -or -not (Test-Path $shortcut.Target -PathType Leaf)) { throw "Installed desktop shortcut target was not found." }
           Start-Process -FilePath $shortcut.File.FullName
           Start-Sleep -Seconds 6
-          $processes = @(Get-Process 'local-sensitive-store-desktop' -ErrorAction SilentlyContinue)
-          if ($processes.Count -ne 1) { throw "First launch expected exactly one desktop process; found $($processes.Count)." }
-          if ($processes[0].MainWindowHandle -eq 0) { throw "First launch did not create the desktop main window." }
-          $processes | Stop-Process -Force
+          $targetPath = [IO.Path]::GetFullPath($shortcut.Target)
+          $processRows = @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -ieq $targetPath) })
+          if ($processRows.Count -ne 1) { throw "First launch expected exactly one desktop process; found $($processRows.Count)." }
+          $desktopProcess = Get-Process -Id $processRows[0].ProcessId
+          $desktopProcess.Refresh()
+          if ($desktopProcess.MainWindowHandle -eq 0) { throw "First launch did not create the desktop main window." }
+          Stop-Process -Id $desktopProcess.Id -Force
 
       - name: Publish installer release and manifest
         shell: pwsh
