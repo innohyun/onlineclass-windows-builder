@@ -114,16 +114,28 @@ jobs:
             if ($candidate.BaseName -ieq $tauriConfig.productName) { $shortcut = [pscustomobject]@{ File = $candidate; Target = $resolved.TargetPath }; break }
           }
           if (-not $shortcut) { throw "Installed product shortcut was not found. Candidates: $($shortcutAudit -join '; ')" }
-          if (-not (Test-Path $shortcut.Target -PathType Leaf)) { throw "Installed product shortcut target does not exist: $($shortcut.Target)" }
-          if ((Get-PeSubsystem $shortcut.Target) -ne 2) { throw "Installed product shortcut target is not WINDOWS_GUI subsystem." }
+          if ($shortcut.Target) {
+            if (-not (Test-Path $shortcut.Target -PathType Leaf)) { throw "Installed product shortcut target does not exist: $($shortcut.Target)" }
+            if ((Get-PeSubsystem $shortcut.Target) -ne 2) { throw "Installed product shortcut target is not WINDOWS_GUI subsystem." }
+          }
+          $beforeProcessIds = @(Get-CimInstance Win32_Process | Select-Object -ExpandProperty ProcessId)
           Start-Process -FilePath $shortcut.File.FullName
-          Start-Sleep -Seconds 6
-          $targetPath = [IO.Path]::GetFullPath($shortcut.Target)
-          $processRows = @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -ieq $targetPath) })
-          if ($processRows.Count -ne 1) { throw "First launch expected exactly one desktop process; found $($processRows.Count)." }
-          $desktopProcess = Get-Process -Id $processRows[0].ProcessId
-          $desktopProcess.Refresh()
-          if ($desktopProcess.MainWindowHandle -eq 0) { throw "First launch did not create the desktop main window." }
+          $windowProcesses = @()
+          for ($attempt = 0; $attempt -lt 20; $attempt++) {
+            Start-Sleep -Seconds 1
+            $windowProcesses = @()
+            foreach ($row in Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and ($beforeProcessIds -notcontains $_.ProcessId) }) {
+              if ([IO.Path]::GetFileName($row.ExecutablePath) -ieq 'classaimate-student-record-mcp.exe') { continue }
+              $process = Get-Process -Id $row.ProcessId -ErrorAction SilentlyContinue
+              if ($process -and $process.MainWindowHandle -ne 0 -and (Get-PeSubsystem $row.ExecutablePath) -eq 2) {
+                $windowProcesses += [pscustomobject]@{ Process = $process; Path = $row.ExecutablePath }
+              }
+            }
+            if ($windowProcesses.Count -gt 0) { break }
+          }
+          if ($windowProcesses.Count -ne 1) { throw "Product shortcut launch expected exactly one new GUI window process; found $($windowProcesses.Count)." }
+          $desktopProcess = $windowProcesses[0].Process
+          if ($shortcut.Target -and ([IO.Path]::GetFullPath($windowProcesses[0].Path) -ine [IO.Path]::GetFullPath($shortcut.Target))) { throw "Product shortcut launched an unexpected executable." }
           Stop-Process -Id $desktopProcess.Id -Force
 
       - name: Publish installer release and manifest
