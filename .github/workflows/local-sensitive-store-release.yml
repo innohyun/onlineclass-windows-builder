@@ -100,20 +100,22 @@ jobs:
           }
           $installer = Get-ChildItem -Path "src-tauri/target/release/bundle/nsis" -Filter "*.exe" -Recurse | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           if (-not $installer) { throw "NSIS installer not found for launch gate." }
-          $startedAt = (Get-Date).AddMinutes(-1)
           $installed = Start-Process -FilePath $installer.FullName -ArgumentList '/S' -Wait -PassThru
           if ($installed.ExitCode -ne 0) { throw "Silent installer failed with $($installed.ExitCode)." }
           $tauriConfig = Get-Content "src-tauri/tauri.conf.json" -Raw | ConvertFrom-Json
-          $expectedMainNames = @('local-sensitive-store-desktop.exe', "$($tauriConfig.productName).exe")
-          $shortcutRoots = @((Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'), [Environment]::GetFolderPath('Desktop'), (Join-Path $env:PUBLIC 'Desktop'))
+          $shortcutRoots = @((Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'), (Join-Path $env:PROGRAMDATA 'Microsoft\Windows\Start Menu\Programs'), [Environment]::GetFolderPath('Desktop'), (Join-Path $env:PUBLIC 'Desktop'))
           $shell = New-Object -ComObject WScript.Shell
           $shortcut = $null
-          foreach ($candidate in Get-ChildItem $shortcutRoots -Filter '*.lnk' -Recurse -ErrorAction SilentlyContinue | Where-Object LastWriteTime -ge $startedAt) {
+          $shortcutAudit = @()
+          foreach ($candidate in Get-ChildItem $shortcutRoots -Filter '*.lnk' -Recurse -ErrorAction SilentlyContinue) {
             $resolved = $shell.CreateShortcut($candidate.FullName)
+            $shortcutAudit += "$($candidate.FullName) -> $($resolved.TargetPath)"
             if ([IO.Path]::GetFileName($resolved.TargetPath) -ieq 'classaimate-student-record-mcp.exe') { throw "Installer shortcut points to MCP sidecar." }
-            if ($expectedMainNames -icontains [IO.Path]::GetFileName($resolved.TargetPath)) { $shortcut = [pscustomobject]@{ File = $candidate; Target = $resolved.TargetPath }; break }
+            if ($candidate.BaseName -ieq $tauriConfig.productName) { $shortcut = [pscustomobject]@{ File = $candidate; Target = $resolved.TargetPath }; break }
           }
-          if (-not $shortcut -or -not (Test-Path $shortcut.Target -PathType Leaf)) { throw "Installed desktop shortcut target was not found." }
+          if (-not $shortcut) { throw "Installed product shortcut was not found. Candidates: $($shortcutAudit -join '; ')" }
+          if (-not (Test-Path $shortcut.Target -PathType Leaf)) { throw "Installed product shortcut target does not exist: $($shortcut.Target)" }
+          if ((Get-PeSubsystem $shortcut.Target) -ne 2) { throw "Installed product shortcut target is not WINDOWS_GUI subsystem." }
           Start-Process -FilePath $shortcut.File.FullName
           Start-Sleep -Seconds 6
           $targetPath = [IO.Path]::GetFullPath($shortcut.Target)
