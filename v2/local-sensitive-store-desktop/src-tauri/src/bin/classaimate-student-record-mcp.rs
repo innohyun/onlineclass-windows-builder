@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 #[tokio::main]
 async fn main() {
     if let Err(error) = local_sensitive_store_desktop_lib::run_student_record_mcp_stdio().await {

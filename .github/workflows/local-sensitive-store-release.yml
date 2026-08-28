@@ -66,6 +66,59 @@ jobs:
             throw "Student record MCP sidecar is missing: $sidecarBinary"
           }
 
+      - name: Verify GUI subsystem, MCP stdio, installer shortcut and first launch
+        shell: pwsh
+        run: |
+          function Get-PeSubsystem([string]$Path) {
+            $stream = [System.IO.File]::OpenRead((Resolve-Path $Path))
+            try {
+              $reader = [System.IO.BinaryReader]::new($stream)
+              $stream.Position = 0x3c
+              $peOffset = $reader.ReadInt32()
+              $stream.Position = $peOffset + 4 + 20 + 68
+              return $reader.ReadUInt16()
+            } finally { $stream.Dispose() }
+          }
+          $mainBinary = (Resolve-Path "src-tauri/target/release/local-sensitive-store-desktop.exe").Path
+          $sidecarBinary = (Resolve-Path "src-tauri/target/release/classaimate-student-record-mcp.exe").Path
+          if ((Get-PeSubsystem $mainBinary) -ne 2) { throw "Desktop main binary is not WINDOWS_GUI subsystem." }
+          if ((Get-PeSubsystem $sidecarBinary) -ne 2) { throw "MCP sidecar is not WINDOWS_GUI subsystem." }
+          $mcpInput = Join-Path $env:RUNNER_TEMP "classaimate-mcp-input.jsonl"
+          $mcpOutput = Join-Path $env:RUNNER_TEMP "classaimate-mcp-output.jsonl"
+          $requests = @(
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"builder-gate","version":"1"}}}',
+            '{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}',
+            '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
+          )
+          [System.IO.File]::WriteAllText($mcpInput, (($requests -join "`n") + "`n"), [System.Text.UTF8Encoding]::new($false))
+          $mcp = Start-Process -FilePath $sidecarBinary -RedirectStandardInput $mcpInput -RedirectStandardOutput $mcpOutput -PassThru -WindowStyle Hidden
+          if (-not $mcp.WaitForExit(15000)) { $mcp.Kill(); throw "MCP sidecar stdio handshake timed out." }
+          if ($mcp.ExitCode -ne 0) { throw "MCP sidecar exited with $($mcp.ExitCode)." }
+          $mcpResult = Get-Content $mcpOutput -Raw
+          if ($mcpResult -notmatch '"id"\s*:\s*1' -or $mcpResult -notmatch '"id"\s*:\s*2' -or $mcpResult -notmatch 'student_record_list_scopes') {
+            throw "MCP initialize/tools-list handshake response is incomplete."
+          }
+          $installer = Get-ChildItem -Path "src-tauri/target/release/bundle/nsis" -Filter "*.exe" -Recurse | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $installer) { throw "NSIS installer not found for launch gate." }
+          $startedAt = (Get-Date).AddMinutes(-1)
+          $installed = Start-Process -FilePath $installer.FullName -ArgumentList '/S' -Wait -PassThru
+          if ($installed.ExitCode -ne 0) { throw "Silent installer failed with $($installed.ExitCode)." }
+          $shortcutRoots = @((Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'), [Environment]::GetFolderPath('Desktop'), (Join-Path $env:PUBLIC 'Desktop'))
+          $shell = New-Object -ComObject WScript.Shell
+          $shortcut = $null
+          foreach ($candidate in Get-ChildItem $shortcutRoots -Filter '*.lnk' -Recurse -ErrorAction SilentlyContinue | Where-Object LastWriteTime -ge $startedAt) {
+            $resolved = $shell.CreateShortcut($candidate.FullName)
+            if ([IO.Path]::GetFileName($resolved.TargetPath) -ieq 'local-sensitive-store-desktop.exe') { $shortcut = [pscustomobject]@{ File = $candidate; Target = $resolved.TargetPath }; break }
+            if ([IO.Path]::GetFileName($resolved.TargetPath) -ieq 'classaimate-student-record-mcp.exe') { throw "Installer shortcut points to MCP sidecar." }
+          }
+          if (-not $shortcut -or -not (Test-Path $shortcut.Target -PathType Leaf)) { throw "Installed desktop shortcut target was not found." }
+          Start-Process -FilePath $shortcut.File.FullName
+          Start-Sleep -Seconds 6
+          $processes = @(Get-Process 'local-sensitive-store-desktop' -ErrorAction SilentlyContinue)
+          if ($processes.Count -ne 1) { throw "First launch expected exactly one desktop process; found $($processes.Count)." }
+          if ($processes[0].MainWindowHandle -eq 0) { throw "First launch did not create the desktop main window." }
+          $processes | Stop-Process -Force
+
       - name: Publish installer release and manifest
         shell: pwsh
         working-directory: .

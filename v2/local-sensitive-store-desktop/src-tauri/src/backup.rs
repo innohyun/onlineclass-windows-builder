@@ -271,6 +271,20 @@ const BACKUP_TABLES: &[BackupTable] = &[
         optional: true,
     },
     BackupTable {
+        name: "password_vault_personal_profiles",
+        columns: &["tenant_id", "owner_uid", "school_code", "wrapped_key_json", "revision", "created_at_ms", "updated_at_ms"],
+        key_columns: &["tenant_id", "owner_uid", "school_code"],
+        timestamp_column: "updated_at_ms",
+        optional: true,
+    },
+    BackupTable {
+        name: "password_vault_personal_entries",
+        columns: &["tenant_id", "owner_uid", "school_code", "entry_id", "category", "ciphertext_json", "revision", "created_at_ms", "updated_at_ms"],
+        key_columns: &["tenant_id", "owner_uid", "school_code", "entry_id"],
+        timestamp_column: "updated_at_ms",
+        optional: true,
+    },
+    BackupTable {
         name: "cloud_sync_runs",
         columns: &["tenant_id", "run_id", "payload_json", "started_at_ms", "finished_at_ms"],
         key_columns: &["tenant_id", "run_id"],
@@ -1085,6 +1099,31 @@ fn backup_schema_sql(prefix: &str) -> String {
           updated_at_ms INTEGER NOT NULL,
           PRIMARY KEY (tenant_id, plan_id)
         );
+        CREATE TABLE IF NOT EXISTS {prefix}password_vault_personal_profiles (
+          tenant_id TEXT NOT NULL,
+          owner_uid TEXT NOT NULL,
+          school_code TEXT NOT NULL,
+          wrapped_key_json TEXT NOT NULL,
+          revision INTEGER NOT NULL DEFAULT 1,
+          created_at_ms INTEGER NOT NULL,
+          updated_at_ms INTEGER NOT NULL,
+          PRIMARY KEY (tenant_id, owner_uid, school_code)
+        );
+        CREATE TABLE IF NOT EXISTS {prefix}password_vault_personal_entries (
+          tenant_id TEXT NOT NULL,
+          owner_uid TEXT NOT NULL,
+          school_code TEXT NOT NULL,
+          entry_id TEXT NOT NULL,
+          category TEXT NOT NULL,
+          ciphertext_json TEXT NOT NULL,
+          revision INTEGER NOT NULL,
+          created_at_ms INTEGER NOT NULL,
+          updated_at_ms INTEGER NOT NULL,
+          PRIMARY KEY (tenant_id, owner_uid, school_code, entry_id),
+          FOREIGN KEY (tenant_id, owner_uid, school_code)
+            REFERENCES password_vault_personal_profiles (tenant_id, owner_uid, school_code)
+            ON DELETE CASCADE
+        );
         CREATE TABLE IF NOT EXISTS {prefix}cloud_sync_runs (
           tenant_id TEXT NOT NULL,
           run_id TEXT NOT NULL,
@@ -1381,6 +1420,8 @@ pub(crate) fn storage_overview(store: &SqliteStore, tenant_id: String) -> Result
     let tenant_dir = configured_tenant_dir(store, &tenant_id)?;
     let scan = crate::backup_v5::scan_storage(&tenant_dir);
     let cleanup = crate::backup_v5::legacy_cleanup_summary(&tenant_dir, &pinned_sync_generations(store, &tenant_id)?);
+    let quarantine = crate::backup_v5::legacy_quarantine_summary(&tenant_dir, now_ms())
+        .unwrap_or_else(|error| json!({ "ok": false, "error": error }));
     let mut current_files = HashMap::<String, Value>::new();
     for row in list_media_rows(store, &tenant_id)? {
         current_files.entry(row.local_path.clone()).or_insert_with(|| json!({
@@ -1410,6 +1451,11 @@ pub(crate) fn storage_overview(store: &SqliteStore, tenant_id: String) -> Result
         "legacySnapshotBytes": scan.legacy_snapshot_bytes,
         "legacyReclaimableBytes": cleanup.get("reclaimableBytes").cloned().unwrap_or(json!(0)),
         "legacyCleanupCandidateCount": cleanup.get("candidateCount").cloned().unwrap_or(json!(0)),
+        "legacyQuarantineCount": quarantine.get("quarantinedCount").cloned().unwrap_or(json!(0)),
+        "legacyQuarantineBytes": quarantine.get("quarantinedBytes").cloned().unwrap_or(json!(0)),
+        "legacyQuarantinePurgeAfterMs": quarantine.get("purgeAfterMs").cloned().unwrap_or(json!(0)),
+        "legacyQuarantineReviewCount": quarantine.get("reviewCount").cloned().unwrap_or(json!(0)),
+        "legacyQuarantineError": quarantine.get("error").cloned().unwrap_or(Value::Null),
         "largeFileThresholdBytes": 100 * 1024 * 1024,
         "largestFiles": largest_files,
         "retention": { "recent": 10, "dailyDays": 30, "monthlyMonths": 12, "preRestore": 5, "manual": "explicit_delete_only" }
@@ -1428,7 +1474,45 @@ pub(crate) fn apply_legacy_cleanup(store: &SqliteStore, tenant_id: String, previ
     if tenant_id.is_empty() { return Err("tenant_id_required".to_string()); }
     if preview_token.len() != 64 { return Err("backup_legacy_cleanup_preview_required".to_string()); }
     let tenant_dir = configured_tenant_dir(store, &tenant_id)?;
-    crate::backup_v5::apply_legacy_cleanup(&tenant_dir, &pinned_sync_generations(store, &tenant_id)?, &preview_token)
+    let verified_v5_created_at_ms = latest_verified_v5_created_at(store, &tenant_id, &tenant_dir)?;
+    crate::backup_v5::apply_legacy_cleanup(
+        &tenant_dir,
+        &pinned_sync_generations(store, &tenant_id)?,
+        &preview_token,
+        verified_v5_created_at_ms,
+        now_ms(),
+    )
+}
+
+pub(crate) fn undo_legacy_cleanup(store: &SqliteStore, tenant_id: String) -> Result<Value, String> {
+    let tenant_id = normalize_tenant_id(Some(&Value::String(tenant_id)));
+    if tenant_id.is_empty() { return Err("tenant_id_required".to_string()); }
+    let tenant_dir = configured_tenant_dir(store, &tenant_id)?;
+    crate::backup_v5::undo_legacy_quarantine(&tenant_dir, now_ms())
+}
+
+fn latest_verified_v5_created_at(_store: &SqliteStore, tenant_id: &str, tenant_dir: &Path) -> Result<i64, String> {
+    let mut candidates = manifest_paths_in_dir(tenant_dir)?
+        .into_iter()
+        .filter_map(|path| {
+            let manifest = read_manifest(&path).ok()?;
+            if manifest.get("version").and_then(Value::as_i64) != Some(crate::backup_v5::SNAPSHOT_VERSION)
+                || manifest.get("ok").and_then(Value::as_bool) != Some(true)
+                || manifest.get("tenantId").and_then(Value::as_str) != Some(tenant_id)
+            {
+                return None;
+            }
+            let created_at_ms = manifest.get("createdAtMs").and_then(Value::as_i64).unwrap_or(0);
+            Some((path, manifest, created_at_ms))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| right.2.cmp(&left.2));
+    for (path, manifest, created_at_ms) in candidates {
+        if authoritative_restore_manifest(&path, &manifest, tenant_id).is_ok() {
+            return Ok(created_at_ms);
+        }
+    }
+    Err("backup_legacy_quarantine_verified_v5_required".to_string())
 }
 
 fn manifest_paths_in_dir(dir: &Path) -> Result<Vec<PathBuf>, String> {
@@ -2041,7 +2125,7 @@ pub(crate) fn run_with_kind_version(
     fs::rename(&staging_dir, &snapshot_dir).map_err(|e| format!("backup_snapshot_commit_failed:{e}"))?;
     let manifest_path = snapshot_dir.join("manifest.json");
     let final_db_path = snapshot_dir.join(&db_relative_path);
-    let result = json!({
+    let mut result = json!({
         "ok": snapshot_ok,
         "tenantId": tenant_id,
         "backupId": backup_id,
@@ -2058,6 +2142,26 @@ pub(crate) fn run_with_kind_version(
         "workNoteAttachments": manifest.get("workNoteAttachments").cloned().unwrap_or_else(|| json!({})),
         "archives": manifest.get("archives").cloned().unwrap_or_else(|| json!({}))
     });
+    if snapshot_version == crate::backup_v5::SNAPSHOT_VERSION && snapshot_ok {
+        authoritative_restore_manifest(&manifest_path, &manifest, &tenant_id)?;
+        crate::backup_v5::prune_snapshots(&out_dir, created_at_ms)?;
+        let references = artifacts
+            .iter()
+            .filter(|artifact| artifact.relative_path.starts_with("objects/sha256/"))
+            .map(|artifact| artifact.relative_path.clone())
+            .collect::<HashSet<_>>();
+        let _ = crate::backup_v5::quarantine_unreferenced_objects(&out_dir, &references, created_at_ms)?;
+        let pinned_generations = pinned_sync_generations(store, &tenant_id)?;
+        result["legacyQuarantineMaintenance"] = crate::backup_v5::maintain_legacy_quarantine(
+            &out_dir,
+            &pinned_generations,
+            created_at_ms,
+            created_at_ms,
+        )
+        .unwrap_or_else(|error| json!({ "ok": false, "error": error }));
+    } else if kind == "auto_sync" {
+        prune_auto_sync_snapshots(&out_dir, created_at_ms)?;
+    }
     let mut config = read_config(store);
     let root_text = root.to_string_lossy().to_string();
     config["tenants"][manifest.get("tenantId").and_then(|value| value.as_str()).unwrap_or("")] = json!({
@@ -2069,17 +2173,6 @@ pub(crate) fn run_with_kind_version(
         "lastResult": result
     });
     write_config(store, config)?;
-    if snapshot_version == crate::backup_v5::SNAPSHOT_VERSION {
-        crate::backup_v5::prune_snapshots(&out_dir, created_at_ms)?;
-        let references = artifacts
-            .iter()
-            .filter(|artifact| artifact.relative_path.starts_with("objects/sha256/"))
-            .map(|artifact| artifact.relative_path.clone())
-            .collect::<HashSet<_>>();
-        let _ = crate::backup_v5::quarantine_unreferenced_objects(&out_dir, &references, created_at_ms)?;
-    } else if kind == "auto_sync" {
-        prune_auto_sync_snapshots(&out_dir, created_at_ms)?;
-    }
     Ok(result)
 }
 

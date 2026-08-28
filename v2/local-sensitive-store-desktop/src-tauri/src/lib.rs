@@ -21,6 +21,8 @@ mod work_note_reader;
 mod device_sync_conflicts;
 mod lesson_plan_bindings;
 mod local_workspaces;
+mod password_vault;
+mod password_vault_crypto;
 use rand::{distributions::Alphanumeric, Rng};
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, ToSql};
 use serde::{Deserialize, Serialize};
@@ -44,7 +46,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-08-28.3-classaimate-public-mcp";
+pub(crate) const SERVICE_VERSION: &str = "2026-08-28.4-school-password-vault";
 const WORK_MEETING_ROOT_PAGE_ID: &str = "classaimate:work-meeting-minutes";
 const WORK_MEETING_ROOT_TITLE: &str = "업무 회의록";
 const WORK_MEETING_ROOT_INTRO: &str = "모바일에서 확정한 업무 회의록이 자동으로 들어옵니다.";
@@ -137,8 +139,20 @@ const LOCAL_SENSITIVE_STORE_ROUTES: &[&str] = &[
     "/v1/backups/restore",
     "/v1/shared-archives/import",
     "/v1/shared-archives/import-jobs",
+    "/v1/password-vault/personal/status",
+    "/v1/password-vault/personal/setup",
+    "/v1/password-vault/personal/entries",
+    "/v1/password-vault/personal/reveal",
+    "/v1/password-vault/personal/recovery",
+    "/v1/password-vault/shared/device",
+    "/v1/password-vault/shared/bootstrap",
+    "/v1/password-vault/shared/approve-device",
+    "/v1/password-vault/shared/accept-envelope",
+    "/v1/password-vault/shared/encrypt",
+    "/v1/password-vault/shared/decrypt",
+    "/v1/password-vault/shared/recover",
 ];
-const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 13] = [
+const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 15] = [
     "non_lesson_observations",
     "teacher_local_records",
     "work_notes",
@@ -152,6 +166,8 @@ const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 13] = [
     "student_record_mcp_v1",
     "classaimate_public_mcp_write_jobs_v1",
     "teacher_counseling_mcp_drafts_v1",
+    "password_vault_personal_v1",
+    "password_vault_shared_v1",
 ];
 
 #[derive(Clone, Debug, Serialize)]
@@ -212,9 +228,9 @@ struct StorePaths {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct BrowserLinkToken {
-    tenant_id: String,
-    uid: String,
+pub(crate) struct BrowserLinkToken {
+    pub(crate) tenant_id: String,
+    pub(crate) uid: String,
     token: String,
     account_email: String,
     account_display_name: String,
@@ -1572,6 +1588,14 @@ impl BrowserLinkStore {
         self.authorize_token(&get_header(request, BROWSER_LINK_HEADER))
     }
 
+    fn principal_for_request(&self, request: &Request) -> Option<BrowserLinkToken> {
+        let token = normalize(get_header(request, BROWSER_LINK_HEADER), 200);
+        if token.is_empty() { return None; }
+        self.tokens.lock().ok().and_then(|tokens| {
+            tokens.iter().find(|entry| entry.token == token).cloned()
+        })
+    }
+
     fn revoke_tenant(&self, tenant_id: &str) -> Result<(), String> {
         let safe_tenant = normalize(tenant_id, 160);
         if safe_tenant.is_empty() {
@@ -1978,6 +2002,7 @@ impl SqliteStore {
         work_note_localization::ensure_schema(&conn)?;
         lesson_plan_bindings::ensure_schema(&conn)?;
         classaimate_mcp_write_jobs::ensure_schema(&conn)?;
+        password_vault::ensure_schema(&conn)?;
         backup::install_sync_tracking(&conn)?;
         device_sync_conflicts::ensure_schema(&conn)?;
         let data_dir = db_path
@@ -5159,6 +5184,16 @@ fn handle_request(
             return Ok((200, health_payload(&store, authorized)));
         }
 
+        if path.starts_with("/v1/password-vault/") {
+            let principal = browser_links
+                .principal_for_request(&request)
+                .ok_or_else(|| "browser_token_required".to_string())?;
+            if browser_tenant.as_deref() != Some(principal.tenant_id.as_str()) {
+                return Err("tenant_scope_mismatch".to_string());
+            }
+            return password_vault::handle_http(&mut request, &store, &principal, &url);
+        }
+
         if path.starts_with("/v1/classaimate-mcp/") {
             let tenant = browser_tenant
                 .clone()
@@ -6708,6 +6743,21 @@ async fn apply_legacy_backup_cleanup(
 }
 
 #[tauri::command]
+async fn undo_legacy_backup_cleanup(
+    state: tauri::State<'_, AppState>,
+    tenant_id: String,
+) -> Result<Value, String> {
+    let Some(store) = state.store.lock().ok().and_then(|store| store.clone()) else {
+        return Ok(json!({ "ok": false, "error": "local_store_unavailable" }));
+    };
+    Ok(match tauri::async_runtime::spawn_blocking(move || backup::undo_legacy_cleanup(&store, tenant_id)).await {
+        Ok(Ok(value)) => value,
+        Ok(Err(error)) => json!({ "ok": false, "error": error }),
+        Err(_) => json!({ "ok": false, "error": "backup_cleanup_undo_failed" }),
+    })
+}
+
+#[tauri::command]
 fn set_backup_folder(state: tauri::State<'_, AppState>, tenant_id: String, folder_path: String) -> Value {
     state
         .store
@@ -6877,12 +6927,22 @@ fn open_external_url(url: &str) -> Value {
     }
 }
 
-fn show_main_window(app: &tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_focus();
-    }
+fn show_or_create_main_window(app: &tauri::AppHandle) -> Result<(), String> {
+    let window = if let Some(window) = app.get_webview_window("main") {
+        window
+    } else {
+        let config = app.config().app.windows.iter()
+            .find(|config| config.label == "main")
+            .cloned()
+            .ok_or_else(|| "main_window_config_missing".to_string())?;
+        tauri::WebviewWindowBuilder::from_config(app, &config)
+            .map_err(|error| format!("main_window_builder_failed:{error}"))?
+            .build()
+            .map_err(|error| format!("main_window_create_failed:{error}"))?
+    };
+    let _ = window.unminimize();
+    window.show().map_err(|error| format!("main_window_show_failed:{error}"))?;
+    window.set_focus().map_err(|error| format!("main_window_focus_failed:{error}"))
 }
 
 fn should_start_background() -> bool {
@@ -6907,7 +6967,7 @@ fn setup_tray(app: &mut tauri::App) -> Result<(), tauri::Error> {
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
-            "show" => show_main_window(app),
+            "show" => { let _ = show_or_create_main_window(app); }
             "sync" => {
                 if let Some(state) = app.try_state::<AppState>() {
                     if let Some(manager) = state.sync_manager.lock().ok().and_then(|value| value.clone()) {
@@ -6927,7 +6987,7 @@ fn setup_tray(app: &mut tauri::App) -> Result<(), tauri::Error> {
                 ..
             } = event
             {
-                show_main_window(&tray.app_handle());
+                let _ = show_or_create_main_window(&tray.app_handle());
             }
         });
     if let Some(icon) = app.default_window_icon() {
@@ -7289,7 +7349,7 @@ pub async fn run_student_record_mcp_stdio() -> Result<(), String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            show_main_window(app);
+            let _ = show_or_create_main_window(app);
         }))
         .plugin(tauri_plugin_dialog::init())
         .on_window_event(|window, event| {
@@ -7303,6 +7363,9 @@ pub fn run() {
                 if keep_running_on_close {
                     api.prevent_close();
                     let _ = window.hide();
+                } else {
+                    api.prevent_close();
+                    window.app_handle().exit(0);
                 }
             }
         })
@@ -7360,6 +7423,7 @@ pub fn run() {
             get_backup_storage_overview,
             preview_legacy_backup_cleanup,
             apply_legacy_backup_cleanup,
+            undo_legacy_backup_cleanup,
             set_backup_folder,
             run_local_backup,
             discover_backup_tenants,

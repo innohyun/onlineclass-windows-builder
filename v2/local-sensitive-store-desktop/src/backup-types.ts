@@ -115,6 +115,11 @@ export type BackupStorageOverview = {
   legacySnapshotBytes?: number;
   legacyReclaimableBytes?: number;
   legacyCleanupCandidateCount?: number;
+  legacyQuarantineCount?: number;
+  legacyQuarantineBytes?: number;
+  legacyQuarantinePurgeAfterMs?: number;
+  legacyQuarantineReviewCount?: number;
+  legacyQuarantineError?: string | null;
   largestFiles?: Array<{ kind?: string; name?: string; localPath?: string; bytes?: number }>;
   error?: string;
 };

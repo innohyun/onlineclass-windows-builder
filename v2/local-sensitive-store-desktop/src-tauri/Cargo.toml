@@ -1,6 +1,6 @@
 [package]
 name = "local-sensitive-store-desktop"
-version = "0.2.54"
+version = "0.2.55"
 default-run = "local-sensitive-store-desktop"
 description = "ClassAiMate 교사 데스크 로컬 데이터 저장소"
 authors = ["onlineclass"]
@@ -28,6 +28,11 @@ keyring = "3"
 ureq = { version = "2", features = ["json"] }
 base64 = "0.22"
 sha2 = "0.10"
+aes-gcm = "0.10"
+argon2 = "0.5"
+hkdf = "0.12"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+zeroize = "1"
 regex = "1"
 fs2 = "0.4"
 rmcp = { version = "=3.0.1", features = ["server", "transport-io"] }

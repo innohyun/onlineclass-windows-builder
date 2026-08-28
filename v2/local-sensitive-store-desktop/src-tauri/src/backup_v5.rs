@@ -12,6 +12,8 @@ const DAILY_KEEP_DAYS: i64 = 30;
 const MONTHLY_KEEP_MONTHS: i32 = 12;
 const PRE_RESTORE_KEEP: usize = 5;
 const QUARANTINE_DAYS: i64 = 30;
+const LEGACY_QUARANTINE_DIR: &str = "legacy-snapshot-quarantine";
+const LEGACY_QUARANTINE_MANIFEST: &str = "manifest.json";
 
 #[derive(Clone, Debug)]
 pub(crate) struct ContentObject {
@@ -411,6 +413,187 @@ fn snapshot_fingerprint(root: &Path) -> Result<String, String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+fn legacy_quarantine_root(tenant_dir: &Path) -> PathBuf {
+    tenant_dir.join(LEGACY_QUARANTINE_DIR)
+}
+
+fn legacy_quarantine_manifest_path(tenant_dir: &Path) -> PathBuf {
+    legacy_quarantine_root(tenant_dir).join(LEGACY_QUARANTINE_MANIFEST)
+}
+
+fn legacy_records_digest(records: &[Value]) -> Result<String, String> {
+    let raw = serde_json::to_vec(records)
+        .map_err(|error| format!("backup_legacy_quarantine_manifest_encode_failed:{error}"))?;
+    Ok(format!("{:x}", Sha256::digest(raw)))
+}
+
+fn save_legacy_quarantine_records(
+    tenant_dir: &Path,
+    records: &[Value],
+    now_ms: i64,
+) -> Result<(), String> {
+    let root = legacy_quarantine_root(tenant_dir);
+    fs::create_dir_all(&root)
+        .map_err(|error| format!("backup_legacy_quarantine_dir_failed:{error}"))?;
+    let path = legacy_quarantine_manifest_path(tenant_dir);
+    let temporary = root.join("manifest.next.json");
+    let previous = root.join("manifest.previous.json");
+    let manifest = json!({
+        "version": 1,
+        "updatedAtMs": now_ms,
+        "records": records,
+        "manifestDigest": legacy_records_digest(records)?
+    });
+    let raw = serde_json::to_string_pretty(&manifest)
+        .map_err(|error| format!("backup_legacy_quarantine_manifest_encode_failed:{error}"))?;
+    fs::write(&temporary, format!("{raw}\n"))
+        .map_err(|error| format!("backup_legacy_quarantine_manifest_write_failed:{error}"))?;
+    if previous.exists() {
+        fs::remove_file(&previous)
+            .map_err(|error| format!("backup_legacy_quarantine_previous_cleanup_failed:{error}"))?;
+    }
+    if path.exists() {
+        fs::rename(&path, &previous)
+            .map_err(|error| format!("backup_legacy_quarantine_manifest_rotate_failed:{error}"))?;
+    }
+    if let Err(error) = fs::rename(&temporary, &path) {
+        if previous.exists() {
+            let _ = fs::rename(&previous, &path);
+        }
+        return Err(format!(
+            "backup_legacy_quarantine_manifest_commit_failed:{error}"
+        ));
+    }
+    if previous.exists() {
+        let _ = fs::remove_file(previous);
+    }
+    Ok(())
+}
+
+fn load_legacy_quarantine_records(tenant_dir: &Path) -> Result<Vec<Value>, String> {
+    let path = legacy_quarantine_manifest_path(tenant_dir);
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let manifest =
+        json_file(&path).ok_or_else(|| "backup_legacy_quarantine_manifest_invalid".to_string())?;
+    if manifest.get("version").and_then(Value::as_i64) != Some(1) {
+        return Err("backup_legacy_quarantine_manifest_version_invalid".to_string());
+    }
+    let records = manifest
+        .get("records")
+        .and_then(Value::as_array)
+        .cloned()
+        .ok_or_else(|| "backup_legacy_quarantine_records_invalid".to_string())?;
+    let expected = legacy_records_digest(&records)?;
+    if manifest.get("manifestDigest").and_then(Value::as_str) != Some(expected.as_str()) {
+        return Err("backup_legacy_quarantine_manifest_digest_mismatch".to_string());
+    }
+    Ok(records)
+}
+
+fn legacy_record_paths(tenant_dir: &Path, record: &Value) -> Result<(PathBuf, PathBuf), String> {
+    let snapshot_name = record
+        .get("snapshotName")
+        .and_then(Value::as_str)
+        .filter(|name| {
+            !name.is_empty()
+                && Path::new(name).components().count() == 1
+                && !matches!(name.as_bytes(), b"." | b"..")
+        })
+        .ok_or_else(|| "backup_legacy_quarantine_snapshot_name_invalid".to_string())?;
+    let id = record
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| id.len() == 64 && id.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .ok_or_else(|| "backup_legacy_quarantine_id_invalid".to_string())?;
+    let original = tenant_dir.join("snapshots").join(snapshot_name);
+    let quarantined = legacy_quarantine_root(tenant_dir).join("items").join(id);
+    let expected_original = format!("snapshots/{snapshot_name}");
+    let expected_quarantined = format!("{LEGACY_QUARANTINE_DIR}/items/{id}");
+    if record.get("originalRelativePath").and_then(Value::as_str)
+        != Some(expected_original.as_str())
+        || record.get("quarantineRelativePath").and_then(Value::as_str)
+            != Some(expected_quarantined.as_str())
+    {
+        return Err("backup_legacy_quarantine_scope_invalid".to_string());
+    }
+    Ok((original, quarantined))
+}
+
+fn set_legacy_record_status(
+    records: &mut [Value],
+    id: &str,
+    status: &str,
+    reason: Option<&str>,
+    now_ms: i64,
+) {
+    if let Some(record) = records
+        .iter_mut()
+        .find(|record| record.get("id").and_then(Value::as_str) == Some(id))
+    {
+        record["status"] = json!(status);
+        record["updatedAtMs"] = json!(now_ms);
+        if let Some(reason) = reason {
+            record["reviewReason"] = json!(reason);
+        } else if let Some(object) = record.as_object_mut() {
+            object.remove("reviewReason");
+        }
+    }
+}
+
+fn reconcile_legacy_quarantine_records(
+    tenant_dir: &Path,
+    records: &mut [Value],
+    now_ms: i64,
+) -> bool {
+    let mut changed = false;
+    for record in records {
+        let status = record
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        if !matches!(status.as_str(), "pending" | "restoring" | "purging") {
+            continue;
+        }
+        let Ok((original, quarantined)) = legacy_record_paths(tenant_dir, record) else {
+            record["status"] = json!("review_required");
+            record["reviewReason"] = json!("scope_invalid");
+            record["updatedAtMs"] = json!(now_ms);
+            changed = true;
+            continue;
+        };
+        let (next_status, reason) = match status.as_str() {
+            "pending" if quarantined.exists() && !original.exists() => ("quarantined", None),
+            "pending" if original.exists() && !quarantined.exists() => ("cancelled", None),
+            "restoring" if original.exists() && !quarantined.exists() => ("restored", None),
+            "restoring" if quarantined.exists() && !original.exists() => ("quarantined", None),
+            "purging" if !quarantined.exists() && !original.exists() => ("purged", None),
+            "purging" if quarantined.exists() && !original.exists() => ("quarantined", None),
+            _ => ("review_required", Some("interrupted_state_conflict")),
+        };
+        record["status"] = json!(next_status);
+        record["updatedAtMs"] = json!(now_ms);
+        if let Some(reason) = reason {
+            record["reviewReason"] = json!(reason);
+        }
+        changed = true;
+    }
+    changed
+}
+
+fn load_reconciled_legacy_quarantine_records(
+    tenant_dir: &Path,
+    now_ms: i64,
+) -> Result<Vec<Value>, String> {
+    let mut records = load_legacy_quarantine_records(tenant_dir)?;
+    if reconcile_legacy_quarantine_records(tenant_dir, &mut records, now_ms) {
+        save_legacy_quarantine_records(tenant_dir, &records, now_ms)?;
+    }
+    Ok(records)
+}
+
 pub(crate) fn scan_storage(tenant_dir: &Path) -> StorageScan {
     let mut scan = StorageScan::default();
     for (_, path) in object_files(&tenant_dir.join("objects/sha256"), "objects/sha256") {
@@ -490,6 +673,34 @@ pub(crate) fn legacy_cleanup_summary(
     })
 }
 
+pub(crate) fn legacy_quarantine_summary(tenant_dir: &Path, now_ms: i64) -> Result<Value, String> {
+    let records = load_reconciled_legacy_quarantine_records(tenant_dir, now_ms)?;
+    let active = records
+        .iter()
+        .filter(|record| record.get("status").and_then(Value::as_str) == Some("quarantined"))
+        .collect::<Vec<_>>();
+    let quarantined_bytes = active
+        .iter()
+        .map(|record| record.get("bytes").and_then(Value::as_i64).unwrap_or(0))
+        .sum::<i64>();
+    let purge_after_ms = active
+        .iter()
+        .filter_map(|record| record.get("purgeAfterMs").and_then(Value::as_i64))
+        .min()
+        .unwrap_or(0);
+    let review_count = records
+        .iter()
+        .filter(|record| record.get("status").and_then(Value::as_str) == Some("review_required"))
+        .count();
+    Ok(json!({
+        "ok": true,
+        "quarantinedCount": active.len(),
+        "quarantinedBytes": quarantined_bytes,
+        "purgeAfterMs": purge_after_ms,
+        "reviewCount": review_count
+    }))
+}
+
 pub(crate) fn legacy_cleanup_preview(
     tenant_dir: &Path,
     pinned_generations: &HashSet<i64>,
@@ -522,38 +733,332 @@ pub(crate) fn apply_legacy_cleanup(
     tenant_dir: &Path,
     pinned_generations: &HashSet<i64>,
     preview_token: &str,
+    validated_v5_created_at_ms: i64,
+    now_ms: i64,
 ) -> Result<Value, String> {
     let preview = legacy_cleanup_preview(tenant_dir, pinned_generations);
     if preview.get("previewToken").and_then(Value::as_str) != Some(preview_token) {
         return Err("backup_legacy_cleanup_preview_changed".to_string());
     }
-    let snapshots_root = tenant_dir.join("snapshots");
-    let mut deleted = 0i64;
-    let mut reclaimed = 0i64;
-    for record in preview
-        .get("candidates")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
+    let result = quarantine_legacy_snapshots(
+        tenant_dir,
+        pinned_generations,
+        validated_v5_created_at_ms,
+        now_ms,
+    )?;
+    Ok(json!({
+        "ok": true,
+        "quarantined": result.get("quarantined").cloned().unwrap_or(json!(0)),
+        "quarantinedBytes": result.get("quarantinedBytes").cloned().unwrap_or(json!(0)),
+        "deleted": 0,
+        "reclaimedBytes": 0
+    }))
+}
+
+pub(crate) fn quarantine_legacy_snapshots(
+    tenant_dir: &Path,
+    pinned_generations: &HashSet<i64>,
+    validated_v5_created_at_ms: i64,
+    now_ms: i64,
+) -> Result<Value, String> {
+    if validated_v5_created_at_ms <= 0 {
+        return Err("backup_legacy_quarantine_verified_v5_required".to_string());
+    }
+    let mut records = load_reconciled_legacy_quarantine_records(tenant_dir, now_ms)?;
+    let protected = records
+        .iter()
+        .filter(|record| record.get("status").and_then(Value::as_str) == Some("restored"))
+        .filter_map(|record| {
+            Some((
+                record.get("originalRelativePath")?.as_str()?.to_string(),
+                record.get("fingerprint")?.as_str()?.to_string(),
+            ))
+        })
+        .collect::<HashSet<_>>();
+    let mut quarantined_count = 0i64;
+    let mut quarantined_bytes = 0i64;
+    for (manifest_path, created_at_ms, generation) in
+        legacy_cleanup_candidates(tenant_dir, pinned_generations)
     {
-        let manifest = PathBuf::from(
-            record
-                .get("manifestPath")
-                .and_then(Value::as_str)
-                .unwrap_or(""),
-        );
-        let snapshot = manifest
+        if created_at_ms > validated_v5_created_at_ms {
+            continue;
+        }
+        let snapshot = manifest_path
             .parent()
             .ok_or_else(|| "backup_snapshot_parent_missing".to_string())?;
-        if snapshot.parent() != Some(snapshots_root.as_path()) {
+        let snapshot_name = snapshot
+            .file_name()
+            .and_then(|value| value.to_str())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "backup_snapshot_name_missing".to_string())?
+            .to_string();
+        if snapshot.parent() != Some(tenant_dir.join("snapshots").as_path()) {
             return Err("backup_snapshot_cleanup_scope_invalid".to_string());
         }
-        reclaimed += record.get("bytes").and_then(Value::as_i64).unwrap_or(0);
-        fs::remove_dir_all(snapshot)
-            .map_err(|error| format!("backup_legacy_cleanup_failed:{error}"))?;
-        deleted += 1;
+        let fingerprint = snapshot_fingerprint(snapshot)?;
+        let original_relative = format!("snapshots/{snapshot_name}");
+        if protected.contains(&(original_relative.clone(), fingerprint.clone())) {
+            continue;
+        }
+        let bytes = directory_size(snapshot);
+        let id_seed =
+            format!("{snapshot_name}\0{created_at_ms}\0{generation}\0{fingerprint}\0{now_ms}");
+        let id = format!("{:x}", Sha256::digest(id_seed.as_bytes()));
+        let quarantine_relative = format!("{LEGACY_QUARANTINE_DIR}/items/{id}");
+        let target = tenant_dir.join(&quarantine_relative);
+        if target.exists() {
+            return Err("backup_legacy_quarantine_target_exists".to_string());
+        }
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("backup_legacy_quarantine_dir_failed:{error}"))?;
+        }
+        records.push(json!({
+            "id": id,
+            "snapshotName": snapshot_name,
+            "originalRelativePath": original_relative,
+            "quarantineRelativePath": quarantine_relative,
+            "fingerprint": fingerprint,
+            "bytes": bytes,
+            "generation": generation,
+            "createdAtMs": created_at_ms,
+            "quarantinedAtMs": now_ms,
+            "purgeAfterMs": now_ms.saturating_add(QUARANTINE_DAYS * 86_400_000),
+            "status": "pending",
+            "updatedAtMs": now_ms
+        }));
+        save_legacy_quarantine_records(tenant_dir, &records, now_ms)?;
+        if let Err(error) = fs::rename(snapshot, &target) {
+            set_legacy_record_status(
+                &mut records,
+                &id,
+                "review_required",
+                Some("move_failed"),
+                now_ms,
+            );
+            save_legacy_quarantine_records(tenant_dir, &records, now_ms)?;
+            return Err(format!("backup_legacy_quarantine_move_failed:{error}"));
+        }
+        if snapshot_fingerprint(&target)? != fingerprint {
+            let restored = fs::rename(&target, snapshot).is_ok();
+            set_legacy_record_status(
+                &mut records,
+                &id,
+                if restored {
+                    "cancelled"
+                } else {
+                    "review_required"
+                },
+                Some("fingerprint_changed_during_move"),
+                now_ms,
+            );
+            save_legacy_quarantine_records(tenant_dir, &records, now_ms)?;
+            continue;
+        }
+        set_legacy_record_status(&mut records, &id, "quarantined", None, now_ms);
+        save_legacy_quarantine_records(tenant_dir, &records, now_ms)?;
+        quarantined_count += 1;
+        quarantined_bytes += bytes;
     }
-    Ok(json!({ "ok": true, "deleted": deleted, "reclaimedBytes": reclaimed }))
+    Ok(json!({
+        "ok": true,
+        "quarantined": quarantined_count,
+        "quarantinedBytes": quarantined_bytes
+    }))
+}
+
+pub(crate) fn undo_legacy_quarantine(tenant_dir: &Path, now_ms: i64) -> Result<Value, String> {
+    let mut records = load_reconciled_legacy_quarantine_records(tenant_dir, now_ms)?;
+    let ids = records
+        .iter()
+        .filter(|record| record.get("status").and_then(Value::as_str) == Some("quarantined"))
+        .filter_map(|record| record.get("id").and_then(Value::as_str).map(str::to_string))
+        .collect::<Vec<_>>();
+    let mut restored = 0i64;
+    let mut restored_bytes = 0i64;
+    for id in ids {
+        let Some(record) = records
+            .iter()
+            .find(|record| record.get("id").and_then(Value::as_str) == Some(id.as_str()))
+            .cloned()
+        else {
+            continue;
+        };
+        let validation = (|| -> Result<(PathBuf, PathBuf), String> {
+            let (original, quarantined) = legacy_record_paths(tenant_dir, &record)?;
+            if original.exists() || !quarantined.is_dir() {
+                return Err("undo_path_state_changed".to_string());
+            }
+            let fingerprint = snapshot_fingerprint(&quarantined)?;
+            if record.get("fingerprint").and_then(Value::as_str) != Some(fingerprint.as_str()) {
+                return Err("undo_fingerprint_changed".to_string());
+            }
+            Ok((original, quarantined))
+        })();
+        let (original, quarantined) = match validation {
+            Ok(paths) => paths,
+            Err(reason) => {
+                set_legacy_record_status(
+                    &mut records,
+                    &id,
+                    "review_required",
+                    Some(&reason),
+                    now_ms,
+                );
+                save_legacy_quarantine_records(tenant_dir, &records, now_ms)?;
+                continue;
+            }
+        };
+        set_legacy_record_status(&mut records, &id, "restoring", None, now_ms);
+        save_legacy_quarantine_records(tenant_dir, &records, now_ms)?;
+        if let Err(error) = fs::rename(&quarantined, &original) {
+            set_legacy_record_status(
+                &mut records,
+                &id,
+                "review_required",
+                Some("undo_move_failed"),
+                now_ms,
+            );
+            save_legacy_quarantine_records(tenant_dir, &records, now_ms)?;
+            return Err(format!("backup_legacy_quarantine_undo_failed:{error}"));
+        }
+        restored += 1;
+        restored_bytes += record.get("bytes").and_then(Value::as_i64).unwrap_or(0);
+        set_legacy_record_status(&mut records, &id, "restored", None, now_ms);
+        save_legacy_quarantine_records(tenant_dir, &records, now_ms)?;
+    }
+    let review_count = records
+        .iter()
+        .filter(|record| record.get("status").and_then(Value::as_str) == Some("review_required"))
+        .count();
+    Ok(json!({
+        "ok": true,
+        "restored": restored,
+        "restoredBytes": restored_bytes,
+        "reviewCount": review_count
+    }))
+}
+
+pub(crate) fn purge_legacy_quarantine(
+    tenant_dir: &Path,
+    pinned_generations: &HashSet<i64>,
+    validated_v5_created_at_ms: i64,
+    now_ms: i64,
+) -> Result<Value, String> {
+    if validated_v5_created_at_ms <= 0 {
+        return Err("backup_legacy_quarantine_verified_v5_required".to_string());
+    }
+    let mut records = load_reconciled_legacy_quarantine_records(tenant_dir, now_ms)?;
+    let ids = records
+        .iter()
+        .filter(|record| record.get("status").and_then(Value::as_str) == Some("quarantined"))
+        .filter(|record| {
+            record
+                .get("purgeAfterMs")
+                .and_then(Value::as_i64)
+                .unwrap_or(i64::MAX)
+                <= now_ms
+        })
+        .filter_map(|record| record.get("id").and_then(Value::as_str).map(str::to_string))
+        .collect::<Vec<_>>();
+    let mut purged = 0i64;
+    let mut purged_bytes = 0i64;
+    for id in ids {
+        let Some(record) = records
+            .iter()
+            .find(|record| record.get("id").and_then(Value::as_str) == Some(id.as_str()))
+            .cloned()
+        else {
+            continue;
+        };
+        let generation = record
+            .get("generation")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        let created_at_ms = record
+            .get("createdAtMs")
+            .and_then(Value::as_i64)
+            .unwrap_or(i64::MAX);
+        let validation = (|| -> Result<PathBuf, String> {
+            if generation > 0 && pinned_generations.contains(&generation) {
+                return Err("generation_became_pinned".to_string());
+            }
+            if created_at_ms > validated_v5_created_at_ms {
+                return Err("verified_v5_is_older".to_string());
+            }
+            let (original, quarantined) = legacy_record_paths(tenant_dir, &record)?;
+            if original.exists() || !quarantined.is_dir() {
+                return Err("purge_path_state_changed".to_string());
+            }
+            let fingerprint = snapshot_fingerprint(&quarantined)?;
+            if record.get("fingerprint").and_then(Value::as_str) != Some(fingerprint.as_str()) {
+                return Err("purge_fingerprint_changed".to_string());
+            }
+            Ok(quarantined)
+        })();
+        let quarantined = match validation {
+            Ok(path) => path,
+            Err(reason) => {
+                set_legacy_record_status(
+                    &mut records,
+                    &id,
+                    "review_required",
+                    Some(&reason),
+                    now_ms,
+                );
+                save_legacy_quarantine_records(tenant_dir, &records, now_ms)?;
+                continue;
+            }
+        };
+        set_legacy_record_status(&mut records, &id, "purging", None, now_ms);
+        save_legacy_quarantine_records(tenant_dir, &records, now_ms)?;
+        if let Err(error) = fs::remove_dir_all(&quarantined) {
+            set_legacy_record_status(
+                &mut records,
+                &id,
+                "review_required",
+                Some("purge_delete_failed"),
+                now_ms,
+            );
+            save_legacy_quarantine_records(tenant_dir, &records, now_ms)?;
+            return Err(format!("backup_legacy_quarantine_purge_failed:{error}"));
+        }
+        purged += 1;
+        purged_bytes += record.get("bytes").and_then(Value::as_i64).unwrap_or(0);
+        set_legacy_record_status(&mut records, &id, "purged", None, now_ms);
+        save_legacy_quarantine_records(tenant_dir, &records, now_ms)?;
+    }
+    let review_count = records
+        .iter()
+        .filter(|record| record.get("status").and_then(Value::as_str) == Some("review_required"))
+        .count();
+    Ok(json!({
+        "ok": true,
+        "purged": purged,
+        "purgedBytes": purged_bytes,
+        "reviewCount": review_count
+    }))
+}
+
+pub(crate) fn maintain_legacy_quarantine(
+    tenant_dir: &Path,
+    pinned_generations: &HashSet<i64>,
+    validated_v5_created_at_ms: i64,
+    now_ms: i64,
+) -> Result<Value, String> {
+    let purge = purge_legacy_quarantine(
+        tenant_dir,
+        pinned_generations,
+        validated_v5_created_at_ms,
+        now_ms,
+    )?;
+    let quarantine = quarantine_legacy_snapshots(
+        tenant_dir,
+        pinned_generations,
+        validated_v5_created_at_ms,
+        now_ms,
+    )?;
+    Ok(json!({ "ok": true, "purge": purge, "quarantine": quarantine }))
 }
 
 #[cfg(test)]
@@ -661,11 +1166,92 @@ mod tests {
         assert_eq!(preview["candidateCount"], 1);
         fs::write(older.join("attachment.bin"), b"after!").unwrap();
         assert_eq!(
-            apply_legacy_cleanup(&root, &pinned, preview["previewToken"].as_str().unwrap())
-                .unwrap_err(),
+            apply_legacy_cleanup(
+                &root,
+                &pinned,
+                preview["previewToken"].as_str().unwrap(),
+                10,
+                10,
+            )
+            .unwrap_err(),
             "backup_legacy_cleanup_preview_changed"
         );
         assert!(older.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn legacy_snapshots_are_quarantined_for_thirty_days_and_can_be_restored() {
+        let root = std::env::temp_dir().join(format!(
+            "backup-v5-legacy-quarantine-{}",
+            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        for (name, created) in [("older", 1), ("newest", 2)] {
+            let snapshot = root.join("snapshots").join(name);
+            fs::create_dir_all(&snapshot).unwrap();
+            fs::write(
+                snapshot.join("manifest.json"),
+                json!({"version":4,"kind":"auto_sync","createdAtMs":created}).to_string(),
+            )
+            .unwrap();
+            fs::write(snapshot.join("attachment.bin"), name.as_bytes()).unwrap();
+        }
+        let pinned = HashSet::new();
+        let quarantined = quarantine_legacy_snapshots(&root, &pinned, 10, 100).unwrap();
+        assert_eq!(quarantined["quarantined"], 1);
+        assert!(!root.join("snapshots/older").exists());
+        assert!(root.join("snapshots/newest").exists());
+        let summary = legacy_quarantine_summary(&root, 100).unwrap();
+        assert_eq!(summary["quarantinedCount"], 1);
+        assert_eq!(summary["purgeAfterMs"], 100 + QUARANTINE_DAYS * 86_400_000);
+
+        let restored = undo_legacy_quarantine(&root, 200).unwrap();
+        assert_eq!(restored["restored"], 1);
+        assert!(root.join("snapshots/older").exists());
+        assert_eq!(
+            quarantine_legacy_snapshots(&root, &pinned, 10, 300).unwrap()["quarantined"],
+            0
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn legacy_quarantine_purge_revalidates_fingerprint_and_marks_review() {
+        let root = std::env::temp_dir().join(format!(
+            "backup-v5-legacy-review-{}",
+            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        for (name, created) in [("oldest", 1), ("older", 2), ("newest", 3)] {
+            let snapshot = root.join("snapshots").join(name);
+            fs::create_dir_all(&snapshot).unwrap();
+            fs::write(
+                snapshot.join("manifest.json"),
+                json!({"version":4,"kind":"auto_sync","createdAtMs":created}).to_string(),
+            )
+            .unwrap();
+            fs::write(snapshot.join("attachment.bin"), name.as_bytes()).unwrap();
+        }
+        let pinned = HashSet::new();
+        assert_eq!(
+            quarantine_legacy_snapshots(&root, &pinned, 10, 100).unwrap()["quarantined"],
+            2
+        );
+        let records = load_legacy_quarantine_records(&root).unwrap();
+        let changed = records
+            .iter()
+            .find(|record| record["snapshotName"] == "oldest")
+            .unwrap();
+        let (_, changed_path) = legacy_record_paths(&root, changed).unwrap();
+        fs::write(changed_path.join("attachment.bin"), b"changed").unwrap();
+
+        let purge_at = 100 + QUARANTINE_DAYS * 86_400_000;
+        let purged = purge_legacy_quarantine(&root, &pinned, 10, purge_at).unwrap();
+        assert_eq!(purged["purged"], 1);
+        assert_eq!(purged["reviewCount"], 1);
+        assert!(changed_path.exists());
+        let summary = legacy_quarantine_summary(&root, purge_at).unwrap();
+        assert_eq!(summary["quarantinedCount"], 0);
+        assert_eq!(summary["reviewCount"], 1);
         fs::remove_dir_all(root).unwrap();
     }
 }
