@@ -54,6 +54,18 @@ jobs:
       - name: Build Windows installer
         run: npx tauri build --config src-tauri/tauri.sidecar.conf.json --bundles nsis
 
+      - name: Verify desktop main binary selection
+        shell: pwsh
+        run: |
+          $mainBinary = "src-tauri/target/release/local-sensitive-store-desktop.exe"
+          $sidecarBinary = "src-tauri/target/release/classaimate-student-record-mcp.exe"
+          if (-not (Test-Path $mainBinary -PathType Leaf)) {
+            throw "Tauri did not build the desktop main binary: $mainBinary"
+          }
+          if (-not (Test-Path $sidecarBinary -PathType Leaf)) {
+            throw "Student record MCP sidecar is missing: $sidecarBinary"
+          }
+
       - name: Publish installer release and manifest
         shell: pwsh
         working-directory: .
