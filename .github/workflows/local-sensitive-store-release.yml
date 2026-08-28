@@ -48,8 +48,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Prepare student record MCP sidecar
+        run: npm run prepare:student-record-mcp-sidecar
+
       - name: Build Windows installer
-        run: npx tauri build --bundles nsis
+        run: npx tauri build --config src-tauri/tauri.sidecar.conf.json --bundles nsis
 
       - name: Publish installer release and manifest
         shell: pwsh

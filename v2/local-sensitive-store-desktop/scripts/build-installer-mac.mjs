@@ -29,7 +29,11 @@ if (process.platform !== "darwin") {
 }
 
 const npxCommand = process.platform === "win32" ? "npx.cmd" : "npx";
-const tauriResult = run(npxCommand, ["tauri", "build", "--bundles", "dmg"]);
+const sidecarResult = run(process.execPath, [path.join(projectRoot, "scripts", "prepare-student-record-mcp-sidecar.mjs")]);
+if (sidecarResult.status !== 0) {
+  process.exit(sidecarResult.status || 1);
+}
+const tauriResult = run(npxCommand, ["tauri", "build", "--config", "src-tauri/tauri.sidecar.conf.json", "--bundles", "dmg"]);
 if (tauriResult.status === 0) {
   process.exit(0);
 }

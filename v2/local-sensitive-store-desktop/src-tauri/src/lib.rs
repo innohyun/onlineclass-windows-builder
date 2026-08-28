@@ -13,6 +13,7 @@ mod shared_archive_apply;
 mod shared_archive_board;
 mod shared_archive_sync;
 mod student_private_photos;
+mod student_record_mcp;
 mod work_note_attachments;
 mod work_note_localization;
 mod work_note_reader;
@@ -42,7 +43,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-08-27.2-backup-scan-responsive";
+pub(crate) const SERVICE_VERSION: &str = "2026-08-28.1-student-record-mcp";
 const WORK_MEETING_ROOT_PAGE_ID: &str = "classaimate:work-meeting-minutes";
 const WORK_MEETING_ROOT_TITLE: &str = "업무 회의록";
 const WORK_MEETING_ROOT_INTRO: &str = "모바일에서 확정한 업무 회의록이 자동으로 들어옵니다.";
@@ -103,6 +104,11 @@ const LOCAL_SENSITIVE_STORE_ROUTES: &[&str] = &[
     "/v1/student-record-draft-sets/import",
     "/v1/student-record-drafts",
     "/v1/student-record-drafts/import",
+    "/v1/student-record-draft-batches",
+    "/v1/student-record-mcp/status",
+    "/v1/student-record-mcp/connection/activate",
+    "/v1/student-record-mcp/connection/disconnect",
+    "/v1/student-record-mcp/selections",
     "/v1/import-runs",
     "/v1/work-notes",
     "/v1/work-notes/move",
@@ -129,7 +135,7 @@ const LOCAL_SENSITIVE_STORE_ROUTES: &[&str] = &[
     "/v1/shared-archives/import",
     "/v1/shared-archives/import-jobs",
 ];
-const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 9] = [
+const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 11] = [
     "non_lesson_observations",
     "teacher_local_records",
     "work_notes",
@@ -139,6 +145,8 @@ const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 9] = [
     "work_note_localization_staging_v1",
     "work_note_system_folders_v1",
     "lesson_plan_bindings_v1",
+    "student_record_draft_batch_v1",
+    "student_record_mcp_v1",
 ];
 
 #[derive(Clone, Debug, Serialize)]
@@ -4622,6 +4630,68 @@ impl SqliteStore {
         Ok(saved)
     }
 
+    fn save_student_record_draft_batch(&self, input: Value) -> Result<Value, String> {
+        let tenant_id = normalize_tenant_id(input.get("tenantId"));
+        if tenant_id.is_empty() {
+            return Err("tenant_id_required".to_string());
+        }
+        let mut draft_set = input.get("draftSet").cloned().unwrap_or(Value::Null);
+        let draft_set_id = normalize_id_segment(
+            draft_set.get("draftSetId").or_else(|| draft_set.get("id")).or_else(|| draft_set.get("docId")),
+            260,
+        );
+        if draft_set_id.is_empty() {
+            return Err("student_record_draft_set_id_required".to_string());
+        }
+        let drafts = input.get("drafts").and_then(Value::as_array).cloned().unwrap_or_default();
+        if drafts.is_empty() {
+            return Err("student_record_drafts_required".to_string());
+        }
+        for draft in &drafts {
+            let entry_set_id = normalize_id_segment(draft.get("draftSetId").or_else(|| draft.get("setId")), 260);
+            if entry_set_id != draft_set_id {
+                return Err("student_record_draft_set_mismatch".to_string());
+            }
+        }
+        if let Value::Object(ref mut object) = draft_set {
+            set_obj(object, "tenantId", tenant_id.clone());
+            set_obj(object, "draftSetId", draft_set_id.clone());
+        } else {
+            return Err("student_record_draft_set_required".to_string());
+        }
+
+        let batch_store = SqliteStore::open(self.db_path.clone())?;
+        {
+            let conn = batch_store.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
+            conn.execute_batch("BEGIN IMMEDIATE")
+                .map_err(|e| format!("db_student_record_draft_batch_begin_failed:{e}"))?;
+        }
+        let result = (|| {
+            let saved_set = batch_store.upsert_student_record_draft_set(draft_set)?;
+            let mut saved_drafts = Vec::with_capacity(drafts.len());
+            for mut draft in drafts {
+                if let Value::Object(ref mut object) = draft {
+                    set_obj(object, "tenantId", tenant_id.clone());
+                    set_obj(object, "draftSetId", draft_set_id.clone());
+                }
+                saved_drafts.push(batch_store.upsert_student_record_draft(draft)?);
+            }
+            Ok::<Value, String>(json!({ "draftSet": saved_set, "drafts": saved_drafts }))
+        })();
+        let conn = batch_store.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
+        match result {
+            Ok(payload) => {
+                conn.execute_batch("COMMIT")
+                    .map_err(|e| format!("db_student_record_draft_batch_commit_failed:{e}"))?;
+                Ok(payload)
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
+    }
+
     fn list_student_record_drafts(&self, tenant_id: String, draft_id: String, draft_set_id: String, student_code: String, limit: i64) -> Result<Vec<Value>, String> {
         let safe_tenant = normalize_tenant_id(Some(&Value::String(tenant_id)));
         if safe_tenant.is_empty() {
@@ -4905,8 +4975,14 @@ fn json_response(status: u16, payload: Value, origin: &str) -> Response<std::io:
 fn request_error_status(error: &str) -> u16 {
     match error {
         "invalid_json" => 400,
+        "browser_token_required" | "MCP_GRANT_REQUIRED" => 401,
         "tenant_scope_mismatch" => 403,
+        "MCP_GRANT_EXPIRED" | "MCP_GRANT_REVOKED" | "MCP_SCOPE_DENIED" => 403,
         "body_too_large" => 413,
+        "EVIDENCE_LIMIT_EXCEEDED" => 413,
+        "SELECTION_EXPIRED" | "WORK_BUNDLE_EXPIRED" => 410,
+        "WORK_BUNDLE_CONSUMED" | "DRAFT_CONFLICT" => 409,
+        "LOCAL_SELECTION_REQUIRED" | "PII_OUTPUT_BLOCKED" => 400,
         "tenant_id_required" | "date_required" | "period_required" | "student_code_required"
         | "doc_id_required" | "cloud_sync_session_required" | "conflict_identity_required"
         | "board_snapshot_identity_required" | "media_identity_required" | "media_data_required"
@@ -5012,6 +5088,7 @@ fn handle_request(
     store: Arc<SqliteStore>,
     sync_manager: Arc<cloud_sync::CloudSyncManager>,
     device_sync_manager: Arc<device_sync::DeviceSyncManager>,
+    student_record_mcp_manager: Arc<student_record_mcp::StudentRecordMcpManager>,
     browser_links: Arc<BrowserLinkStore>,
     pairing_key: String,
 ) {
@@ -5072,6 +5149,51 @@ fn handle_request(
 
         if request.method() == &Method::Get && path == "/v1/health" {
             return Ok((200, health_payload(&store, authorized)));
+        }
+
+        if path.starts_with("/v1/student-record-mcp/") {
+            let tenant = browser_tenant
+                .clone()
+                .ok_or_else(|| "browser_token_required".to_string())?;
+            if request.method() == &Method::Get && path == "/v1/student-record-mcp/status" {
+                let requested = query(&url, "tenantId");
+                if requested != tenant {
+                    return Err("tenant_scope_mismatch".to_string());
+                }
+                return Ok((
+                    200,
+                    json!({ "ok": true, "data": student_record_mcp_manager.status(&tenant)? }),
+                ));
+            }
+            if request.method() == &Method::Post
+                && path == "/v1/student-record-mcp/connection/activate"
+            {
+                let body = scope_body_to_tenant(read_body(&mut request)?, Some(&tenant))?;
+                return Ok((
+                    200,
+                    json!({ "ok": true, "data": student_record_mcp_manager.activate(&tenant, &body)? }),
+                ));
+            }
+            if request.method() == &Method::Post
+                && path == "/v1/student-record-mcp/connection/disconnect"
+            {
+                let body = scope_body_to_tenant(read_body(&mut request)?, Some(&tenant))?;
+                return Ok((
+                    200,
+                    json!({ "ok": true, "data": student_record_mcp_manager.disconnect(&tenant, &body)? }),
+                ));
+            }
+            if request.method() == &Method::Post && path == "/v1/student-record-mcp/selections" {
+                let body = scope_body_to_tenant(read_body(&mut request)?, Some(&tenant))?;
+                return Ok((
+                    201,
+                    json!({ "ok": true, "data": student_record_mcp_manager.create_selection(&tenant, &body)? }),
+                ));
+            }
+            return Ok((
+                404,
+                json!({ "ok": false, "error": "student_record_mcp_route_not_found" }),
+            ));
         }
 
         if request.method() == &Method::Get && path == "/v1/device-authorization/browser-link" {
@@ -5755,6 +5877,15 @@ fn handle_request(
             return Ok((200, json!({ "ok": true, "imported": saved.len(), "records": saved })));
         }
 
+        if request.method() == &Method::Post && path == "/v1/student-record-draft-batches" {
+            let body = read_body(&mut request)?;
+            let saved = store.save_student_record_draft_batch(body)?;
+            return Ok((
+                200,
+                json!({ "ok": true, "draftSet": saved["draftSet"], "drafts": saved["drafts"] }),
+            ));
+        }
+
         if request.method() == &Method::Get && path == "/v1/import-runs" {
             let limit = query(&url, "limit").parse::<i64>().unwrap_or(20);
             let records = store.list_import_runs(
@@ -5972,12 +6103,18 @@ fn start_service() -> Result<(
         paths.data_dir.clone(),
         Arc::clone(&store),
     ));
+    let student_record_mcp_manager = Arc::new(student_record_mcp::StudentRecordMcpManager::open(
+        paths.data_dir.clone(),
+        Arc::clone(&store),
+        Arc::clone(&device_sync_manager),
+    )?);
     let browser_links = Arc::new(BrowserLinkStore::open(&paths.data_dir)?);
     let (server, port) = bind_server()?;
     let endpoint = format!("http://{HOST}:{port}");
     let thread_store = Arc::clone(&store);
     let thread_sync_manager = Arc::clone(&sync_manager);
     let thread_device_sync_manager = Arc::clone(&device_sync_manager);
+    let thread_student_record_mcp_manager = Arc::clone(&student_record_mcp_manager);
     let thread_browser_links = Arc::clone(&browser_links);
     let thread_key = pairing_key.clone();
 
@@ -5988,6 +6125,7 @@ fn start_service() -> Result<(
                 Arc::clone(&thread_store),
                 Arc::clone(&thread_sync_manager),
                 Arc::clone(&thread_device_sync_manager),
+                Arc::clone(&thread_student_record_mcp_manager),
                 Arc::clone(&thread_browser_links),
                 thread_key.clone(),
             );
@@ -7079,6 +7217,23 @@ mod teacher_popup_tests {
         assert!(is_classaimate_popup_url(&Url::parse("about:blank").unwrap()));
         assert!(!is_classaimate_popup_url(&Url::parse("https://developers.openai.com/api/docs/pricing").unwrap()));
     }
+}
+
+pub async fn run_student_record_mcp_stdio() -> Result<(), String> {
+    let paths = resolve_paths();
+    fs::create_dir_all(&paths.data_dir)
+        .map_err(|error| format!("data_dir_create_failed:{error}"))?;
+    let store = Arc::new(SqliteStore::open(paths.db_path)?);
+    let device_sync_manager = Arc::new(device_sync::DeviceSyncManager::new(
+        paths.data_dir.clone(),
+        Arc::clone(&store),
+    ));
+    let manager = Arc::new(student_record_mcp::StudentRecordMcpManager::open(
+        paths.data_dir,
+        store,
+        device_sync_manager,
+    )?);
+    student_record_mcp::run_stdio(manager).await
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

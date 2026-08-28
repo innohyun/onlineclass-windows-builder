@@ -1,13 +1,14 @@
 {
   "name": "local-sensitive-store-desktop",
   "private": true,
-  "version": "0.2.51",
+  "version": "0.2.52",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "npm run build:frontend",
     "build:frontend": "node scripts/build-frontend.mjs",
     "build:frontend:raw": "tsc --noEmit && vite build",
+    "prepare:student-record-mcp-sidecar": "node scripts/prepare-student-record-mcp-sidecar.mjs",
     "preview": "vite preview",
     "tauri": "tauri",
     "dev:desktop": "npm run tauri dev",

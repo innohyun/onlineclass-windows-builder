@@ -1,6 +1,6 @@
 [package]
 name = "local-sensitive-store-desktop"
-version = "0.2.51"
+version = "0.2.52"
 description = "ClassAiMate 교사 데스크 로컬 데이터 저장소"
 authors = ["onlineclass"]
 edition = "2021"
@@ -27,6 +27,13 @@ keyring = "3"
 ureq = { version = "2", features = ["json"] }
 base64 = "0.22"
 sha2 = "0.10"
+regex = "1"
+fs2 = "0.4"
+rmcp = { version = "=3.0.1", features = ["server", "transport-io"] }
+tokio = { version = "1", features = ["io-std", "macros", "rt-multi-thread"] }
+
+[dev-dependencies]
+rmcp = { version = "=3.0.1", features = ["client", "server", "transport-io"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Security_Cryptography", "Win32_System_Memory"] }

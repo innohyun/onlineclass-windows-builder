@@ -172,6 +172,59 @@ impl DeviceSyncManager {
         self.credential_store.read(&session.keyring_account)
     }
 
+    pub(crate) fn student_record_mcp_identity(&self) -> Result<Value, String> {
+        let session = self
+            .load_session()?
+            .ok_or_else(|| "device_sync_session_required".to_string())?;
+        self.credential(&session)?;
+        Ok(json!({
+            "tenantId": session.tenant_id,
+            "actorId": session.uid,
+            "deviceId": session.device_id,
+            "appVersion": session.app_version,
+        }))
+    }
+
+    pub(crate) fn authorize_student_record_mcp_tool(
+        &self,
+        grant_id: &str,
+        tool_name: &str,
+    ) -> Result<Value, String> {
+        if !valid_identifier(grant_id, 128) {
+            return Err("MCP_GRANT_REQUIRED".to_string());
+        }
+        let session = self
+            .load_session()?
+            .ok_or_else(|| "MCP_GRANT_REQUIRED".to_string())?;
+        let credential = self
+            .credential(&session)
+            .map_err(|_| "MCP_GRANT_REQUIRED".to_string())?;
+        let path = format!("/student-record-mcp/grants/{grant_id}/authorize-tool");
+        match self.authorized_post(
+            &session,
+            &credential,
+            &path,
+            json!({ "toolName": tool_name }),
+        ) {
+            Ok(data) if data.get("authorized").and_then(Value::as_bool) == Some(true) => Ok(data),
+            Ok(_) => Err("MCP_GRANT_REQUIRED".to_string()),
+            Err(error) => {
+                for code in [
+                    "MCP_GRANT_REQUIRED",
+                    "MCP_GRANT_EXPIRED",
+                    "MCP_GRANT_REVOKED",
+                    "MCP_SCOPE_DENIED",
+                    "MCP_NOT_YET_EFFECTIVE",
+                ] {
+                    if error.contains(code) {
+                        return Err(code.to_string());
+                    }
+                }
+                Err("MCP_GRANT_REQUIRED".to_string())
+            }
+        }
+    }
+
     fn authorized_get(
         &self,
         session: &DeviceSyncSession,

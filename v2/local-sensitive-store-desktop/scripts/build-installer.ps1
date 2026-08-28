@@ -22,13 +22,16 @@ $vcvars = $vcvarsCandidates | Where-Object { Test-Path $_ -PathType Leaf } | Sel
 
 Push-Location $projectRoot
 try {
+  npm run prepare:student-record-mcp-sidecar
+  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
   if ($vcvars) {
     Write-Host "[build-installer] Using vcvars: $vcvars"
-    cmd /c "`"$vcvars`" >nul && npx tauri build --bundles nsis"
+    cmd /c "`"$vcvars`" >nul && npx tauri build --config src-tauri/tauri.sidecar.conf.json --bundles nsis"
     exit $LASTEXITCODE
   }
 
-  npx tauri build --bundles nsis
+  npx tauri build --config src-tauri/tauri.sidecar.conf.json --bundles nsis
   exit $LASTEXITCODE
 }
 finally {
