@@ -58,6 +58,7 @@ function formatDateTime(ms?: number) {
 }
 
 function showView(view: string) {
+  document.body.dataset.appView = view;
   document.querySelectorAll<HTMLElement>("[data-app-view]").forEach((panel) => {
     const active = panel.dataset.appView === view;
     panel.hidden = !active;

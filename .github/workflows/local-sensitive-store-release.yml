@@ -105,38 +105,114 @@ jobs:
           $tauriConfig = Get-Content "src-tauri/tauri.conf.json" -Raw | ConvertFrom-Json
           $shortcutRoots = @((Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'), (Join-Path $env:PROGRAMDATA 'Microsoft\Windows\Start Menu\Programs'), [Environment]::GetFolderPath('Desktop'), (Join-Path $env:PUBLIC 'Desktop'))
           $shell = New-Object -ComObject WScript.Shell
+          Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class WindowGate {
+  [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+}
+'@
+          function Get-InstalledGuiProcess([string]$TargetPath) {
+            $resolvedTarget = [IO.Path]::GetFullPath($TargetPath)
+            foreach ($row in Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath }) {
+              if ([IO.Path]::GetFullPath($row.ExecutablePath) -ine $resolvedTarget) { continue }
+              $process = Get-Process -Id $row.ProcessId -ErrorAction SilentlyContinue
+              if ($process) { return $process }
+            }
+            return $null
+          }
+          function Wait-InstalledGuiProcess([string]$TargetPath, [int]$ExpectedProcessId = 0) {
+            for ($attempt = 0; $attempt -lt 30; $attempt++) {
+              Start-Sleep -Milliseconds 500
+              $process = Get-InstalledGuiProcess $TargetPath
+              if (-not $process) { continue }
+              $process.Refresh()
+              if ($ExpectedProcessId -and $process.Id -ne $ExpectedProcessId) { throw "Shortcut created a second desktop process. expected=$ExpectedProcessId actual=$($process.Id)" }
+              if ($process.MainWindowHandle -ne 0 -and [WindowGate]::IsWindowVisible($process.MainWindowHandle)) { return $process }
+            }
+            throw "Installed GUI window did not become visible for $TargetPath."
+          }
+          function Close-GuiWindow([System.Diagnostics.Process]$Process) {
+            $Process.Refresh()
+            if ($Process.MainWindowHandle -eq 0) { throw "Desktop process has no window to close." }
+            if (-not [WindowGate]::PostMessage($Process.MainWindowHandle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)) { throw "WM_CLOSE delivery failed." }
+          }
           $shortcut = $null
+          $quickShortcut = $null
           $shortcutAudit = @()
           foreach ($candidate in Get-ChildItem $shortcutRoots -Filter '*.lnk' -Recurse -ErrorAction SilentlyContinue) {
             $resolved = $shell.CreateShortcut($candidate.FullName)
             $shortcutAudit += "$($candidate.FullName) -> $($resolved.TargetPath)"
             if ([IO.Path]::GetFileName($resolved.TargetPath) -ieq 'classaimate-student-record-mcp.exe') { throw "Installer shortcut points to MCP sidecar." }
-            if ($candidate.BaseName -ieq $tauriConfig.productName) { $shortcut = [pscustomobject]@{ File = $candidate; Target = $resolved.TargetPath }; break }
+            if ($candidate.BaseName -ieq $tauriConfig.productName) { $shortcut = [pscustomobject]@{ File = $candidate; Target = $resolved.TargetPath; Arguments = $resolved.Arguments } }
+            if ($candidate.BaseName -ieq 'ClassAiMate 빠른 관찰기록') { $quickShortcut = [pscustomobject]@{ File = $candidate; Target = $resolved.TargetPath; Arguments = $resolved.Arguments } }
           }
           if (-not $shortcut) { throw "Installed product shortcut was not found. Candidates: $($shortcutAudit -join '; ')" }
+          if (-not $quickShortcut) { throw "Installed quick observation shortcut was not found. Candidates: $($shortcutAudit -join '; ')" }
           if ($shortcut.Target) {
             if (-not (Test-Path $shortcut.Target -PathType Leaf)) { throw "Installed product shortcut target does not exist: $($shortcut.Target)" }
             if ((Get-PeSubsystem $shortcut.Target) -ne 2) { throw "Installed product shortcut target is not WINDOWS_GUI subsystem." }
           }
+          if ($quickShortcut.Target) {
+            if (-not (Test-Path $quickShortcut.Target -PathType Leaf)) { throw "Installed quick observation shortcut target does not exist: $($quickShortcut.Target)" }
+            if ((Get-PeSubsystem $quickShortcut.Target) -ne 2) { throw "Installed quick observation shortcut target is not WINDOWS_GUI subsystem." }
+          }
+          if ($shortcut.Target -and $quickShortcut.Target -and ([IO.Path]::GetFullPath($quickShortcut.Target) -ine [IO.Path]::GetFullPath($shortcut.Target))) { throw "Quick observation shortcut does not target the desktop GUI executable." }
+          if ($quickShortcut.Arguments -and [string]$quickShortcut.Arguments -ne '--quick-observation') { throw "Quick observation shortcut arguments are invalid: $($quickShortcut.Arguments)" }
+          $preferencesDir = Join-Path $env:APPDATA 'OnlineClass\local-sensitive-store'
+          New-Item -ItemType Directory -Path $preferencesDir -Force | Out-Null
+          $preferencesPath = Join-Path $preferencesDir 'desktop-preferences.json'
+          @{ startWithWindows = $false; keepRunningOnClose = $true } | ConvertTo-Json | Set-Content -Path $preferencesPath -Encoding UTF8
           $beforeProcessIds = @(Get-CimInstance Win32_Process | Select-Object -ExpandProperty ProcessId)
           Start-Process -FilePath $shortcut.File.FullName
-          $windowProcesses = @()
-          for ($attempt = 0; $attempt -lt 20; $attempt++) {
-            Start-Sleep -Seconds 1
-            $windowProcesses = @()
-            foreach ($row in Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and ($beforeProcessIds -notcontains $_.ProcessId) }) {
-              if ([IO.Path]::GetFileName($row.ExecutablePath) -ieq 'classaimate-student-record-mcp.exe') { continue }
-              $process = Get-Process -Id $row.ProcessId -ErrorAction SilentlyContinue
-              if ($process -and $process.MainWindowHandle -ne 0 -and (Get-PeSubsystem $row.ExecutablePath) -eq 2) {
-                $windowProcesses += [pscustomobject]@{ Process = $process; Path = $row.ExecutablePath }
+          if ($shortcut.Target) {
+            $installedTarget = $shortcut.Target
+            $desktopProcess = Wait-InstalledGuiProcess $installedTarget
+          } else {
+            $newWindowProcesses = @()
+            for ($attempt = 0; $attempt -lt 30; $attempt++) {
+              Start-Sleep -Milliseconds 500
+              $newWindowProcesses = @()
+              foreach ($row in Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and ($beforeProcessIds -notcontains $_.ProcessId) }) {
+                if ([IO.Path]::GetFileName($row.ExecutablePath) -ieq 'classaimate-student-record-mcp.exe') { continue }
+                $process = Get-Process -Id $row.ProcessId -ErrorAction SilentlyContinue
+                if ($process -and $process.MainWindowHandle -ne 0 -and [WindowGate]::IsWindowVisible($process.MainWindowHandle) -and (Get-PeSubsystem $row.ExecutablePath) -eq 2) {
+                  $newWindowProcesses += [pscustomobject]@{ Process = $process; Path = $row.ExecutablePath }
+                }
               }
+              if ($newWindowProcesses.Count -gt 0) { break }
             }
-            if ($windowProcesses.Count -gt 0) { break }
+            if ($newWindowProcesses.Count -ne 1) { throw "Product shortcut launch expected exactly one new GUI window process; found $($newWindowProcesses.Count)." }
+            $desktopProcess = $newWindowProcesses[0].Process
+            $installedTarget = $newWindowProcesses[0].Path
           }
-          if ($windowProcesses.Count -ne 1) { throw "Product shortcut launch expected exactly one new GUI window process; found $($windowProcesses.Count)." }
-          $desktopProcess = $windowProcesses[0].Process
-          if ($shortcut.Target -and ([IO.Path]::GetFullPath($windowProcesses[0].Path) -ine [IO.Path]::GetFullPath($shortcut.Target))) { throw "Product shortcut launched an unexpected executable." }
-          Stop-Process -Id $desktopProcess.Id -Force
+          if ($quickShortcut.Target -and ([IO.Path]::GetFullPath($quickShortcut.Target) -ine [IO.Path]::GetFullPath($installedTarget))) { throw "Quick observation shortcut resolves to an unexpected GUI executable." }
+          $backgroundProcessId = $desktopProcess.Id
+          for ($cycle = 1; $cycle -le 10; $cycle++) {
+            Close-GuiWindow $desktopProcess
+            Start-Sleep -Milliseconds 700
+            if (-not (Get-Process -Id $backgroundProcessId -ErrorAction SilentlyContinue)) { throw "Background ON close exited during cycle $cycle." }
+            Start-Process -FilePath $shortcut.File.FullName
+            $desktopProcess = Wait-InstalledGuiProcess $installedTarget $backgroundProcessId
+          }
+          Close-GuiWindow $desktopProcess
+          Start-Sleep -Milliseconds 700
+          Start-Process -FilePath $quickShortcut.File.FullName
+          $desktopProcess = Wait-InstalledGuiProcess $installedTarget $backgroundProcessId
+          Stop-Process -Id $backgroundProcessId -Force
+          Wait-Process -Id $backgroundProcessId -ErrorAction SilentlyContinue
+          @{ startWithWindows = $false; keepRunningOnClose = $false } | ConvertTo-Json | Set-Content -Path $preferencesPath -Encoding UTF8
+          Start-Process -FilePath $shortcut.File.FullName
+          $desktopProcess = Wait-InstalledGuiProcess $installedTarget
+          $foregroundProcessId = $desktopProcess.Id
+          Close-GuiWindow $desktopProcess
+          for ($attempt = 0; $attempt -lt 20 -and (Get-Process -Id $foregroundProcessId -ErrorAction SilentlyContinue); $attempt++) { Start-Sleep -Milliseconds 500 }
+          if (Get-Process -Id $foregroundProcessId -ErrorAction SilentlyContinue) { throw "Background OFF close did not exit the process." }
+          Start-Process -FilePath $shortcut.File.FullName
+          $reopenedProcess = Wait-InstalledGuiProcess $installedTarget
+          if ($reopenedProcess.Id -eq $foregroundProcessId) { throw "Background OFF relaunch did not create a new process." }
+          Stop-Process -Id $reopenedProcess.Id -Force
 
       - name: Publish installer release and manifest
         shell: pwsh

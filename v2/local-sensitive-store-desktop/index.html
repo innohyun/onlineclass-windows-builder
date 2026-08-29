@@ -49,6 +49,9 @@
           <button class="sidebar-link" type="button" data-app-view-target="students">
             <i class="fa-solid fa-user-group" aria-hidden="true"></i><span>학생별 보기</span>
           </button>
+          <button class="sidebar-link" type="button" data-app-view-target="quick-observation">
+            <i class="fa-solid fa-pen-to-square" aria-hidden="true"></i><span>빠른 관찰</span>
+          </button>
           <button class="sidebar-link" type="button" data-app-view-target="backup">
             <i class="fa-solid fa-clock-rotate-left" aria-hidden="true"></i><span>백업·복원</span>
           </button>
@@ -122,6 +125,7 @@
             </div>
 
             <div class="home-secondary-actions">
+              <button class="is-primary" data-app-view-target="quick-observation" type="button"><i class="fa-solid fa-pen-to-square" aria-hidden="true"></i> 빠른 관찰기록</button>
               <button id="homeStorageOpen" data-action="open-data-directory" type="button"><i class="fa-solid fa-folder-open" aria-hidden="true"></i> 저장 위치 열기</button>
               <button class="is-primary" data-action="run-backup" type="button"><i class="fa-solid fa-cloud-arrow-up" aria-hidden="true"></i> 새 백업 만들기</button>
             </div>
@@ -143,6 +147,34 @@
               <span>최근 백업 <strong id="homeFooterBackupText">-</strong></span>
               <span class="healthbar-pending">ClassAiMate 교사 데스크</span>
             </footer>
+          </section>
+
+          <section class="app-view quick-observation-view" data-app-view="quick-observation" aria-labelledby="quickObservationTitle" hidden>
+            <header class="quick-observation-heading">
+              <div><div class="quick-observation-title-row"><h1 id="quickObservationTitle">빠른 관찰</h1><span><i class="fa-solid fa-shield-halved" aria-hidden="true"></i> 이 PC에만 안전하게 저장</span></div><p><strong id="quickObservationTenant">연결된 학급 확인 중</strong><span id="quickObservationRosterTime">명단을 확인하고 있습니다.</span></p></div>
+              <div><button id="quickObservationHelp" type="button"><i class="fa-solid fa-circle-question" aria-hidden="true"></i> 안내</button><button id="quickObservationRefresh" type="button" aria-label="빠른 관찰 명단 새로고침"><i class="fa-solid fa-rotate" aria-hidden="true"></i></button></div>
+            </header>
+
+            <div class="quick-observation-alert" id="quickObservationAlert" role="status" hidden></div>
+            <div class="quick-observation-layout" id="quickObservationLayout">
+              <section class="quick-roster-card" data-quick-observation-tutorial="roster" aria-labelledby="quickRosterTitle">
+                <header><div><h2 id="quickRosterTitle">학생 선택</h2><span id="quickObservationSelected">선택 0명</span></div><div><button id="quickObservationSelectAll" type="button">전체 선택</button><button id="quickObservationClear" type="button">선택 해제</button></div></header>
+                <label class="quick-roster-search" for="quickObservationSearch"><i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i><span class="sr-only">학생 검색</span><input id="quickObservationSearch" type="search" autocomplete="off" placeholder="학생 검색" /></label>
+                <div class="quick-roster-grid" id="quickObservationRoster" role="group" aria-label="관찰할 학생 선택"></div>
+              </section>
+
+              <form class="quick-composer-card" id="quickObservationForm">
+                <fieldset data-quick-observation-tutorial="context"><legend>상황 선택</legend><div class="quick-chip-row" id="quickObservationContext"><button type="button" data-value="lesson">수업</button><button type="button" data-value="recess">쉬는 시간</button><button type="button" data-value="counseling">상담</button><button type="button" data-value="daily_guidance">생활지도</button><button type="button" data-value="other">기타</button></div></fieldset>
+                <fieldset><legend>관찰 상태</legend><div class="quick-chip-row quick-status-row" id="quickObservationStatus"><button type="button" data-value="good">강점</button><button type="button" data-value="warning">계속 관찰</button><button type="button" data-value="help">도움 필요</button><button type="button" data-value="none" aria-pressed="true">일반</button></div></fieldset>
+                <label class="quick-note-field" data-quick-observation-tutorial="memo" for="quickObservationNote"><span>관찰 메모 <small id="quickObservationNoteCount">0 / 1000</small></span><textarea id="quickObservationNote" maxlength="1000" rows="5" placeholder="관찰한 행동을 간단히 입력하세요."></textarea></label>
+                <details class="quick-observation-details" id="quickObservationDetails"><summary>상세 입력 <i class="fa-solid fa-chevron-down" aria-hidden="true"></i></summary><div><label>날짜<input id="quickObservationDate" type="date" /></label><label class="quick-lesson-field">교시<input id="quickObservationPeriod" type="number" min="1" max="20" inputmode="numeric" /></label><label class="quick-lesson-field">과목<input id="quickObservationSubject" maxlength="120" type="text" /></label><label>기록 영역<select id="quickObservationDomain"><option value="behavior">행발</option><option value="subjects">교과</option><option value="creative">창체</option></select></label><label id="quickObservationCreativeField" hidden>창체 영역<input id="quickObservationCreative" maxlength="120" type="text" /></label><label class="quick-tags-field">태그<input id="quickObservationTags" maxlength="600" type="text" placeholder="쉼표로 구분" /></label></div></details>
+                <p class="quick-observation-form-status" id="quickObservationFormStatus" role="status">학생·상황·메모를 선택하면 바로 저장할 수 있습니다.</p>
+                <button class="quick-observation-save" id="quickObservationSave" data-quick-observation-tutorial="save" type="submit" disabled><i class="fa-solid fa-floppy-disk" aria-hidden="true"></i> 선택한 학생 기록 저장</button>
+              </form>
+            </div>
+
+            <section class="quick-recent-card" aria-labelledby="quickRecentTitle"><header><h2 id="quickRecentTitle">최근 저장</h2><span>기존 관찰기록과 같은 로컬 DB</span></header><div id="quickObservationRecent"></div></section>
+            <aside class="quick-observation-tutorial" id="quickObservationTutorial" hidden><header><span id="quickObservationTutorialStep">1 / 4</span><button id="quickObservationTutorialClose" type="button" aria-label="빠른 관찰 안내 닫기"><i class="fa-solid fa-xmark" aria-hidden="true"></i></button></header><h2 id="quickObservationTutorialTitle">학생 선택</h2><p id="quickObservationTutorialBody"></p><footer><button id="quickObservationTutorialPrevious" type="button">이전</button><button id="quickObservationTutorialNext" type="button">다음</button></footer></aside>
           </section>
 
           <section class="app-view local-workspace-view" id="localWorkspaceLesson" data-app-view="lesson-materials" aria-labelledby="localWorkspaceLessonTitle" hidden>

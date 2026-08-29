@@ -7,6 +7,7 @@ mod cloud_sync;
 mod data_explorer;
 mod device_sync;
 mod device_sync_credential;
+mod desktop_activation;
 mod desktop_preferences;
 mod shared_archive;
 mod shared_archive_apply;
@@ -23,6 +24,7 @@ mod lesson_plan_bindings;
 mod local_workspaces;
 mod password_vault;
 mod password_vault_crypto;
+mod quick_observation;
 use rand::{distributions::Alphanumeric, Rng};
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, ToSql};
 use serde::{Deserialize, Serialize};
@@ -46,7 +48,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-08-28.4-school-password-vault";
+pub(crate) const SERVICE_VERSION: &str = "2026-08-29.1-quick-observation-reopen";
 const WORK_MEETING_ROOT_PAGE_ID: &str = "classaimate:work-meeting-minutes";
 const WORK_MEETING_ROOT_TITLE: &str = "업무 회의록";
 const WORK_MEETING_ROOT_INTRO: &str = "모바일에서 확정한 업무 회의록이 자동으로 들어옵니다.";
@@ -75,6 +77,7 @@ const LOCAL_SENSITIVE_STORE_ROUTES: &[&str] = &[
     "/v1/observations",
     "/v1/stats",
     "/v1/observations/import",
+    "/v1/quick-observation/roster",
     "/v1/teacher-counseling-sessions",
     "/v1/student-private-details",
     "/v1/student-private-details/import",
@@ -152,7 +155,7 @@ const LOCAL_SENSITIVE_STORE_ROUTES: &[&str] = &[
     "/v1/password-vault/shared/decrypt",
     "/v1/password-vault/shared/recover",
 ];
-const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 15] = [
+const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 16] = [
     "non_lesson_observations",
     "teacher_local_records",
     "work_notes",
@@ -168,6 +171,7 @@ const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 15] = [
     "teacher_counseling_mcp_drafts_v1",
     "password_vault_personal_v1",
     "password_vault_shared_v1",
+    "quick_observation_v1",
 ];
 
 #[derive(Clone, Debug, Serialize)]
@@ -1998,6 +2002,7 @@ impl SqliteStore {
             "#,
         )
         .map_err(|e| format!("db_schema_failed:{e}"))?;
+        quick_observation::ensure_schema(&conn)?;
         work_note_attachments::ensure_schema(&conn)?;
         work_note_localization::ensure_schema(&conn)?;
         lesson_plan_bindings::ensure_schema(&conn)?;
@@ -5033,7 +5038,13 @@ fn request_error_status(error: &str) -> u16 {
         | "work_note_localization_attachment_mismatch" | "work_note_localization_attachment_count_mismatch"
         | "work_note_localization_page_count_mismatch"
         | "backup_root_required" | "backup_root_inside_local_store"
-        | "backup_manifest_required" | "backup_manifest_outside_configured_root" | "backup_db_required" => 400,
+        | "backup_manifest_required" | "backup_manifest_outside_configured_root" | "backup_db_required"
+        | "quick_roster_students_required" | "quick_roster_student_limit_exceeded"
+        | "quick_roster_student_invalid" | "quick_observation_students_required"
+        | "quick_observation_student_unknown" | "quick_observation_context_required"
+        | "quick_observation_status_invalid" | "quick_observation_note_required"
+        | "quick_observation_subject_required" | "quick_observation_creative_area_required" => 400,
+        "quick_roster_missing" => 409,
         "work_note_has_children" | "work_note_root_move_forbidden" | "work_note_root_sibling_forbidden"
         | "work_note_move_target_changed" | "work_note_localization_identity_mismatch"
         | "work_note_localization_state_invalid" | "work_note_localization_not_verified"
@@ -5332,6 +5343,24 @@ fn handle_request(
                 Ok(_) => Ok((200, json!({ "ok": true, "disconnected": true, "deviceCredentialRevoked": true }))),
                 Err(error) => Err(error),
             };
+        }
+
+        if path == "/v1/quick-observation/roster" {
+            let tenant_id = browser_tenant
+                .clone()
+                .ok_or_else(|| "browser_token_required".to_string())?;
+            if request.method() == &Method::Get {
+                let requested = query(&url, "tenantId");
+                if requested != tenant_id {
+                    return Err("tenant_scope_mismatch".to_string());
+                }
+                return Ok((200, quick_observation::roster_http_get(&store, &tenant_id)?));
+            }
+            if request.method() == &Method::Put {
+                let body = read_body(&mut request)?;
+                return Ok((200, store.put_quick_roster_snapshot(&body)?));
+            }
+            return Ok((405, json!({ "ok": false, "error": "method_not_allowed" })));
         }
 
         if request.method() == &Method::Post && path == "/v1/shared-archives/import" {
@@ -6461,6 +6490,53 @@ fn get_device_connection_status(state: tauri::State<'_, AppState>) -> Value {
 }
 
 #[tauri::command]
+fn get_quick_observation_context(state: tauri::State<'_, AppState>) -> Value {
+    let store = match state.store.lock().ok().and_then(|value| value.clone()) {
+        Some(store) => store,
+        None => return json!({ "ok": false, "error": "local_store_unavailable" }),
+    };
+    let link = state
+        .browser_links
+        .lock()
+        .ok()
+        .and_then(|value| value.clone())
+        .and_then(|store| store.latest());
+    quick_observation::context(&store, link)
+        .unwrap_or_else(|error| json!({ "ok": false, "error": error }))
+}
+
+#[tauri::command]
+fn save_quick_observation_batch(state: tauri::State<'_, AppState>, input: Value) -> Value {
+    let store = match state.store.lock().ok().and_then(|value| value.clone()) {
+        Some(store) => store,
+        None => return json!({ "ok": false, "error": "local_store_unavailable" }),
+    };
+    let link = match state
+        .browser_links
+        .lock()
+        .ok()
+        .and_then(|value| value.clone())
+        .and_then(|store| store.latest())
+    {
+        Some(link) => link,
+        None => return json!({ "ok": false, "error": "quick_observation_connection_required" }),
+    };
+    let explicit = normalize_json_text(input.get("tenantId"), 160);
+    if !explicit.is_empty() && explicit != link.tenant_id {
+        return json!({ "ok": false, "error": "tenant_scope_mismatch" });
+    }
+    quick_observation::save_batch(&store, &link.tenant_id, input)
+        .unwrap_or_else(|error| json!({ "ok": false, "error": error }))
+}
+
+#[tauri::command]
+fn take_desktop_activation_intent(
+    state: tauri::State<'_, desktop_activation::DesktopActivationState>,
+) -> Option<desktop_activation::DesktopActivationIntent> {
+    state.take()
+}
+
+#[tauri::command]
 fn prepare_teacher_home_bridge(state: tauri::State<'_, AppState>) -> Value {
     let browser_links = match state
         .browser_links
@@ -6927,24 +7003,6 @@ fn open_external_url(url: &str) -> Value {
     }
 }
 
-fn show_or_create_main_window(app: &tauri::AppHandle) -> Result<(), String> {
-    let window = if let Some(window) = app.get_webview_window("main") {
-        window
-    } else {
-        let config = app.config().app.windows.iter()
-            .find(|config| config.label == "main")
-            .cloned()
-            .ok_or_else(|| "main_window_config_missing".to_string())?;
-        tauri::WebviewWindowBuilder::from_config(app, &config)
-            .map_err(|error| format!("main_window_builder_failed:{error}"))?
-            .build()
-            .map_err(|error| format!("main_window_create_failed:{error}"))?
-    };
-    let _ = window.unminimize();
-    window.show().map_err(|error| format!("main_window_show_failed:{error}"))?;
-    window.set_focus().map_err(|error| format!("main_window_focus_failed:{error}"))
-}
-
 fn should_start_background() -> bool {
     env::var("ONLINECLASS_LOCAL_STORE_BACKGROUND")
         .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
@@ -6960,14 +7018,16 @@ fn hide_main_window(app: &tauri::AppHandle) {
 
 fn setup_tray(app: &mut tauri::App) -> Result<(), tauri::Error> {
     let show_i = MenuItem::with_id(app, "show", "열기", true, None::<&str>)?;
+    let quick_observation_i = MenuItem::with_id(app, "quick-observation", "빠른 관찰기록", true, None::<&str>)?;
     let sync_i = MenuItem::with_id(app, "sync", "지금 수거", true, None::<&str>)?;
     let quit_i = MenuItem::with_id(app, "quit", "종료", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show_i, &sync_i, &quit_i])?;
+    let menu = Menu::with_items(app, &[&show_i, &quick_observation_i, &sync_i, &quit_i])?;
     let mut builder = TrayIconBuilder::new()
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
-            "show" => { let _ = show_or_create_main_window(app); }
+            "show" => desktop_activation::activate(app, desktop_activation::DesktopActivationIntent::ShowMain, "tray-menu"),
+            "quick-observation" => desktop_activation::activate(app, desktop_activation::DesktopActivationIntent::QuickObservation, "tray-quick-observation"),
             "sync" => {
                 if let Some(state) = app.try_state::<AppState>() {
                     if let Some(manager) = state.sync_manager.lock().ok().and_then(|value| value.clone()) {
@@ -6987,7 +7047,7 @@ fn setup_tray(app: &mut tauri::App) -> Result<(), tauri::Error> {
                 ..
             } = event
             {
-                let _ = show_or_create_main_window(&tray.app_handle());
+                desktop_activation::activate(&tray.app_handle(), desktop_activation::DesktopActivationIntent::ShowMain, "tray-click");
             }
         });
     if let Some(icon) = app.default_window_icon() {
@@ -7348,8 +7408,9 @@ pub async fn run_student_record_mcp_stdio() -> Result<(), String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            let _ = show_or_create_main_window(app);
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            let intent = desktop_activation::DesktopActivationIntent::from_args(args);
+            desktop_activation::activate(app, intent, "single-instance");
         }))
         .plugin(tauri_plugin_dialog::init())
         .on_window_event(|window, event| {
@@ -7370,6 +7431,11 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            let initial_intent = desktop_activation::DesktopActivationIntent::from_args(env::args());
+            app.manage(desktop_activation::DesktopActivationState::new(
+                default_data_dir(),
+                initial_intent,
+            ));
             let preferences = desktop_preferences::DesktopPreferencesStore::open(&default_data_dir());
             if let Err(error) = preferences.apply_startup_setting() {
                 eprintln!("[local-sensitive-store] autostart setup failed: {error}");
@@ -7404,6 +7470,12 @@ pub fn run() {
             }
             if should_start_background() {
                 hide_main_window(&app.handle());
+            } else if initial_intent == desktop_activation::DesktopActivationIntent::QuickObservation {
+                desktop_activation::activate(
+                    &app.handle(),
+                    initial_intent,
+                    "initial-quick-observation",
+                );
             }
             Ok(())
         })
@@ -7411,6 +7483,9 @@ pub fn run() {
             get_service_status,
             get_cloud_sync_status,
             get_device_connection_status,
+            get_quick_observation_context,
+            save_quick_observation_batch,
+            take_desktop_activation_intent,
             prepare_teacher_home_bridge,
             create_teacher_home_webview,
             get_device_sync_status,

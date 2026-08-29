@@ -1,6 +1,6 @@
 [package]
 name = "local-sensitive-store-desktop"
-version = "0.2.55"
+version = "0.2.56"
 default-run = "local-sensitive-store-desktop"
 description = "ClassAiMate 교사 데스크 로컬 데이터 저장소"
 authors = ["onlineclass"]
@@ -42,5 +42,5 @@ tokio = { version = "1", features = ["io-std", "macros", "rt-multi-thread"] }
 rmcp = { version = "=3.0.1", features = ["client", "server", "transport-io"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Security_Cryptography", "Win32_System_Memory"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_Memory", "Win32_UI_WindowsAndMessaging"] }
 winreg = "0.52"

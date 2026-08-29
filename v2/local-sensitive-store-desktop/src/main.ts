@@ -16,6 +16,7 @@ import "./health-dashboard.css";
 import "./settings-dashboard.css";
 import "./desktop-shell.css";
 import "./local-workspaces.css";
+import "./quick-observation.css";
 import { initSharedArchive } from "./shared-archive";
 import { initHomeDashboard, loadHomeOverview, renderHomeStatus } from "./home-dashboard";
 import { createDeviceAuthorizationController, type DeviceAuthorizationResult } from "./device-authorization";
@@ -34,6 +35,7 @@ import { loadDeviceSyncStatus, renderDeviceSyncStatus, runDeviceSyncNow } from "
 import { initDesktopShell } from "./desktop-shell";
 import { initLocalWorkspaces } from "./local-workspaces";
 import { initBackupStorage } from "./backup-storage";
+import { initQuickObservation } from "./quick-observation";
 import type { BackupDiscovery, BackupItem, BackupPreview, BackupSource, BackupStatus, CommandResult } from "./backup-types";
 
 declare const __APP_VERSION__: string;
@@ -1178,6 +1180,9 @@ function bindUi() {
 }
 
 const desktopShell = initDesktopShell();
+const quickObservation = initQuickObservation({
+  onConnect: () => document.getElementById("desktopTeacherHome")?.click(),
+});
 initArchiveBoardExplorer();
 initWorkNoteReader();
 const dataExplorer = initDataExplorer({ getTenantId: currentBackupTenantId });
@@ -1190,6 +1195,7 @@ const backupStorage = initBackupStorage({
 });
 initHomeDashboard({
   onViewChange(view, context) {
+    if (view === "quick-observation") void quickObservation.open({ focus: true });
     if (view === "lesson-materials" || view === "work-materials") void localWorkspaces.open(view);
     if (view === "data") void dataExplorer.open({ group: context.group, sectionKey: context.sectionKey, hasAttachment: context.attachment });
     if (view === "students") void studentTimeline.open();
@@ -1198,6 +1204,9 @@ initHomeDashboard({
   onSearch(query) {
     void dataExplorer.open({ query });
   },
+});
+void desktopShell.startActivationHandling(async () => {
+  document.querySelector<HTMLButtonElement>('.sidebar-link[data-app-view-target="quick-observation"]')?.click();
 });
 bindUi();
 if (designPreview !== "settings") {
@@ -1211,6 +1220,8 @@ if (designPreview === "auth") {
   deviceAuthorization.render({ ok: true, status: "pending", expiresAtMs: Date.now() + 10 * 60 * 1000 });
 } else if (designPreview === "data") {
   document.querySelector<HTMLButtonElement>('.sidebar-link[data-app-view-target="data"]')?.click();
+} else if (designPreview === "quick-observation") {
+  document.querySelector<HTMLButtonElement>('.sidebar-link[data-app-view-target="quick-observation"]')?.click();
 } else if (designPreview === "lesson-materials" || designPreview === "work-materials") {
   document.querySelector<HTMLButtonElement>(`.sidebar-link[data-app-view-target="${designPreview}"]`)?.click();
 } else if (designPreview === "students") {

@@ -1,14 +1,20 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { LogicalPosition, LogicalSize } from "@tauri-apps/api/dpi";
+import { listen } from "@tauri-apps/api/event";
 import { Webview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 const SHELL_HEIGHT = 56;
 const TEACHER_WEBVIEW_LABEL = "teacher-home";
 const TEACHER_HOME_URL = "https://t.classaimate.com/admin/";
-const TUTORIAL_KEY = "classaimateDesktopShellTutorial:v5";
+const TUTORIAL_KEY = "classaimateDesktopShellTutorial:v6";
 
 type ShellMode = "teacher" | "local";
+export type DesktopActivationIntent = "show-main" | "quick-observation";
+type DesktopShellController = {
+  refreshConnection: () => Promise<void>;
+  startActivationHandling: (handler: (intent: DesktopActivationIntent) => void | Promise<void>) => Promise<void>;
+};
 
 type BridgeResult = {
   ok?: boolean;
@@ -60,8 +66,8 @@ export function desktopShellErrorMessage(value: unknown) {
   return "교사 홈 연결을 준비하지 못했습니다. 잠시 뒤 다시 시도해 주세요.";
 }
 
-export function initDesktopShell() {
-  const noop = { refreshConnection: async () => undefined };
+export function initDesktopShell(): DesktopShellController {
+  const noop: DesktopShellController = { refreshConnection: async () => undefined, startActivationHandling: async (_handler) => undefined };
   if (!isTauri()) return noop;
 
   const bar = required<HTMLElement>("desktopShellBar");
@@ -212,7 +218,7 @@ export function initDesktopShell() {
     },
     {
       target: localButton,
-      text: "로컬 자료함은 같은 SQLite를 수업자료·업무자료·학생별 보기로 나눠 찾는 공간입니다. 분류 때문에 데이터나 백업이 복제되지는 않으며 OneDrive 기기 동기화는 원본과 읽기 전용 보관본을 함께 검증합니다.",
+      text: "로컬 자료함은 같은 SQLite를 수업자료·업무자료·학생별 보기·빠른 관찰로 나눠 쓰는 공간입니다. 일반 바로가기는 현재 화면을, 빠른 관찰기록 바로가기는 이 앱의 관찰 화면을 곧바로 엽니다. 데이터나 백업이 복제되지는 않습니다.",
     },
   ];
 
@@ -265,6 +271,25 @@ export function initDesktopShell() {
     setConnectionStatus(connection);
   };
 
+  const startActivationHandling = async (handler: (intent: DesktopActivationIntent) => void | Promise<void>) => {
+    const consume = async (intent: DesktopActivationIntent | null | undefined) => {
+      if (intent !== "quick-observation") return;
+      if (tutorial.open) {
+        tutorialSteps.forEach((step) => step.target.classList.remove("desktop-shell-tutorial-target"));
+        tutorial.close();
+      }
+      await selectMode("local");
+      await handler(intent);
+    };
+    await listen<DesktopActivationIntent>("desktop-activation", (event) => {
+      void invoke<DesktopActivationIntent | null>("take_desktop_activation_intent")
+        .catch(() => null)
+        .then(() => consume(event.payload));
+    });
+    const pending = await invoke<DesktopActivationIntent | null>("take_desktop_activation_intent");
+    await consume(pending);
+  };
+
   renderMode("local");
   void refreshConnection();
   if (localStorage.getItem(TUTORIAL_KEY) !== "complete") {
@@ -272,5 +297,5 @@ export function initDesktopShell() {
   } else {
     void selectMode("teacher");
   }
-  return { refreshConnection };
+  return { refreshConnection, startActivationHandling };
 }
