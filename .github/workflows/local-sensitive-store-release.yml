@@ -68,6 +68,9 @@ jobs:
 
       - name: Verify GUI subsystem, MCP stdio, installer shortcut and first launch
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILDER_REPO: ${{ github.repository }}
         run: |
           function Get-PeSubsystem([string]$Path) {
             $stream = [System.IO.File]::OpenRead((Resolve-Path $Path))
@@ -100,8 +103,13 @@ jobs:
           }
           $installer = Get-ChildItem -Path "src-tauri/target/release/bundle/nsis" -Filter "*.exe" -Recurse | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           if (-not $installer) { throw "NSIS installer not found for launch gate." }
-          $installed = Start-Process -FilePath $installer.FullName -ArgumentList '/S' -Wait -PassThru
-          if ($installed.ExitCode -ne 0) { throw "Silent installer failed with $($installed.ExitCode)." }
+          $previousInstallerDirectory = Join-Path $env:RUNNER_TEMP 'classaimate-previous-installer'
+          New-Item -ItemType Directory -Path $previousInstallerDirectory -Force | Out-Null
+          gh release download 'local-sensitive-store-v0.2.56' --repo $env:BUILDER_REPO --pattern 'OnlineClass-Local-Sensitive-Store-Setup.exe' --dir $previousInstallerDirectory --clobber
+          if ($LASTEXITCODE -ne 0) { throw "Previous installer download failed." }
+          $previousInstaller = Join-Path $previousInstallerDirectory 'OnlineClass-Local-Sensitive-Store-Setup.exe'
+          $previousInstalled = Start-Process -FilePath $previousInstaller -ArgumentList '/S' -Wait -PassThru
+          if ($previousInstalled.ExitCode -ne 0) { throw "Previous silent installer failed with $($previousInstalled.ExitCode)." }
           $tauriConfig = Get-Content "src-tauri/tauri.conf.json" -Raw | ConvertFrom-Json
           $shortcutRoots = @((Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'), (Join-Path $env:PROGRAMDATA 'Microsoft\Windows\Start Menu\Programs'), [Environment]::GetFolderPath('Desktop'), (Join-Path $env:PUBLIC 'Desktop'))
           $shell = New-Object -ComObject WScript.Shell
@@ -138,6 +146,18 @@ jobs:
             if ($Process.MainWindowHandle -eq 0) { throw "Desktop process has no window to close." }
             if (-not [WindowGate]::PostMessage($Process.MainWindowHandle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)) { throw "WM_CLOSE delivery failed." }
           }
+          function Wait-LocalServiceVersion([string]$ExpectedVersion) {
+            for ($attempt = 0; $attempt -lt 30; $attempt++) {
+              foreach ($port in 51273..51277) {
+                try {
+                  $health = Invoke-RestMethod -Uri "http://127.0.0.1:$port/v1/health" -TimeoutSec 2
+                  if ([string]$health.version -eq $ExpectedVersion) { return }
+                } catch {}
+              }
+              Start-Sleep -Milliseconds 500
+            }
+            throw "Installed local service did not report version $ExpectedVersion."
+          }
           $shortcut = $null
           $quickShortcut = $null
           $shortcutAudit = @()
@@ -164,6 +184,19 @@ jobs:
           New-Item -ItemType Directory -Path $preferencesDir -Force | Out-Null
           $preferencesPath = Join-Path $preferencesDir 'desktop-preferences.json'
           @{ startWithWindows = $false; keepRunningOnClose = $true } | ConvertTo-Json | Set-Content -Path $preferencesPath -Encoding UTF8
+          if (-not $quickShortcut.Target) { throw "Previous quick observation shortcut did not expose an installed target." }
+          $installedTarget = $quickShortcut.Target
+          Start-Process -FilePath $shortcut.File.FullName
+          $previousProcess = Wait-InstalledGuiProcess $installedTarget
+          Wait-LocalServiceVersion '2026-08-29.1-quick-observation-reopen'
+          $previousProcessId = $previousProcess.Id
+          Close-GuiWindow $previousProcess
+          Start-Sleep -Milliseconds 700
+          if (-not (Get-Process -Id $previousProcessId -ErrorAction SilentlyContinue)) { throw "Previous helper did not remain hidden before upgrade." }
+          $installed = Start-Process -FilePath $installer.FullName -ArgumentList '/S' -Wait -PassThru
+          if ($installed.ExitCode -ne 0) { throw "Upgrade installer failed with $($installed.ExitCode)." }
+          for ($attempt = 0; $attempt -lt 20 -and (Get-Process -Id $previousProcessId -ErrorAction SilentlyContinue); $attempt++) { Start-Sleep -Milliseconds 250 }
+          if (Get-Process -Id $previousProcessId -ErrorAction SilentlyContinue) { throw "Upgrade installer left the previous background helper running." }
           $beforeProcessIds = @(Get-CimInstance Win32_Process | Select-Object -ExpandProperty ProcessId)
           Start-Process -FilePath $shortcut.File.FullName
           if ($shortcut.Target) {
@@ -187,6 +220,7 @@ jobs:
             $desktopProcess = $newWindowProcesses[0].Process
             $installedTarget = $newWindowProcesses[0].Path
           }
+          Wait-LocalServiceVersion '2026-08-29.2-upgrade-relaunch'
           if ($quickShortcut.Target -and ([IO.Path]::GetFullPath($quickShortcut.Target) -ine [IO.Path]::GetFullPath($installedTarget))) { throw "Quick observation shortcut resolves to an unexpected GUI executable." }
           $backgroundProcessId = $desktopProcess.Id
           for ($cycle = 1; $cycle -le 10; $cycle++) {
