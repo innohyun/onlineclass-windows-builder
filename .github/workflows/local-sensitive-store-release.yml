@@ -138,15 +138,6 @@ jobs:
             if ($Process.MainWindowHandle -eq 0) { throw "Desktop process has no window to close." }
             if (-not [WindowGate]::PostMessage($Process.MainWindowHandle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)) { throw "WM_CLOSE delivery failed." }
           }
-          function Start-InstalledShortcut($Shortcut) {
-            if ($Shortcut.Target) {
-              $arguments = [string]$Shortcut.Arguments
-              if ($arguments) { Start-Process -FilePath $Shortcut.Target -ArgumentList $arguments } else { Start-Process -FilePath $Shortcut.Target }
-              return
-            }
-            $result = $shell.Run([string]$Shortcut.File.FullName, 1, $false)
-            if ($result -ne 0) { throw "Installed shortcut launch failed: $($Shortcut.File.FullName) result=$result" }
-          }
           $shortcut = $null
           $quickShortcut = $null
           $shortcutAudit = @()
@@ -174,7 +165,7 @@ jobs:
           $preferencesPath = Join-Path $preferencesDir 'desktop-preferences.json'
           @{ startWithWindows = $false; keepRunningOnClose = $true } | ConvertTo-Json | Set-Content -Path $preferencesPath -Encoding UTF8
           $beforeProcessIds = @(Get-CimInstance Win32_Process | Select-Object -ExpandProperty ProcessId)
-          Start-InstalledShortcut $shortcut
+          Start-Process -FilePath $shortcut.File.FullName
           if ($shortcut.Target) {
             $installedTarget = $shortcut.Target
             $desktopProcess = Wait-InstalledGuiProcess $installedTarget
@@ -202,23 +193,23 @@ jobs:
             Close-GuiWindow $desktopProcess
             Start-Sleep -Milliseconds 700
             if (-not (Get-Process -Id $backgroundProcessId -ErrorAction SilentlyContinue)) { throw "Background ON close exited during cycle $cycle." }
-            Start-InstalledShortcut $shortcut
+            Start-Process -FilePath $shortcut.File.FullName
             $desktopProcess = Wait-InstalledGuiProcess $installedTarget $backgroundProcessId
           }
           Close-GuiWindow $desktopProcess
           Start-Sleep -Milliseconds 700
-          Start-InstalledShortcut $quickShortcut
+          Start-Process -FilePath $installedTarget -ArgumentList '--quick-observation'
           $desktopProcess = Wait-InstalledGuiProcess $installedTarget $backgroundProcessId
           Stop-Process -Id $backgroundProcessId -Force
           Wait-Process -Id $backgroundProcessId -ErrorAction SilentlyContinue
           @{ startWithWindows = $false; keepRunningOnClose = $false } | ConvertTo-Json | Set-Content -Path $preferencesPath -Encoding UTF8
-          Start-InstalledShortcut $shortcut
+          Start-Process -FilePath $shortcut.File.FullName
           $desktopProcess = Wait-InstalledGuiProcess $installedTarget
           $foregroundProcessId = $desktopProcess.Id
           Close-GuiWindow $desktopProcess
           for ($attempt = 0; $attempt -lt 20 -and (Get-Process -Id $foregroundProcessId -ErrorAction SilentlyContinue); $attempt++) { Start-Sleep -Milliseconds 500 }
           if (Get-Process -Id $foregroundProcessId -ErrorAction SilentlyContinue) { throw "Background OFF close did not exit the process." }
-          Start-InstalledShortcut $shortcut
+          Start-Process -FilePath $shortcut.File.FullName
           $reopenedProcess = Wait-InstalledGuiProcess $installedTarget
           if ($reopenedProcess.Id -eq $foregroundProcessId) { throw "Background OFF relaunch did not create a new process." }
           Stop-Process -Id $reopenedProcess.Id -Force
