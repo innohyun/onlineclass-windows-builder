@@ -48,7 +48,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-08-30.2-retained-main-window";
+pub(crate) const SERVICE_VERSION: &str = "2026-08-30.3-quick-shortcut-target";
 const WORK_MEETING_ROOT_PAGE_ID: &str = "classaimate:work-meeting-minutes";
 const WORK_MEETING_ROOT_TITLE: &str = "업무 회의록";
 const WORK_MEETING_ROOT_INTRO: &str = "모바일에서 확정한 업무 회의록이 자동으로 들어옵니다.";
@@ -6537,6 +6537,14 @@ fn take_desktop_activation_intent(
 }
 
 #[tauri::command]
+fn acknowledge_desktop_activation_intent(
+    intent: desktop_activation::DesktopActivationIntent,
+    state: tauri::State<'_, desktop_activation::DesktopActivationState>,
+) -> bool {
+    state.acknowledge(intent)
+}
+
+#[tauri::command]
 fn prepare_teacher_home_bridge(state: tauri::State<'_, AppState>) -> Value {
     let browser_links = match state
         .browser_links
@@ -7487,6 +7495,7 @@ pub fn run() {
             get_quick_observation_context,
             save_quick_observation_batch,
             take_desktop_activation_intent,
+            acknowledge_desktop_activation_intent,
             prepare_teacher_home_bridge,
             create_teacher_home_webview,
             get_device_sync_status,

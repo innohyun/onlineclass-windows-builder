@@ -50,6 +50,14 @@ impl DesktopActivationState {
         self.pending.lock().ok().and_then(|mut value| value.take())
     }
 
+    pub(crate) fn acknowledge(&self, intent: DesktopActivationIntent) -> bool {
+        if intent != DesktopActivationIntent::QuickObservation {
+            return false;
+        }
+        self.log("frontend-quick-observation", 1, &Ok(()));
+        true
+    }
+
     fn set(&self, intent: DesktopActivationIntent) {
         if let Ok(mut value) = self.pending.lock() {
             *value = Some(intent);
@@ -238,5 +246,23 @@ mod tests {
             DesktopActivationIntent::from_args(["app.exe".to_string()]),
             DesktopActivationIntent::ShowMain
         );
+    }
+
+    #[test]
+    fn only_the_rendered_quick_observation_view_is_acknowledged() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "classaimate-desktop-activation-{}",
+            std::process::id()
+        ));
+        let state = DesktopActivationState::new(
+            data_dir.clone(),
+            DesktopActivationIntent::ShowMain,
+            None,
+        );
+        assert!(!state.acknowledge(DesktopActivationIntent::ShowMain));
+        assert!(state.acknowledge(DesktopActivationIntent::QuickObservation));
+        let log = fs::read_to_string(data_dir.join("desktop-activation.log")).unwrap();
+        assert!(log.contains("source=frontend-quick-observation attempt=1 ok"));
+        let _ = fs::remove_dir_all(data_dir);
     }
 }

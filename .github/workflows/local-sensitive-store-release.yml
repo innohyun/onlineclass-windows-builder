@@ -105,7 +105,7 @@ jobs:
           if (-not $installer) { throw "NSIS installer not found for launch gate." }
           $previousInstallerDirectory = Join-Path $env:RUNNER_TEMP 'classaimate-previous-installer'
           New-Item -ItemType Directory -Path $previousInstallerDirectory -Force | Out-Null
-          gh release download 'local-sensitive-store-v0.2.58' --repo $env:BUILDER_REPO --pattern 'OnlineClass-Local-Sensitive-Store-Setup.exe' --dir $previousInstallerDirectory --clobber
+          gh release download 'local-sensitive-store-v0.2.59' --repo $env:BUILDER_REPO --pattern 'OnlineClass-Local-Sensitive-Store-Setup.exe' --dir $previousInstallerDirectory --clobber
           if ($LASTEXITCODE -ne 0) { throw "Previous installer download failed." }
           $previousInstaller = Join-Path $previousInstallerDirectory 'OnlineClass-Local-Sensitive-Store-Setup.exe'
           $previousInstalled = Start-Process -FilePath $previousInstaller -ArgumentList '/S' -Wait -PassThru
@@ -182,28 +182,39 @@ jobs:
             }
             throw "Installed local service did not report version $ExpectedVersion."
           }
-          $shortcut = $null
-          $quickShortcut = $null
-          $shortcutAudit = @()
-          foreach ($candidate in Get-ChildItem $shortcutRoots -Filter '*.lnk' -Recurse -ErrorAction SilentlyContinue) {
-            $resolved = $shell.CreateShortcut($candidate.FullName)
-            $shortcutAudit += "$($candidate.FullName) -> $($resolved.TargetPath)"
-            if ([IO.Path]::GetFileName($resolved.TargetPath) -ieq 'classaimate-student-record-mcp.exe') { throw "Installer shortcut points to MCP sidecar." }
-            if ($candidate.BaseName -ieq $tauriConfig.productName) { $shortcut = [pscustomobject]@{ File = $candidate; Target = $resolved.TargetPath; Arguments = $resolved.Arguments } }
-            if ($candidate.BaseName -ieq 'ClassAiMate 빠른 관찰기록') { $quickShortcut = [pscustomobject]@{ File = $candidate; Target = $resolved.TargetPath; Arguments = $resolved.Arguments } }
+          function Resolve-InstalledShortcuts {
+            $productShortcut = $null
+            $quickObservationShortcut = $null
+            $audit = @()
+            foreach ($candidate in Get-ChildItem $shortcutRoots -Filter '*.lnk' -Recurse -ErrorAction SilentlyContinue) {
+              $resolved = $shell.CreateShortcut($candidate.FullName)
+              $audit += "$($candidate.FullName) -> $($resolved.TargetPath) $($resolved.Arguments)"
+              if ([IO.Path]::GetFileName($resolved.TargetPath) -ieq 'classaimate-student-record-mcp.exe') { throw "Installer shortcut points to MCP sidecar." }
+              if ($candidate.BaseName -ieq $tauriConfig.productName) { $productShortcut = [pscustomobject]@{ File = $candidate; Target = $resolved.TargetPath; Arguments = $resolved.Arguments } }
+              if ($candidate.BaseName -ieq 'ClassAiMate 빠른 관찰기록') { $quickObservationShortcut = [pscustomobject]@{ File = $candidate; Target = $resolved.TargetPath; Arguments = $resolved.Arguments } }
+            }
+            return [pscustomobject]@{ Product = $productShortcut; QuickObservation = $quickObservationShortcut; Audit = $audit }
           }
+          function Wait-QuickObservationActivation([string]$LogPath) {
+            for ($attempt = 0; $attempt -lt 30; $attempt++) {
+              if (Test-Path $LogPath -PathType Leaf) {
+                $acknowledgements = @(Select-String -Path $LogPath -Pattern 'source=frontend-quick-observation attempt=1 ok$')
+                if ($acknowledgements.Count -gt 0) { return }
+              }
+              Start-Sleep -Milliseconds 500
+            }
+            throw "Quick observation shortcut did not activate the quick observation view."
+          }
+          $resolvedShortcuts = Resolve-InstalledShortcuts
+          $shortcut = $resolvedShortcuts.Product
+          $quickShortcut = $resolvedShortcuts.QuickObservation
+          $shortcutAudit = $resolvedShortcuts.Audit
           if (-not $shortcut) { throw "Installed product shortcut was not found. Candidates: $($shortcutAudit -join '; ')" }
           if (-not $quickShortcut) { throw "Installed quick observation shortcut was not found. Candidates: $($shortcutAudit -join '; ')" }
           if ($shortcut.Target) {
             if (-not (Test-Path $shortcut.Target -PathType Leaf)) { throw "Installed product shortcut target does not exist: $($shortcut.Target)" }
             if ((Get-PeSubsystem $shortcut.Target) -ne 2) { throw "Installed product shortcut target is not WINDOWS_GUI subsystem." }
           }
-          if ($quickShortcut.Target) {
-            if (-not (Test-Path $quickShortcut.Target -PathType Leaf)) { throw "Installed quick observation shortcut target does not exist: $($quickShortcut.Target)" }
-            if ((Get-PeSubsystem $quickShortcut.Target) -ne 2) { throw "Installed quick observation shortcut target is not WINDOWS_GUI subsystem." }
-          }
-          if ($shortcut.Target -and $quickShortcut.Target -and ([IO.Path]::GetFullPath($quickShortcut.Target) -ine [IO.Path]::GetFullPath($shortcut.Target))) { throw "Quick observation shortcut does not target the desktop GUI executable." }
-          if ($quickShortcut.Target -and [string]$quickShortcut.Arguments -ne '--quick-observation') { throw "Quick observation shortcut arguments are invalid: $($quickShortcut.Arguments)" }
           $preferencesDir = Join-Path $env:APPDATA 'OnlineClass\local-sensitive-store'
           New-Item -ItemType Directory -Path $preferencesDir -Force | Out-Null
           $preferencesPath = Join-Path $preferencesDir 'desktop-preferences.json'
@@ -212,7 +223,7 @@ jobs:
           $previousLaunch = Start-GuiShortcut $shortcut.File.FullName $shortcut.Target
           $previousProcess = $previousLaunch.Process
           $installedTarget = $previousLaunch.Path
-          Wait-LocalServiceVersion '2026-08-30.1-foreground-restore'
+          Wait-LocalServiceVersion '2026-08-30.2-retained-main-window'
           $previousProcessId = $previousProcess.Id
           Close-GuiWindow $previousProcess
           Start-Sleep -Milliseconds 700
@@ -222,10 +233,23 @@ jobs:
           for ($attempt = 0; $attempt -lt 20 -and (Get-Process -Id $previousProcessId -ErrorAction SilentlyContinue); $attempt++) { Start-Sleep -Milliseconds 250 }
           if (Get-Process -Id $previousProcessId -ErrorAction SilentlyContinue) { throw "Upgrade installer left the previous background helper running." }
           Remove-Item -Path $activationLog -Force -ErrorAction SilentlyContinue
+          $resolvedShortcuts = Resolve-InstalledShortcuts
+          $shortcut = $resolvedShortcuts.Product
+          $quickShortcut = $resolvedShortcuts.QuickObservation
+          $shortcutAudit = $resolvedShortcuts.Audit
+          if (-not $shortcut) { throw "Upgraded product shortcut was not found. Candidates: $($shortcutAudit -join '; ')" }
+          if (-not $quickShortcut) { throw "Upgraded quick observation shortcut was not found. Candidates: $($shortcutAudit -join '; ')" }
+          if ($shortcut.Target -and -not (Test-Path $shortcut.Target -PathType Leaf)) { throw "Upgraded product shortcut target does not exist: $($shortcut.Target)" }
+          if ($quickShortcut.Target) {
+            if (-not (Test-Path $quickShortcut.Target -PathType Leaf)) { throw "Installed quick observation shortcut target does not exist: $($quickShortcut.Target)" }
+            if ((Get-PeSubsystem $quickShortcut.Target) -ne 2) { throw "Installed quick observation shortcut target is not WINDOWS_GUI subsystem." }
+          }
+          if ($shortcut.Target -and $quickShortcut.Target -and ([IO.Path]::GetFullPath($quickShortcut.Target) -ine [IO.Path]::GetFullPath($shortcut.Target))) { throw "Quick observation shortcut does not target the desktop GUI executable." }
+          if ($quickShortcut.Target -and [string]$quickShortcut.Arguments -ne '--quick-observation') { throw "Quick observation shortcut arguments are invalid: $($quickShortcut.Arguments)" }
           $currentLaunch = Start-GuiShortcut $shortcut.File.FullName $shortcut.Target
           $desktopProcess = $currentLaunch.Process
           $installedTarget = $currentLaunch.Path
-          Wait-LocalServiceVersion '2026-08-30.2-retained-main-window'
+          Wait-LocalServiceVersion '2026-08-30.3-quick-shortcut-target'
           if ($quickShortcut.Target -and ([IO.Path]::GetFullPath($quickShortcut.Target) -ine [IO.Path]::GetFullPath($installedTarget))) { throw "Quick observation shortcut resolves to an unexpected GUI executable." }
           $backgroundProcessId = $desktopProcess.Id
           for ($cycle = 1; $cycle -le 10; $cycle++) {
@@ -237,8 +261,9 @@ jobs:
           }
           Close-GuiWindow $desktopProcess
           Start-Sleep -Milliseconds 700
-          Start-Process -FilePath $installedTarget -ArgumentList '--quick-observation'
+          Start-Process -FilePath $quickShortcut.File.FullName
           $desktopProcess = Wait-InstalledGuiProcess $installedTarget $backgroundProcessId
+          Wait-QuickObservationActivation $activationLog
           if (-not (Test-Path $activationLog -PathType Leaf)) { throw "Desktop activation log was not created." }
           if (Select-String -Path $activationLog -Pattern ' error=' -Quiet) { throw "Activation log contains an error." }
           $successfulActivations = @(Select-String -Path $activationLog -Pattern 'source=single-instance attempt=1 ok$')

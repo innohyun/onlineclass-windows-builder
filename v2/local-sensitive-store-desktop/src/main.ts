@@ -1205,8 +1205,13 @@ initHomeDashboard({
     void dataExplorer.open({ query });
   },
 });
-void desktopShell.startActivationHandling(async () => {
-  document.querySelector<HTMLButtonElement>('.sidebar-link[data-app-view-target="quick-observation"]')?.click();
+void desktopShell.startActivationHandling(async (intent) => {
+  const shortcutTarget = document.querySelector<HTMLButtonElement>('.sidebar-link[data-app-view-target="quick-observation"]');
+  if (!shortcutTarget) throw new Error("quick_observation_target_missing");
+  shortcutTarget.click();
+  await waitForPaint();
+  if (document.body.dataset.appView !== "quick-observation") throw new Error("quick_observation_view_not_activated");
+  await invoke<boolean>("ack_desktop_activation_intent", { intent });
 });
 bindUi();
 if (designPreview !== "settings") {
