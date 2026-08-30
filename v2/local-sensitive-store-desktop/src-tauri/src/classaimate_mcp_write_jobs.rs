@@ -4,10 +4,13 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-const OPERATIONS: [&str; 3] = [
+const OPERATIONS: [&str; 6] = [
     "student_record_save_drafts",
     "counseling_record_save_draft",
+    "counseling_record_prepare_create",
     "work_notes_save_draft",
+    "materials_save_draft",
+    "materials_update_draft",
 ];
 const LOCAL_RECEIPT_TTL_MS: i64 = 24 * 60 * 60 * 1000;
 
@@ -311,6 +314,57 @@ fn save_counseling(store: &SqliteStore, tenant: &str, data: &Value) -> Result<Va
     Ok(json!({"result":data,"localRef":format!("teacher-counseling-mcp-draft:{draft_id}")}))
 }
 
+fn create_counseling(store: &SqliteStore, tenant: &str, data: &Value) -> Result<Value, String> {
+    let counseling_id = required_id(data.get("counselingId"))?;
+    let student_code = required_id(data.get("studentCode"))?;
+    let student_name = data.get("studentName").and_then(Value::as_str).unwrap_or("").trim();
+    let counseling_at_ms = data.get("counselingAtMs").and_then(Value::as_i64).unwrap_or(0);
+    let summary = data.get("summary").and_then(Value::as_str).unwrap_or("").trim();
+    let follow_up_note = data.get("followUpNote").and_then(Value::as_str).unwrap_or("");
+    let participant_type = data.get("participantType").and_then(Value::as_str).unwrap_or("");
+    let channel = data.get("channel").and_then(Value::as_str).unwrap_or("");
+    let status = data.get("status").and_then(Value::as_str).unwrap_or("");
+    if student_name.is_empty() || student_name.chars().count() > 160 || counseling_at_ms <= 0
+        || !["student", "guardian", "student_guardian"].contains(&participant_type)
+        || !["in_person", "phone", "online"].contains(&channel)
+        || !["completed", "follow_up"].contains(&status)
+        || summary.is_empty() || summary.chars().count() > 5000 || follow_up_note.chars().count() > 2000
+        || !data.get("topics").map(Value::is_array).unwrap_or(false)
+    {
+        return Err("classaimate_mcp_write_job_invalid".to_string());
+    }
+    if let Some(existing) = store.get_teacher_counseling_session(tenant.to_string(), counseling_id.clone())? {
+        if existing.get("studentCode").and_then(Value::as_str) != Some(student_code.as_str())
+            || existing.get("counselingAtMs").and_then(Value::as_i64) != Some(counseling_at_ms)
+            || existing.get("summary").and_then(Value::as_str) != Some(summary)
+        {
+            return Err("DRAFT_CONFLICT".to_string());
+        }
+    } else {
+        let mut record = data.as_object().cloned().ok_or_else(|| "classaimate_mcp_write_job_invalid".to_string())?;
+        record.insert("tenantId".to_string(), json!(tenant));
+        record.insert("id".to_string(), json!(counseling_id));
+        record.insert("docId".to_string(), json!(counseling_id));
+        record.insert("sessionId".to_string(), json!(counseling_id));
+        record.insert("studentCode".to_string(), json!(student_code));
+        record.insert("recordOrigin".to_string(), json!("teacher_local_counseling"));
+        record.insert("sourceType".to_string(), json!("classAimatePublicMcp"));
+        record.insert("sourceLabel".to_string(), json!("내 ChatGPT"));
+        record.insert("teacherReviewRequired".to_string(), json!(false));
+        record.insert("createdAtMs".to_string(), json!(now_ms()));
+        record.insert("updatedAtMs".to_string(), json!(now_ms()));
+        store.upsert_teacher_counseling_session(Value::Object(record))?;
+    }
+    let readback = store.get_teacher_counseling_session(tenant.to_string(), counseling_id.clone())?
+        .ok_or_else(|| "LOCAL_STORE_WRITE_FAILED".to_string())?;
+    if readback.get("studentCode").and_then(Value::as_str) != Some(student_code.as_str())
+        || readback.get("summary").and_then(Value::as_str) != Some(summary)
+    {
+        return Err("LOCAL_STORE_WRITE_FAILED".to_string());
+    }
+    Ok(json!({"result":data,"localRef":format!("teacher-counseling-session:{counseling_id}")}))
+}
+
 fn save_work_note(store: &SqliteStore, tenant: &str, data: &Value) -> Result<Value, String> {
     let page_id = required_id(data.get("pageId"))?;
     let parent_id = required_id(data.get("parentPageRef"))?;
@@ -356,6 +410,43 @@ fn save_work_note(store: &SqliteStore, tenant: &str, data: &Value) -> Result<Val
             "blocks":blocks,"markdown":markdown,"createdAtMs":now_ms(),"updatedAtMs":now_ms()}))?;
     }
     Ok(json!({"result":data,"localRef":format!("work-note-page:{page_id}")}))
+}
+
+fn update_work_note(store: &SqliteStore, tenant: &str, data: &Value) -> Result<Value, String> {
+    let page_ref = required_id(data.get("pageRef"))?;
+    let existing = store.get_work_note(tenant.to_string(), page_ref.clone())?
+        .ok_or_else(|| "DRAFT_CONFLICT".to_string())?;
+    let expected_revision = data.get("expectedRevision").and_then(Value::as_i64).unwrap_or(0);
+    let title = data.get("title").and_then(Value::as_str).unwrap_or("").trim();
+    let markdown = data.get("markdown").and_then(Value::as_str).unwrap_or("");
+    let blocks = data.get("blocks").and_then(Value::as_array)
+        .ok_or_else(|| "classaimate_mcp_write_job_invalid".to_string())?;
+    let source = existing.get("properties").and_then(|value| value.get("sourceType")).and_then(Value::as_str);
+    if !page_ref.starts_with("mcp_")
+        || !existing.get("title").and_then(Value::as_str).unwrap_or("").starts_with("ChatGPT 초안 ·")
+        || source != Some("classAimatePublicMcp")
+        || existing.get("updatedAtMs").and_then(Value::as_i64) != Some(expected_revision)
+        || !title.starts_with("ChatGPT 초안 ·") || title.chars().count() > 300
+        || markdown.chars().count() > 200_000
+    {
+        return Err("DRAFT_CONFLICT".to_string());
+    }
+    let mut updated = existing.as_object().cloned().ok_or_else(|| "DRAFT_CONFLICT".to_string())?;
+    updated.insert("tenantId".to_string(), json!(tenant));
+    updated.insert("pageId".to_string(), json!(page_ref));
+    updated.insert("title".to_string(), json!(title));
+    updated.insert("markdown".to_string(), json!(markdown));
+    updated.insert("blocks".to_string(), Value::Array(blocks.clone()));
+    updated.insert("updatedAtMs".to_string(), json!(now_ms()));
+    store.upsert_work_note(Value::Object(updated))?;
+    let readback = store.get_work_note(tenant.to_string(), page_ref.clone())?
+        .ok_or_else(|| "LOCAL_STORE_WRITE_FAILED".to_string())?;
+    if readback.get("title").and_then(Value::as_str) != Some(title)
+        || readback.get("markdown").and_then(Value::as_str) != Some(markdown)
+    {
+        return Err("LOCAL_STORE_WRITE_FAILED".to_string());
+    }
+    Ok(json!({"result":data,"localRef":format!("work-note-page:{page_ref}")}))
 }
 
 pub(crate) fn ensure_schema(conn: &Connection) -> Result<(), String> {
@@ -418,6 +509,8 @@ pub(crate) fn apply(store: &SqliteStore, input: &Value) -> Result<Value, String>
     let saved = match operation {
         "student_record_save_drafts" => save_student(store, &tenant, data)?,
         "counseling_record_save_draft" => save_counseling(store, &tenant, data)?,
+        "counseling_record_prepare_create" => create_counseling(store, &tenant, data)?,
+        "materials_update_draft" => update_work_note(store, &tenant, data)?,
         _ => save_work_note(store, &tenant, data)?,
     };
     let result = saved.get("result").cloned().unwrap_or(Value::Null);

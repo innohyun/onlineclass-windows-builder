@@ -1,6 +1,6 @@
 [package]
 name = "local-sensitive-store-desktop"
-version = "0.2.60"
+version = "0.2.62"
 default-run = "local-sensitive-store-desktop"
 description = "ClassAiMate 교사 데스크 로컬 데이터 저장소"
 authors = ["onlineclass"]

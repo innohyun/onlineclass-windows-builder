@@ -1,7 +1,7 @@
 {
   "name": "local-sensitive-store-desktop",
   "private": true,
-  "version": "0.2.60",
+  "version": "0.2.62",
   "type": "module",
   "scripts": {
     "dev": "vite",

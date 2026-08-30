@@ -15,6 +15,7 @@ mod shared_archive_board;
 mod shared_archive_sync;
 mod student_private_photos;
 mod student_record_mcp;
+mod classaimate_mcp_materials_markdown;
 mod classaimate_mcp_write_jobs;
 mod work_note_attachments;
 mod work_note_localization;
@@ -48,7 +49,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-08-30.3-quick-shortcut-target";
+pub(crate) const SERVICE_VERSION: &str = "2026-08-30.5-classaimate-mcp-operations";
 const WORK_MEETING_ROOT_PAGE_ID: &str = "classaimate:work-meeting-minutes";
 const WORK_MEETING_ROOT_TITLE: &str = "업무 회의록";
 const WORK_MEETING_ROOT_INTRO: &str = "모바일에서 확정한 업무 회의록이 자동으로 들어옵니다.";
@@ -117,6 +118,8 @@ const LOCAL_SENSITIVE_STORE_ROUTES: &[&str] = &[
     "/v1/student-record-mcp/selections",
     "/v1/classaimate-mcp/write-jobs/apply",
     "/v1/classaimate-mcp/counseling-drafts",
+    "/v1/classaimate-mcp/materials/search",
+    "/v1/classaimate-mcp/materials/page",
     "/v1/import-runs",
     "/v1/work-notes",
     "/v1/work-notes/move",
@@ -155,7 +158,7 @@ const LOCAL_SENSITIVE_STORE_ROUTES: &[&str] = &[
     "/v1/password-vault/shared/decrypt",
     "/v1/password-vault/shared/recover",
 ];
-const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 16] = [
+const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 18] = [
     "non_lesson_observations",
     "teacher_local_records",
     "work_notes",
@@ -168,6 +171,8 @@ const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 16] = [
     "student_record_draft_batch_v1",
     "student_record_mcp_v1",
     "classaimate_public_mcp_write_jobs_v1",
+    "classaimate_public_mcp_operations_v1",
+    "classaimate_public_mcp_local_read_v1",
     "teacher_counseling_mcp_drafts_v1",
     "password_vault_personal_v1",
     "password_vault_shared_v1",
@@ -5031,7 +5036,8 @@ fn request_error_status(error: &str) -> u16 {
         | "counseling_content_required" | "counseling_reply_content_required"
         | "counseling_source_hash_mismatch" | "counseling_duplicate_request_id"
         | "counseling_duplicate_teacher_note_id"
-        | "work_note_page_id_required" | "work_note_parent_cycle" | "work_note_move_placement_invalid"
+        | "work_note_page_id_required" | "page_id_required" | "local_workspace_invalid"
+        | "work_note_parent_cycle" | "work_note_move_placement_invalid"
         | "work_note_attachment_id_required" | "work_note_attachment_path_invalid"
         | "work_note_localization_identity_invalid" | "work_note_localization_snapshot_invalid"
         | "work_note_localization_manifest_invalid" | "work_note_localization_tree_mismatch"
@@ -5053,7 +5059,7 @@ fn request_error_status(error: &str) -> u16 {
         | "student_photo_size_invalid" | "student_photo_digest_mismatch" => 400,
         "media_not_found" | "media_file_missing" | "work_note_not_found"
         | "work_note_attachment_not_found" | "work_note_attachment_file_missing"
-        | "work_note_localization_not_found"
+        | "work_note_localization_not_found" | "local_workspace_page_not_found"
         | "counseling_record_not_found" | "counseling_teacher_note_not_found" => 404,
         _ => 500,
     }
@@ -5239,6 +5245,14 @@ fn handle_request(
                 let mut payload = applied.as_object().cloned().unwrap_or_default();
                 payload.insert("ok".to_string(), Value::Bool(true));
                 return Ok((200, Value::Object(payload)));
+            }
+            if request.method() == &Method::Post && path == "/v1/classaimate-mcp/materials/search" {
+                let body = scope_body_to_tenant(read_body(&mut request)?, Some(&tenant))?;
+                return Ok((200, local_workspaces::mcp_search(&store, &body)?));
+            }
+            if request.method() == &Method::Post && path == "/v1/classaimate-mcp/materials/page" {
+                let body = scope_body_to_tenant(read_body(&mut request)?, Some(&tenant))?;
+                return Ok((200, local_workspaces::mcp_page(&store, &body)?));
             }
             return Ok((
                 404,

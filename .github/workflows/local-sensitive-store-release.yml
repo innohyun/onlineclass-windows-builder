@@ -105,7 +105,7 @@ jobs:
           if (-not $installer) { throw "NSIS installer not found for launch gate." }
           $previousInstallerDirectory = Join-Path $env:RUNNER_TEMP 'classaimate-previous-installer'
           New-Item -ItemType Directory -Path $previousInstallerDirectory -Force | Out-Null
-          gh release download 'local-sensitive-store-v0.2.59' --repo $env:BUILDER_REPO --pattern 'OnlineClass-Local-Sensitive-Store-Setup.exe' --dir $previousInstallerDirectory --clobber
+          gh release download 'local-sensitive-store-v0.2.60' --repo $env:BUILDER_REPO --pattern 'OnlineClass-Local-Sensitive-Store-Setup.exe' --dir $previousInstallerDirectory --clobber
           if ($LASTEXITCODE -ne 0) { throw "Previous installer download failed." }
           $previousInstaller = Join-Path $previousInstallerDirectory 'OnlineClass-Local-Sensitive-Store-Setup.exe'
           $previousInstalled = Start-Process -FilePath $previousInstaller -ArgumentList '/S' -Wait -PassThru
@@ -223,7 +223,7 @@ jobs:
           $previousLaunch = Start-GuiShortcut $shortcut.File.FullName $shortcut.Target
           $previousProcess = $previousLaunch.Process
           $installedTarget = $previousLaunch.Path
-          Wait-LocalServiceVersion '2026-08-30.2-retained-main-window'
+          Wait-LocalServiceVersion '2026-08-30.3-quick-shortcut-target'
           $previousProcessId = $previousProcess.Id
           Close-GuiWindow $previousProcess
           Start-Sleep -Milliseconds 700
@@ -249,7 +249,7 @@ jobs:
           $currentLaunch = Start-GuiShortcut $shortcut.File.FullName $shortcut.Target
           $desktopProcess = $currentLaunch.Process
           $installedTarget = $currentLaunch.Path
-          Wait-LocalServiceVersion '2026-08-30.3-quick-shortcut-target'
+          Wait-LocalServiceVersion '2026-08-30.5-classaimate-mcp-operations'
           if ($quickShortcut.Target -and ([IO.Path]::GetFullPath($quickShortcut.Target) -ine [IO.Path]::GetFullPath($installedTarget))) { throw "Quick observation shortcut resolves to an unexpected GUI executable." }
           $backgroundProcessId = $desktopProcess.Id
           for ($cycle = 1; $cycle -le 10; $cycle++) {
