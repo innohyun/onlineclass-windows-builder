@@ -105,7 +105,7 @@ jobs:
           if (-not $installer) { throw "NSIS installer not found for launch gate." }
           $previousInstallerDirectory = Join-Path $env:RUNNER_TEMP 'classaimate-previous-installer'
           New-Item -ItemType Directory -Path $previousInstallerDirectory -Force | Out-Null
-          gh release download 'local-sensitive-store-v0.2.56' --repo $env:BUILDER_REPO --pattern 'OnlineClass-Local-Sensitive-Store-Setup.exe' --dir $previousInstallerDirectory --clobber
+          gh release download 'local-sensitive-store-v0.2.57' --repo $env:BUILDER_REPO --pattern 'OnlineClass-Local-Sensitive-Store-Setup.exe' --dir $previousInstallerDirectory --clobber
           if ($LASTEXITCODE -ne 0) { throw "Previous installer download failed." }
           $previousInstaller = Join-Path $previousInstallerDirectory 'OnlineClass-Local-Sensitive-Store-Setup.exe'
           $previousInstalled = Start-Process -FilePath $previousInstaller -ArgumentList '/S' -Wait -PassThru
@@ -119,6 +119,7 @@ jobs:
           public static class WindowGate {
             [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
             [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+            [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
           }
           '@
           function Get-InstalledGuiProcess([string]$TargetPath) {
@@ -137,9 +138,9 @@ jobs:
               if (-not $process) { continue }
               $process.Refresh()
               if ($ExpectedProcessId -and $process.Id -ne $ExpectedProcessId) { throw "Shortcut created a second desktop process. expected=$ExpectedProcessId actual=$($process.Id)" }
-              if ($process.MainWindowHandle -ne 0 -and [WindowGate]::IsWindowVisible($process.MainWindowHandle)) { return $process }
+              if ($process.MainWindowHandle -ne 0 -and [WindowGate]::IsWindowVisible($process.MainWindowHandle) -and [WindowGate]::GetForegroundWindow() -eq $process.MainWindowHandle) { return $process }
             }
-            throw "Installed GUI window did not become visible for $TargetPath."
+            throw "Installed GUI window did not become foreground for $TargetPath."
           }
           function Close-GuiWindow([System.Diagnostics.Process]$Process) {
             $Process.Refresh()
@@ -210,7 +211,7 @@ jobs:
           $previousLaunch = Start-GuiShortcut $shortcut.File.FullName $shortcut.Target
           $previousProcess = $previousLaunch.Process
           $installedTarget = $previousLaunch.Path
-          Wait-LocalServiceVersion '2026-08-29.1-quick-observation-reopen'
+          Wait-LocalServiceVersion '2026-08-29.2-upgrade-relaunch'
           $previousProcessId = $previousProcess.Id
           Close-GuiWindow $previousProcess
           Start-Sleep -Milliseconds 700
@@ -222,7 +223,7 @@ jobs:
           $currentLaunch = Start-GuiShortcut $shortcut.File.FullName $shortcut.Target
           $desktopProcess = $currentLaunch.Process
           $installedTarget = $currentLaunch.Path
-          Wait-LocalServiceVersion '2026-08-29.2-upgrade-relaunch'
+          Wait-LocalServiceVersion '2026-08-30.1-foreground-restore'
           if ($quickShortcut.Target -and ([IO.Path]::GetFullPath($quickShortcut.Target) -ine [IO.Path]::GetFullPath($installedTarget))) { throw "Quick observation shortcut resolves to an unexpected GUI executable." }
           $backgroundProcessId = $desktopProcess.Id
           for ($cycle = 1; $cycle -le 10; $cycle++) {

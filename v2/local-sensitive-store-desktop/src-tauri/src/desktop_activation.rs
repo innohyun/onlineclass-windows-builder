@@ -96,7 +96,10 @@ fn main_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
 
 #[cfg(target_os = "windows")]
 fn native_restore(window: &tauri::WebviewWindow) -> Result<(), String> {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{SetForegroundWindow, ShowWindow, SW_RESTORE};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SetForegroundWindow, SetWindowPos, ShowWindow, HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOMOVE,
+        SWP_NOSIZE, SWP_SHOWWINDOW, SW_RESTORE,
+    };
 
     let hwnd = window
         .hwnd()
@@ -104,6 +107,13 @@ fn native_restore(window: &tauri::WebviewWindow) -> Result<(), String> {
     let raw = hwnd.0 as windows_sys::Win32::Foundation::HWND;
     unsafe {
         ShowWindow(raw, SW_RESTORE);
+        let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW;
+        if SetWindowPos(raw, HWND_TOPMOST, 0, 0, 0, 0, flags) == 0 {
+            return Err("main_window_native_raise_failed".to_string());
+        }
+        if SetWindowPos(raw, HWND_NOTOPMOST, 0, 0, 0, 0, flags) == 0 {
+            return Err("main_window_native_release_topmost_failed".to_string());
+        }
         if SetForegroundWindow(raw) == 0 {
             return Err("main_window_native_focus_failed".to_string());
         }
@@ -130,6 +140,7 @@ fn activate_once(
     window
         .set_focus()
         .map_err(|error| format!("main_window_focus_failed:{error}"))?;
+    native_restore(&window)?;
     let visible = window
         .is_visible()
         .map_err(|error| format!("main_window_visibility_check_failed:{error}"))?;
@@ -137,7 +148,7 @@ fn activate_once(
         .is_focused()
         .map_err(|error| format!("main_window_focus_check_failed:{error}"))?;
     if !visible || !focused {
-        native_restore(&window)?;
+        return Err("main_window_not_foreground_after_restore".to_string());
     }
     app.emit_to("main", "desktop-activation", intent)
         .map_err(|error| format!("desktop_activation_emit_failed:{error}"))?;
