@@ -1211,7 +1211,7 @@ void desktopShell.startActivationHandling(async (intent) => {
   shortcutTarget.click();
   await waitForPaint();
   if (document.body.dataset.appView !== "quick-observation") throw new Error("quick_observation_view_not_activated");
-  await invoke<boolean>("ack_desktop_activation_intent", { intent });
+  await invoke<boolean>("acknowledge_desktop_activation_intent", { intent });
 });
 bindUi();
 if (designPreview !== "settings") {
