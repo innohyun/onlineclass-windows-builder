@@ -48,7 +48,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-08-30.1-foreground-restore";
+pub(crate) const SERVICE_VERSION: &str = "2026-08-30.2-retained-main-window";
 const WORK_MEETING_ROOT_PAGE_ID: &str = "classaimate:work-meeting-minutes";
 const WORK_MEETING_ROOT_TITLE: &str = "업무 회의록";
 const WORK_MEETING_ROOT_INTRO: &str = "모바일에서 확정한 업무 회의록이 자동으로 들어옵니다.";
@@ -7435,6 +7435,7 @@ pub fn run() {
             app.manage(desktop_activation::DesktopActivationState::new(
                 default_data_dir(),
                 initial_intent,
+                app.get_webview_window("main"),
             ));
             let preferences = desktop_preferences::DesktopPreferencesStore::open(&default_data_dir());
             if let Err(error) = preferences.apply_startup_setting() {

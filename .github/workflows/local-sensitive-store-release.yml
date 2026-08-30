@@ -105,7 +105,7 @@ jobs:
           if (-not $installer) { throw "NSIS installer not found for launch gate." }
           $previousInstallerDirectory = Join-Path $env:RUNNER_TEMP 'classaimate-previous-installer'
           New-Item -ItemType Directory -Path $previousInstallerDirectory -Force | Out-Null
-          gh release download 'local-sensitive-store-v0.2.57' --repo $env:BUILDER_REPO --pattern 'OnlineClass-Local-Sensitive-Store-Setup.exe' --dir $previousInstallerDirectory --clobber
+          gh release download 'local-sensitive-store-v0.2.58' --repo $env:BUILDER_REPO --pattern 'OnlineClass-Local-Sensitive-Store-Setup.exe' --dir $previousInstallerDirectory --clobber
           if ($LASTEXITCODE -ne 0) { throw "Previous installer download failed." }
           $previousInstaller = Join-Path $previousInstallerDirectory 'OnlineClass-Local-Sensitive-Store-Setup.exe'
           $previousInstalled = Start-Process -FilePath $previousInstaller -ArgumentList '/S' -Wait -PassThru
@@ -207,11 +207,12 @@ jobs:
           $preferencesDir = Join-Path $env:APPDATA 'OnlineClass\local-sensitive-store'
           New-Item -ItemType Directory -Path $preferencesDir -Force | Out-Null
           $preferencesPath = Join-Path $preferencesDir 'desktop-preferences.json'
+          $activationLog = Join-Path $preferencesDir 'desktop-activation.log'
           @{ startWithWindows = $false; keepRunningOnClose = $true } | ConvertTo-Json | Set-Content -Path $preferencesPath -Encoding UTF8
           $previousLaunch = Start-GuiShortcut $shortcut.File.FullName $shortcut.Target
           $previousProcess = $previousLaunch.Process
           $installedTarget = $previousLaunch.Path
-          Wait-LocalServiceVersion '2026-08-29.2-upgrade-relaunch'
+          Wait-LocalServiceVersion '2026-08-30.1-foreground-restore'
           $previousProcessId = $previousProcess.Id
           Close-GuiWindow $previousProcess
           Start-Sleep -Milliseconds 700
@@ -220,10 +221,11 @@ jobs:
           if ($installed.ExitCode -ne 0) { throw "Upgrade installer failed with $($installed.ExitCode)." }
           for ($attempt = 0; $attempt -lt 20 -and (Get-Process -Id $previousProcessId -ErrorAction SilentlyContinue); $attempt++) { Start-Sleep -Milliseconds 250 }
           if (Get-Process -Id $previousProcessId -ErrorAction SilentlyContinue) { throw "Upgrade installer left the previous background helper running." }
+          Remove-Item -Path $activationLog -Force -ErrorAction SilentlyContinue
           $currentLaunch = Start-GuiShortcut $shortcut.File.FullName $shortcut.Target
           $desktopProcess = $currentLaunch.Process
           $installedTarget = $currentLaunch.Path
-          Wait-LocalServiceVersion '2026-08-30.1-foreground-restore'
+          Wait-LocalServiceVersion '2026-08-30.2-retained-main-window'
           if ($quickShortcut.Target -and ([IO.Path]::GetFullPath($quickShortcut.Target) -ine [IO.Path]::GetFullPath($installedTarget))) { throw "Quick observation shortcut resolves to an unexpected GUI executable." }
           $backgroundProcessId = $desktopProcess.Id
           for ($cycle = 1; $cycle -le 10; $cycle++) {
@@ -237,6 +239,10 @@ jobs:
           Start-Sleep -Milliseconds 700
           Start-Process -FilePath $installedTarget -ArgumentList '--quick-observation'
           $desktopProcess = Wait-InstalledGuiProcess $installedTarget $backgroundProcessId
+          if (-not (Test-Path $activationLog -PathType Leaf)) { throw "Desktop activation log was not created." }
+          if (Select-String -Path $activationLog -Pattern ' error=' -Quiet) { throw "Activation log contains an error." }
+          $successfulActivations = @(Select-String -Path $activationLog -Pattern 'source=single-instance attempt=1 ok$')
+          if ($successfulActivations.Count -lt 11) { throw "Activation log did not record all successful shortcut reopen events. count=$($successfulActivations.Count)" }
           Stop-Process -Id $backgroundProcessId -Force
           Wait-Process -Id $backgroundProcessId -ErrorAction SilentlyContinue
           @{ startWithWindows = $false; keepRunningOnClose = $false } | ConvertTo-Json | Set-Content -Path $preferencesPath -Encoding UTF8

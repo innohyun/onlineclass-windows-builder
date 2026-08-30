@@ -29,13 +29,19 @@ impl DesktopActivationIntent {
 
 pub(crate) struct DesktopActivationState {
     pending: Mutex<Option<DesktopActivationIntent>>,
+    main_window: Mutex<Option<tauri::WebviewWindow>>,
     log_path: PathBuf,
 }
 
 impl DesktopActivationState {
-    pub(crate) fn new(data_dir: PathBuf, initial: DesktopActivationIntent) -> Self {
+    pub(crate) fn new(
+        data_dir: PathBuf,
+        initial: DesktopActivationIntent,
+        main_window: Option<tauri::WebviewWindow>,
+    ) -> Self {
         Self {
             pending: Mutex::new(Some(initial)),
+            main_window: Mutex::new(main_window),
             log_path: data_dir.join("desktop-activation.log"),
         }
     }
@@ -47,6 +53,16 @@ impl DesktopActivationState {
     fn set(&self, intent: DesktopActivationIntent) {
         if let Ok(mut value) = self.pending.lock() {
             *value = Some(intent);
+        }
+    }
+
+    fn main_window(&self) -> Option<tauri::WebviewWindow> {
+        self.main_window.lock().ok().and_then(|window| window.clone())
+    }
+
+    fn remember_main_window(&self, window: tauri::WebviewWindow) {
+        if let Ok(mut value) = self.main_window.lock() {
+            *value = Some(window);
         }
     }
 
@@ -77,7 +93,16 @@ impl DesktopActivationState {
 }
 
 fn main_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
+    if let Some(window) = app
+        .try_state::<DesktopActivationState>()
+        .and_then(|state| state.main_window())
+    {
+        return Ok(window);
+    }
     if let Some(window) = app.get_webview_window("main") {
+        if let Some(state) = app.try_state::<DesktopActivationState>() {
+            state.remember_main_window(window.clone());
+        }
         return Ok(window);
     }
     let config = app
@@ -88,10 +113,14 @@ fn main_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
         .find(|config| config.label == "main")
         .cloned()
         .ok_or_else(|| "main_window_config_missing".to_string())?;
-    tauri::WebviewWindowBuilder::from_config(app, &config)
+    let window = tauri::WebviewWindowBuilder::from_config(app, &config)
         .map_err(|error| format!("main_window_builder_failed:{error}"))?
         .build()
-        .map_err(|error| format!("main_window_create_failed:{error}"))
+        .map_err(|error| format!("main_window_create_failed:{error}"))?;
+    if let Some(state) = app.try_state::<DesktopActivationState>() {
+        state.remember_main_window(window.clone());
+    }
+    Ok(window)
 }
 
 #[cfg(target_os = "windows")]
@@ -150,7 +179,7 @@ fn activate_once(
     if !visible || !focused {
         return Err("main_window_not_foreground_after_restore".to_string());
     }
-    app.emit_to("main", "desktop-activation", intent)
+    window.emit("desktop-activation", intent)
         .map_err(|error| format!("desktop_activation_emit_failed:{error}"))?;
     Ok(())
 }
