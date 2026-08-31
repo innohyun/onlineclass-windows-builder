@@ -474,7 +474,7 @@ pub(crate) fn mcp_page(store: &SqliteStore, input: &Value) -> Result<Value, Stri
     let membership = membership_clause(selected_workspace)?;
     let sql = format!(
         r#"{LESSON_TREE_CTE}
-      SELECT p.title,p.markdown,p.updated_at_ms
+      SELECT p.title,p.markdown,p.document_json,p.updated_at_ms
       FROM work_note_pages p
       WHERE p.tenant_id=?1 AND p.page_id=?2 AND {membership}"#
     );
@@ -482,9 +482,14 @@ pub(crate) fn mcp_page(store: &SqliteStore, input: &Value) -> Result<Value, Stri
         .conn
         .lock()
         .map_err(|_| "db_lock_failed".to_string())?;
-    let (title, markdown, updated_at_ms) = conn
+    let (title, markdown, document_json, updated_at_ms) = conn
         .query_row(&sql, params![tenant_id, page_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
         })
         .map_err(|error| match error {
             rusqlite::Error::QueryReturnedNoRows => "local_workspace_page_not_found".to_string(),
@@ -497,6 +502,11 @@ pub(crate) fn mcp_page(store: &SqliteStore, input: &Value) -> Result<Value, Stri
         .chars()
         .take(MAX_MCP_MARKDOWN_CHARS)
         .collect::<String>();
+    let blocks: Value = serde_json::from_str(&document_json)
+        .map_err(|_| "local_workspace_mcp_blocks_invalid".to_string())?;
+    if !blocks.is_array() || blocks.as_array().map(Vec::len).unwrap_or(0) > 5_000 {
+        return Err("local_workspace_mcp_blocks_invalid".to_string());
+    }
     Ok(json!({
         "ok": true,
         "tenantId": tenant_id,
@@ -506,6 +516,7 @@ pub(crate) fn mcp_page(store: &SqliteStore, input: &Value) -> Result<Value, Stri
             "title": title,
             "path": title_path(&conn, &tenant_id, selected_workspace, &page_id)?,
             "markdown": markdown,
+            "blocks": blocks,
             "truncated": truncated,
             "characterCount": character_count,
             "revision": updated_at_ms,
@@ -839,7 +850,7 @@ mod tests {
     }
 
     #[test]
-    fn mcp_page_returns_title_path_and_bounded_markdown_only() {
+    fn mcp_page_returns_title_path_bounded_markdown_full_blocks_and_revision() {
         let (directory, store) = test_store();
         insert_page(
             &store,
@@ -877,6 +888,11 @@ mod tests {
         assert_eq!(result["page"]["characterCount"], MAX_MCP_MARKDOWN_CHARS + 1);
         assert_eq!(result["page"]["truncated"], true);
         assert_eq!(
+            result["page"]["blocks"],
+            json!([{"type":"text","text":"노출 금지 blocks"}])
+        );
+        assert_eq!(result["page"]["revision"], 2);
+        assert_eq!(
             result["page"]["markdown"]
                 .as_str()
                 .map(|value| value.chars().count()),
@@ -892,11 +908,13 @@ mod tests {
             keys,
             [
                 "characterCount",
+                "blocks",
                 "markdown",
                 "pageId",
                 "path",
                 "title",
-                "truncated"
+                "truncated",
+                "revision"
             ]
             .into_iter()
             .collect()

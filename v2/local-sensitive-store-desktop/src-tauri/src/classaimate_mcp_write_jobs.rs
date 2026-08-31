@@ -3,14 +3,16 @@ use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 
-const OPERATIONS: [&str; 6] = [
+const OPERATIONS: [&str; 7] = [
     "student_record_save_drafts",
     "counseling_record_save_draft",
     "counseling_record_prepare_create",
     "work_notes_save_draft",
     "materials_save_draft",
     "materials_update_draft",
+    "materials_restructure_page",
 ];
 const LOCAL_RECEIPT_TTL_MS: i64 = 24 * 60 * 60 * 1000;
 
@@ -449,6 +451,128 @@ fn update_work_note(store: &SqliteStore, tenant: &str, data: &Value) -> Result<V
     Ok(json!({"result":data,"localRef":format!("work-note-page:{page_ref}")}))
 }
 
+fn collect_document_references(value: &Value, references: &mut BTreeSet<String>) {
+    if let Some(values) = value.as_array() {
+        for nested in values {
+            collect_document_references(nested, references);
+        }
+        return;
+    }
+    let Some(object) = value.as_object() else {
+        return;
+    };
+    let attachment_id = object
+        .get("attachmentId")
+        .or_else(|| object.get("localAttachmentId"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    if !attachment_id.is_empty() {
+        references.insert(format!("attachment:{attachment_id}"));
+    }
+    if object.get("type").and_then(Value::as_str) == Some("link") {
+        let href = object
+            .get("href")
+            .and_then(Value::as_str)
+            .or_else(|| {
+                object
+                    .get("attrs")
+                    .and_then(Value::as_object)
+                    .and_then(|attrs| attrs.get("href"))
+                    .and_then(Value::as_str)
+            })
+            .unwrap_or("")
+            .trim();
+        if !href.is_empty() {
+            references.insert(format!("link:{href}"));
+        }
+    }
+    if matches!(
+        object.get("type").and_then(Value::as_str),
+        Some("pageLinkBlock" | "page")
+    ) {
+        let page_id = object
+            .get("pageId")
+            .and_then(Value::as_str)
+            .or_else(|| object.get("target").and_then(Value::as_str))
+            .or_else(|| {
+                object
+                    .get("attrs")
+                    .and_then(Value::as_object)
+                    .and_then(|attrs| attrs.get("pageId"))
+                    .and_then(Value::as_str)
+            })
+            .unwrap_or("")
+            .trim();
+        if !page_id.is_empty() {
+            references.insert(format!("page:{page_id}"));
+        }
+    }
+    for nested in object.values() {
+        collect_document_references(nested, references);
+    }
+}
+
+fn restructure_work_note(store: &SqliteStore, tenant: &str, data: &Value) -> Result<Value, String> {
+    let page_ref = required_id(data.get("pageRef"))?;
+    let existing = store
+        .get_work_note(tenant.to_string(), page_ref.clone())?
+        .ok_or_else(|| "MATERIAL_REVISION_CONFLICT".to_string())?;
+    let expected_revision = data
+        .get("expectedRevision")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let workspace = data.get("workspace").and_then(Value::as_str).unwrap_or("");
+    let markdown = data.get("markdown").and_then(Value::as_str).unwrap_or("");
+    let blocks = data
+        .get("blocks")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "classaimate_mcp_write_job_invalid".to_string())?;
+    if !matches!(workspace, "work_materials" | "lesson_materials")
+        || existing.get("updatedAtMs").and_then(Value::as_i64) != Some(expected_revision)
+    {
+        return Err("MATERIAL_REVISION_CONFLICT".to_string());
+    }
+    if blocks.len() > 5_000 || markdown.chars().count() > 200_000 {
+        return Err("classaimate_mcp_write_job_invalid".to_string());
+    }
+    let mut existing_references = BTreeSet::new();
+    collect_document_references(
+        existing.get("blocks").unwrap_or(&Value::Null),
+        &mut existing_references,
+    );
+    let mut next_references = BTreeSet::new();
+    collect_document_references(
+        data.get("blocks").unwrap_or(&Value::Null),
+        &mut next_references,
+    );
+    if !existing_references.is_subset(&next_references) {
+        return Err("MATERIAL_REFERENCE_CONFLICT".to_string());
+    }
+    let mut updated = existing
+        .as_object()
+        .cloned()
+        .ok_or_else(|| "MATERIAL_REVISION_CONFLICT".to_string())?;
+    updated.insert("tenantId".to_string(), json!(tenant));
+    updated.insert("pageId".to_string(), json!(page_ref));
+    updated.insert("blocks".to_string(), Value::Array(blocks.clone()));
+    updated.insert("markdown".to_string(), json!(markdown));
+    updated.insert("updatedAtMs".to_string(), json!(now_ms()));
+    store.upsert_work_note(Value::Object(updated))?;
+    let readback = store
+        .get_work_note(tenant.to_string(), page_ref.clone())?
+        .ok_or_else(|| "LOCAL_STORE_WRITE_FAILED".to_string())?;
+    if readback.get("markdown").and_then(Value::as_str) != Some(markdown)
+        || readback.get("blocks").and_then(Value::as_array) != Some(blocks)
+    {
+        return Err("LOCAL_STORE_WRITE_FAILED".to_string());
+    }
+    Ok(json!({
+        "result":{"pageRef":page_ref,"appliedFromRevision":expected_revision},
+        "localRef":format!("work-note-page:{page_ref}")
+    }))
+}
+
 pub(crate) fn ensure_schema(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(r#"
       CREATE TABLE IF NOT EXISTS teacher_counseling_mcp_drafts(
@@ -511,6 +635,7 @@ pub(crate) fn apply(store: &SqliteStore, input: &Value) -> Result<Value, String>
         "counseling_record_save_draft" => save_counseling(store, &tenant, data)?,
         "counseling_record_prepare_create" => create_counseling(store, &tenant, data)?,
         "materials_update_draft" => update_work_note(store, &tenant, data)?,
+        "materials_restructure_page" => restructure_work_note(store, &tenant, data)?,
         _ => save_work_note(store, &tenant, data)?,
     };
     let result = saved.get("result").cloned().unwrap_or(Value::Null);
@@ -573,4 +698,75 @@ pub(crate) fn list_counseling_drafts(
         result.push(value);
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn request(receipt_id: &str, data: Value) -> Value {
+        json!({
+            "tenantId":"tenant-a",
+            "receiptId":receipt_id,
+            "operation":"materials_restructure_page",
+            "requestSha256":"a".repeat(64),
+            "data":data
+        })
+    }
+
+    #[test]
+    fn restructure_page_requires_exact_revision_and_preserves_document_references() {
+        let directory = std::env::temp_dir().join(format!(
+            "classaimate-mcp-restructure-{}",
+            crate::random_url_token()
+        ));
+        fs::create_dir_all(&directory).expect("create test directory");
+        let store = SqliteStore::open(directory.join("store.sqlite3")).expect("open test store");
+        let original_blocks = json!([
+            {"id":"source","type":"text","content":[{"type":"text","text":"출처","marks":[{"type":"link","attrs":{"href":"https://example.com/source"}}]}]},
+            {"id":"file","type":"attachment","localAttachmentId":"attachment-a","fileName":"원본.pdf"}
+        ]);
+        store
+            .upsert_work_note(json!({
+                "tenantId":"tenant-a","pageId":"page-a","parentId":null,"title":"원본 제목",
+                "emoji":"📄","position":0,"properties":{"source":"teacher"},
+                "blocks":original_blocks,"markdown":"원문","createdAtMs":10,"updatedAtMs":10
+            }))
+            .expect("seed work note");
+        let reorganized = json!([
+            {"id":"summary","type":"heading","attrs":{"level":1},"content":[{"type":"text","text":"[AI 정리본]"}]},
+            {"id":"original","type":"toggle","attrs":{"summary":"원본 보기"},"content":original_blocks}
+        ]);
+        let data = json!({
+            "workspace":"work_materials","pageRef":"page-a","expectedRevision":10,
+            "blocks":reorganized,"markdown":"# [AI 정리본]\n\n<details>원본 보기</details>"
+        });
+        let applied =
+            apply(&store, &request("receipt-a", data.clone())).expect("apply restructure");
+        assert_eq!(applied["result"]["appliedFromRevision"], 10);
+        let readback = store
+            .get_work_note("tenant-a".to_string(), "page-a".to_string())
+            .expect("read work note")
+            .expect("work note exists");
+        assert_eq!(readback["title"], "원본 제목");
+        assert_eq!(readback["properties"]["source"], "teacher");
+        assert_eq!(readback["blocks"], reorganized);
+        assert_eq!(
+            apply(&store, &request("receipt-b", data)).expect_err("reject stale revision"),
+            "MATERIAL_REVISION_CONFLICT"
+        );
+        let current_revision = readback["updatedAtMs"].as_i64().expect("current revision");
+        let missing_references = json!({
+            "workspace":"work_materials","pageRef":"page-a","expectedRevision":current_revision,
+            "blocks":[{"id":"summary","type":"text","text":"reference 제거"}],"markdown":"reference 제거"
+        });
+        assert_eq!(
+            apply(&store, &request("receipt-c", missing_references))
+                .expect_err("reject removed references"),
+            "MATERIAL_REFERENCE_CONFLICT"
+        );
+        drop(store);
+        fs::remove_dir_all(directory).expect("remove test directory");
+    }
 }
