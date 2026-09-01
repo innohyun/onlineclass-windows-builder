@@ -15,6 +15,11 @@ const OPERATIONS: [&str; 7] = [
     "materials_restructure_page",
 ];
 const LOCAL_RECEIPT_TTL_MS: i64 = 24 * 60 * 60 * 1000;
+const STUDENT_MATERIAL_ROOT_ID: &str = "student-learning-materials-root";
+const STUDENT_MATERIAL_KINDS: [&str; 9] = [
+    "worksheet", "activity_sheet", "reading", "inquiry", "problem", "assignment_guide",
+    "supplemental", "advanced", "other",
+];
 
 fn now_ms() -> i64 {
     Utc::now().timestamp_millis()
@@ -369,12 +374,25 @@ fn create_counseling(store: &SqliteStore, tenant: &str, data: &Value) -> Result<
 
 fn save_work_note(store: &SqliteStore, tenant: &str, data: &Value) -> Result<Value, String> {
     let page_id = required_id(data.get("pageId"))?;
+    let workspace = data.get("workspace").and_then(Value::as_str).unwrap_or("work_materials");
+    if !matches!(workspace, "work_materials" | "lesson_materials" | "student_learning_materials") {
+        return Err("classaimate_mcp_write_job_invalid".to_string());
+    }
+    let student_material = workspace == "student_learning_materials";
     let parent_id = required_id(data.get("parentPageRef"))?;
     let document_ref = required_id(data.get("documentRef"))?;
-    if store
-        .get_work_note(tenant.to_string(), parent_id.clone())?
-        .is_none()
-    {
+    if student_material && parent_id != STUDENT_MATERIAL_ROOT_ID {
+        return Err("classaimate_mcp_write_job_invalid".to_string());
+    }
+    let mut parent = store.get_work_note(tenant.to_string(), parent_id.clone())?;
+    if student_material && parent.is_none() {
+        store.upsert_work_note(json!({"tenantId":tenant,"pageId":STUDENT_MATERIAL_ROOT_ID,"parentId":Value::Null,
+            "title":"학생 학습자료","emoji":"🎒","position":2,
+            "properties":{"systemKind":"student_learning_materials_folder","schemaVersion":1},
+            "blocks":[],"markdown":"# 학생 학습자료","createdAtMs":now_ms(),"updatedAtMs":now_ms()}))?;
+        parent = store.get_work_note(tenant.to_string(), parent_id.clone())?;
+    }
+    if parent.is_none() {
         return Err("WORK_NOTE_PARENT_NOT_FOUND".to_string());
     }
     let title = data
@@ -389,6 +407,33 @@ fn save_work_note(store: &SqliteStore, tenant: &str, data: &Value) -> Result<Val
         .ok_or_else(|| "classaimate_mcp_write_job_invalid".to_string())?;
     if title.is_empty() || title.chars().count() > 300 || markdown.chars().count() > 200_000 {
         return Err("classaimate_mcp_write_job_invalid".to_string());
+    }
+    let material_kind = data.get("materialKind").and_then(Value::as_str).unwrap_or("");
+    let grade = data.get("grade").and_then(Value::as_str).unwrap_or("");
+    let subject = data.get("subject").and_then(Value::as_str).unwrap_or("");
+    let unit = data.get("unit").and_then(Value::as_str).unwrap_or("");
+    let lesson_topic = data.get("lessonTopic").and_then(Value::as_str).unwrap_or("");
+    let author_user_id = if student_material { required_id(data.get("authorUserId"))? } else { String::new() };
+    if student_material && (!STUDENT_MATERIAL_KINDS.contains(&material_kind)
+        || data.get("workflowStatus").and_then(Value::as_str) != Some("draft")
+        || grade.chars().count() > 80 || subject.chars().count() > 120
+        || unit.chars().count() > 240 || lesson_topic.chars().count() > 300)
+    {
+        return Err("classaimate_mcp_write_job_invalid".to_string());
+    }
+    let linked_page_ref = match data.get("linkedLessonPageRef") {
+        Some(value) if !value.is_null() => Some(required_id(Some(value))?),
+        _ => None,
+    };
+    let linked = if let Some(page_ref) = linked_page_ref.as_deref() {
+        let conn = store.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
+        conn.query_row("SELECT plan_id,page_id,COALESCE(subject,'') FROM lesson_plan_bindings
+             WHERE tenant_id=?1 AND page_id=?2 LIMIT 1", params![tenant,page_ref], |row| {
+            Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?))
+        }).optional().map_err(|error| format!("db_lesson_plan_binding_query_failed:{error}"))?
+    } else { None };
+    if linked_page_ref.is_some() && linked.is_none() {
+        return Err("LESSON_PLAN_SOURCE_NOT_FOUND".to_string());
     }
     if let Some(existing) = store.get_work_note(tenant.to_string(), page_id.clone())? {
         if existing.get("parentId").and_then(Value::as_str) != Some(parent_id.as_str())
@@ -407,8 +452,17 @@ fn save_work_note(store: &SqliteStore, tenant: &str, data: &Value) -> Result<Val
             .max()
             .map(|value| value + 1)
             .unwrap_or(0);
+        let properties = if student_material {
+            json!({"systemKind":"student_learning_material","sourceType":"classAimatePublicMcp","sourceLabel":"내 ChatGPT","teacherReviewRequired":true,
+                "studentLearningMaterial":{"version":2,"materialId":page_id,"kind":material_kind,"workflowStatus":"draft",
+                    "grade":grade,"subject":if subject.is_empty(){linked.as_ref().map(|row|row.2.as_str()).unwrap_or("")}else{subject},
+                    "unit":unit,"lessonTopic":lesson_topic,"linkedLessonPlanId":linked.as_ref().map(|row|row.0.as_str()),
+                    "linkedLessonPageId":linked.as_ref().map(|row|row.1.as_str()),"authorUserId":author_user_id}})
+        } else {
+            json!({"sourceType":"classAimatePublicMcp","sourceLabel":"내 ChatGPT","teacherReviewRequired":true,"documentRef":document_ref})
+        };
         store.upsert_work_note(json!({"tenantId":tenant,"pageId":page_id,"parentId":parent_id,"title":title,"emoji":"📝","position":position,
-            "properties":{"sourceType":"classAimatePublicMcp","sourceLabel":"내 ChatGPT","teacherReviewRequired":true,"documentRef":document_ref},
+            "properties":properties,
             "blocks":blocks,"markdown":markdown,"createdAtMs":now_ms(),"updatedAtMs":now_ms()}))?;
     }
     Ok(json!({"result":data,"localRef":format!("work-note-page:{page_id}")}))
@@ -424,11 +478,15 @@ fn update_work_note(store: &SqliteStore, tenant: &str, data: &Value) -> Result<V
     let blocks = data.get("blocks").and_then(Value::as_array)
         .ok_or_else(|| "classaimate_mcp_write_job_invalid".to_string())?;
     let source = existing.get("properties").and_then(|value| value.get("sourceType")).and_then(Value::as_str);
+    let student_material = data.get("workspace").and_then(Value::as_str) == Some("student_learning_materials");
+    let marker = existing.get("properties").and_then(|value| value.get("studentLearningMaterial"));
     if !page_ref.starts_with("mcp_")
-        || !existing.get("title").and_then(Value::as_str).unwrap_or("").starts_with("ChatGPT 초안 ·")
+        || (!student_material && !existing.get("title").and_then(Value::as_str).unwrap_or("").starts_with("ChatGPT 초안 ·"))
         || source != Some("classAimatePublicMcp")
+        || (student_material && (marker.and_then(|value|value.get("version")).and_then(Value::as_i64) != Some(2)
+            || marker.and_then(|value|value.get("materialId")).and_then(Value::as_str) != Some(page_ref.as_str())))
         || existing.get("updatedAtMs").and_then(Value::as_i64) != Some(expected_revision)
-        || !title.starts_with("ChatGPT 초안 ·") || title.chars().count() > 300
+        || (!student_material && !title.starts_with("ChatGPT 초안 ·")) || title.chars().count() > 300
         || markdown.chars().count() > 200_000
     {
         return Err("DRAFT_CONFLICT".to_string());
@@ -439,6 +497,15 @@ fn update_work_note(store: &SqliteStore, tenant: &str, data: &Value) -> Result<V
     updated.insert("title".to_string(), json!(title));
     updated.insert("markdown".to_string(), json!(markdown));
     updated.insert("blocks".to_string(), Value::Array(blocks.clone()));
+    if student_material {
+        let mut properties = existing.get("properties").and_then(Value::as_object).cloned()
+            .ok_or_else(|| "DRAFT_CONFLICT".to_string())?;
+        let mut next_marker = marker.and_then(Value::as_object).cloned()
+            .ok_or_else(|| "DRAFT_CONFLICT".to_string())?;
+        next_marker.insert("workflowStatus".to_string(), json!("draft"));
+        properties.insert("studentLearningMaterial".to_string(), Value::Object(next_marker));
+        updated.insert("properties".to_string(), Value::Object(properties));
+    }
     updated.insert("updatedAtMs".to_string(), json!(now_ms()));
     store.upsert_work_note(Value::Object(updated))?;
     let readback = store.get_work_note(tenant.to_string(), page_ref.clone())?
@@ -528,7 +595,7 @@ fn restructure_work_note(store: &SqliteStore, tenant: &str, data: &Value) -> Res
         .get("blocks")
         .and_then(Value::as_array)
         .ok_or_else(|| "classaimate_mcp_write_job_invalid".to_string())?;
-    if !matches!(workspace, "work_materials" | "lesson_materials")
+    if !matches!(workspace, "work_materials" | "lesson_materials" | "student_learning_materials")
         || existing.get("updatedAtMs").and_then(Value::as_i64) != Some(expected_revision)
     {
         return Err("MATERIAL_REVISION_CONFLICT".to_string());
@@ -549,6 +616,18 @@ fn restructure_work_note(store: &SqliteStore, tenant: &str, data: &Value) -> Res
     if !existing_references.is_subset(&next_references) {
         return Err("MATERIAL_REFERENCE_CONFLICT".to_string());
     }
+    if workspace == "student_learning_materials" {
+        let marker = existing
+            .get("properties")
+            .and_then(Value::as_object)
+            .and_then(|properties| properties.get("studentLearningMaterial"))
+            .and_then(Value::as_object);
+        if marker.and_then(|value| value.get("version")).and_then(Value::as_i64) != Some(2)
+            || marker.and_then(|value| value.get("materialId")).and_then(Value::as_str) != Some(page_ref.as_str())
+        {
+            return Err("MATERIAL_REVISION_CONFLICT".to_string());
+        }
+    }
     let mut updated = existing
         .as_object()
         .cloned()
@@ -557,6 +636,17 @@ fn restructure_work_note(store: &SqliteStore, tenant: &str, data: &Value) -> Res
     updated.insert("pageId".to_string(), json!(page_ref));
     updated.insert("blocks".to_string(), Value::Array(blocks.clone()));
     updated.insert("markdown".to_string(), json!(markdown));
+    if workspace == "student_learning_materials" {
+        let mut properties = existing.get("properties").and_then(Value::as_object).cloned()
+            .ok_or_else(|| "MATERIAL_REVISION_CONFLICT".to_string())?;
+        if let Some(mut marker) = properties.get("studentLearningMaterial").and_then(Value::as_object).cloned()
+            .filter(|marker| marker.get("version").and_then(Value::as_i64) == Some(2))
+        {
+            marker.insert("workflowStatus".to_string(), json!("draft"));
+            properties.insert("studentLearningMaterial".to_string(), Value::Object(marker));
+            updated.insert("properties".to_string(), Value::Object(properties));
+        }
+    }
     updated.insert("updatedAtMs".to_string(), json!(now_ms()));
     store.upsert_work_note(Value::Object(updated))?;
     let readback = store
@@ -766,6 +856,56 @@ mod tests {
                 .expect_err("reject removed references"),
             "MATERIAL_REFERENCE_CONFLICT"
         );
+        drop(store);
+        fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn student_material_save_creates_protected_root_and_update_resets_workflow() {
+        let directory = std::env::temp_dir().join(format!("classaimate-mcp-student-material-{}", crate::random_url_token()));
+        fs::create_dir_all(&directory).expect("create test directory");
+        let store = SqliteStore::open(directory.join("store.sqlite3")).expect("open test store");
+        let page_id = "mcp_student_activity";
+        save_work_note(&store,"tenant-a",&json!({
+            "workspace":"student_learning_materials","pageId":page_id,"parentPageRef":STUDENT_MATERIAL_ROOT_ID,
+            "documentRef":"document-student-a","title":"태양계 조사 활동지","markdown":"# 태양계 조사 활동지",
+            "blocks":[{"type":"paragraph","content":[{"type":"text","text":"행성을 조사합니다."}]}],
+            "materialKind":"activity_sheet","workflowStatus":"draft","grade":"5학년","subject":"과학",
+            "unit":"2단원","lessonTopic":"태양계의 구성","authorUserId":"teacher-a"
+        })).expect("save student material");
+        let root = store.get_work_note("tenant-a".to_string(),STUDENT_MATERIAL_ROOT_ID.to_string()).expect("read student root").expect("student root exists");
+        assert_eq!(root["properties"]["systemKind"],"student_learning_materials_folder");
+        let mut material = store.get_work_note("tenant-a".to_string(),page_id.to_string()).expect("read student material").expect("student material exists");
+        assert_eq!(material["parentId"],STUDENT_MATERIAL_ROOT_ID);
+        assert_eq!(material["properties"]["studentLearningMaterial"]["version"],2);
+        material["properties"]["studentLearningMaterial"]["workflowStatus"]=json!("ready");
+        material["updatedAtMs"]=json!(100);
+        store.upsert_work_note(material).expect("mark material ready");
+        update_work_note(&store,"tenant-a",&json!({
+            "workspace":"student_learning_materials","pageRef":page_id,"expectedRevision":100,
+            "title":"태양계 조사 활동지 수정","markdown":"# 수정한 활동지",
+            "blocks":[{"type":"paragraph","content":[{"type":"text","text":"수정했습니다."}]}]
+        })).expect("update student material");
+        let updated = store.get_work_note("tenant-a".to_string(),page_id.to_string()).expect("read updated student material").expect("updated student material exists");
+        assert_eq!(updated["title"],"태양계 조사 활동지 수정");
+        assert_eq!(updated["properties"]["studentLearningMaterial"]["workflowStatus"],"draft");
+        let mut ready = updated;
+        ready["properties"]["studentLearningMaterial"]["workflowStatus"]=json!("ready");
+        ready["updatedAtMs"]=json!(200);
+        store.upsert_work_note(ready).expect("mark updated material ready");
+        restructure_work_note(&store,"tenant-a",&json!({
+            "workspace":"student_learning_materials","pageRef":page_id,"expectedRevision":200,
+            "blocks":[{"type":"heading","attrs":{"level":1},"content":[{"type":"text","text":"AI 정리본"}]}],
+            "markdown":"# AI 정리본"
+        })).expect("restructure student material");
+        let restructured = store.get_work_note("tenant-a".to_string(),page_id.to_string()).expect("read restructured material").expect("restructured material exists");
+        assert_eq!(restructured["properties"]["studentLearningMaterial"]["workflowStatus"],"draft");
+        assert_eq!(restructure_work_note(&store,"tenant-a",&json!({
+            "workspace":"student_learning_materials","pageRef":STUDENT_MATERIAL_ROOT_ID,"expectedRevision":root["updatedAtMs"],
+            "blocks":[{"type":"heading","attrs":{"level":1},"content":[{"type":"text","text":"바뀐 root"}]}],
+            "markdown":"# 바뀐 root"
+        })).expect_err("protected root cannot be restructured"),"MATERIAL_REVISION_CONFLICT");
+        assert_eq!(store.delete_work_note("tenant-a".to_string(),STUDENT_MATERIAL_ROOT_ID.to_string()).expect_err("student root is protected"),"work_note_system_folder_protected");
         drop(store);
         fs::remove_dir_all(directory).expect("remove test directory");
     }

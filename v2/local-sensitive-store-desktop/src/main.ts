@@ -1196,7 +1196,7 @@ const backupStorage = initBackupStorage({
 initHomeDashboard({
   onViewChange(view, context) {
     if (view === "quick-observation") void quickObservation.open({ focus: true });
-    if (view === "lesson-materials" || view === "work-materials") void localWorkspaces.open(view);
+    if (view === "lesson-materials" || view === "work-materials" || view === "student-learning-materials") void localWorkspaces.open(view);
     if (view === "data") void dataExplorer.open({ group: context.group, sectionKey: context.sectionKey, hasAttachment: context.attachment });
     if (view === "students") void studentTimeline.open();
     if (view === "backup") void backupStorage.refresh();
@@ -1227,7 +1227,7 @@ if (designPreview === "auth") {
   document.querySelector<HTMLButtonElement>('.sidebar-link[data-app-view-target="data"]')?.click();
 } else if (designPreview === "quick-observation") {
   document.querySelector<HTMLButtonElement>('.sidebar-link[data-app-view-target="quick-observation"]')?.click();
-} else if (designPreview === "lesson-materials" || designPreview === "work-materials") {
+} else if (designPreview === "lesson-materials" || designPreview === "work-materials" || designPreview === "student-learning-materials") {
   document.querySelector<HTMLButtonElement>(`.sidebar-link[data-app-view-target="${designPreview}"]`)?.click();
 } else if (designPreview === "students") {
   document.querySelector<HTMLButtonElement>('.sidebar-link[data-app-view-target="students"]')?.click();

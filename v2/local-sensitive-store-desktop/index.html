@@ -40,6 +40,9 @@
           <button class="sidebar-link" type="button" data-app-view-target="lesson-materials">
             <i class="fa-solid fa-book-open" aria-hidden="true"></i><span>수업자료</span>
           </button>
+          <button class="sidebar-link" type="button" data-app-view-target="student-learning-materials">
+            <i class="fa-solid fa-user-graduate" aria-hidden="true"></i><span>학생 학습자료</span>
+          </button>
           <button class="sidebar-link" type="button" data-app-view-target="work-materials">
             <i class="fa-solid fa-folder-tree" aria-hidden="true"></i><span>업무자료</span>
           </button>
@@ -187,6 +190,18 @@
             <section class="local-workspace-panel" aria-labelledby="localWorkspaceLessonTreeTitle"><header><h2 id="localWorkspaceLessonTreeTitle">수업자료 구조</h2><button id="localWorkspaceLessonRefresh" type="button" aria-label="수업자료 새로고침"><i class="fa-solid fa-rotate" aria-hidden="true"></i></button></header><div class="local-workspace-tree" id="localWorkspaceLessonTree" role="listbox" aria-label="수업자료 페이지"></div><footer><p id="localWorkspaceLessonStatus" role="status">로컬 DB에서 자료 구조를 확인하고 있습니다.</p><div class="local-workspace-actions"><button id="localWorkspaceLessonOpen" class="is-primary" type="button" disabled>읽기 전용으로 열기</button></div></footer></section>
             <aside class="local-workspace-readonly"><i class="fa-solid fa-shield-halved" aria-hidden="true"></i><p><strong>분류 화면은 별도 저장소가 아닙니다.</strong>같은 로컬 DB를 수업자료로 나눠 보여 줍니다. 수정·이동·삭제는 교사 홈 수업계획에서 합니다.</p></aside>
             <aside class="local-reader-tutorial" id="localWorkspaceLessonTutorial" hidden><header><span id="localWorkspaceLessonTutorialStep">1 / 4</span><button id="localWorkspaceLessonTutorialClose" type="button" aria-label="수업자료 안내 닫기"><i class="fa-solid fa-xmark"></i></button></header><h2 id="localWorkspaceLessonTutorialTitle">수업자료 작업공간</h2><p id="localWorkspaceLessonTutorialCopy"></p><footer><button id="localWorkspaceLessonTutorialNext" type="button">다음</button></footer></aside>
+          </section>
+
+          <section class="app-view local-workspace-view" id="localWorkspaceStudent" data-app-view="student-learning-materials" aria-labelledby="localWorkspaceStudentTitle" hidden>
+            <div class="local-workspace-heading"><div><h1 id="localWorkspaceStudentTitle">학생 학습자료</h1><p>학생이 실제 수업에서 쓰는 자료를 수업 준비 자료와 분리해 읽습니다.</p></div><button id="localWorkspaceStudentHelp" type="button"><i class="fa-solid fa-circle-question" aria-hidden="true"></i> 안내</button></div>
+            <section class="local-workspace-summary" aria-label="학생 학습자료 검색과 요약">
+              <form class="local-workspace-search" id="localWorkspaceStudentSearch" role="search"><label for="localWorkspaceStudentQuery"><i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i><input id="localWorkspaceStudentQuery" type="search" autocomplete="off" placeholder="학생 학습자료 제목, 본문, 첨부파일 검색" /></label><button type="submit">검색</button><button id="localWorkspaceStudentClear" type="button">전체</button></form>
+              <div class="local-workspace-metric"><span>자료 구조</span><strong id="localWorkspaceStudentCount">0개 페이지</strong></div>
+              <div class="local-workspace-metric"><span>표시된 첨부</span><strong id="localWorkspaceStudentAttachmentSummary">0개</strong></div>
+            </section>
+            <section class="local-workspace-panel" aria-labelledby="localWorkspaceStudentTreeTitle"><header><h2 id="localWorkspaceStudentTreeTitle">학생 학습자료 구조</h2><button id="localWorkspaceStudentRefresh" type="button" aria-label="학생 학습자료 새로고침"><i class="fa-solid fa-rotate" aria-hidden="true"></i></button></header><div class="local-workspace-tree" id="localWorkspaceStudentTree" role="listbox" aria-label="학생 학습자료 페이지"></div><footer><p id="localWorkspaceStudentStatus" role="status">로컬 DB에서 자료 구조를 확인하고 있습니다.</p><div class="local-workspace-actions"><button id="localWorkspaceStudentOpen" class="is-primary" type="button" disabled>읽기 전용으로 열기</button></div></footer></section>
+            <aside class="local-workspace-readonly"><i class="fa-solid fa-shield-halved" aria-hidden="true"></i><p><strong>학생 공개와 자료 편집은 분리되어 있습니다.</strong>이 화면은 원본 학습자료를 읽기 전용으로 확인합니다. AI가 저장한 자료는 초안이며 교사가 별도로 공개해야 합니다.</p></aside>
+            <aside class="local-reader-tutorial" id="localWorkspaceStudentTutorial" hidden><header><span id="localWorkspaceStudentTutorialStep">1 / 4</span><button id="localWorkspaceStudentTutorialClose" type="button" aria-label="학생 학습자료 안내 닫기"><i class="fa-solid fa-xmark"></i></button></header><h2 id="localWorkspaceStudentTutorialTitle">학생 학습자료 작업공간</h2><p id="localWorkspaceStudentTutorialCopy"></p><footer><button id="localWorkspaceStudentTutorialNext" type="button">다음</button></footer></aside>
           </section>
 
           <section class="app-view local-workspace-view" id="localWorkspaceWork" data-app-view="work-materials" aria-labelledby="localWorkspaceWorkTitle" hidden>

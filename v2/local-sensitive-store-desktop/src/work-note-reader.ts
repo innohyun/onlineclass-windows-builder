@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 type WorkNotePage = { pageId: string; parentId?: string | null; title: string; emoji: string; position: number; properties?: Record<string, unknown>; blocks?: Block[]; markdown?: string; updatedAtMs?: number };
 type WorkNoteAttachment = { attachmentId: string; mediaId: string; pageId: string; blockId: string; fileName: string; contentType: string; size: number };
 type WorkNoteView = { ok?: boolean; rootPageId?: string; selectedPageId?: string; pages?: WorkNotePage[]; attachments?: WorkNoteAttachment[]; error?: string };
-type LocalWorkspace = 'lesson_materials' | 'work_materials';
+type LocalWorkspace = 'lesson_materials' | 'work_materials' | 'student_learning_materials';
 type WorkspaceTree = { ok?: boolean; pages?: WorkNotePage[]; error?: string };
 type WorkspacePage = { ok?: boolean; page?: WorkNotePage; attachments?: WorkNoteAttachment[]; error?: string };
 type Block = Record<string, any>;

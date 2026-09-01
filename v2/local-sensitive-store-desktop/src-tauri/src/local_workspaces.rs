@@ -12,14 +12,29 @@ const MAX_MCP_SNIPPET_CHARS: usize = 320;
 const LESSON_ROOT_PAGE_ID: &str = "lesson-materials-root";
 #[cfg(test)]
 const LESSON_SYSTEM_KIND: &str = "lesson_materials_folder";
+#[cfg(test)]
+const STUDENT_MATERIAL_ROOT_PAGE_ID: &str = "student-learning-materials-root";
+#[cfg(test)]
+const STUDENT_MATERIAL_ROOT_SYSTEM_KIND: &str = "student_learning_materials_folder";
 
-const LESSON_TREE_CTE: &str = r#"WITH RECURSIVE lesson_pages(page_id) AS (
+const MATERIAL_TREE_CTE: &str = r#"WITH RECURSIVE lesson_pages(page_id) AS (
   SELECT page_id FROM work_note_pages
   WHERE tenant_id=?1 AND (page_id='lesson-materials-root'
     OR json_extract(properties_json,'$.systemKind')='lesson_materials_folder')
   UNION
   SELECT child.page_id FROM work_note_pages child
   JOIN lesson_pages parent ON child.parent_id=parent.page_id
+  WHERE child.tenant_id=?1
+), student_pages(page_id) AS (
+  SELECT page_id FROM work_note_pages
+  WHERE tenant_id=?1 AND (
+    page_id='student-learning-materials-root'
+    OR json_extract(properties_json,'$.systemKind')='student_learning_materials_folder'
+    OR json_extract(properties_json,'$.systemKind')='student_learning_material'
+  )
+  UNION
+  SELECT child.page_id FROM work_note_pages child
+  JOIN student_pages parent ON child.parent_id=parent.page_id
   WHERE child.tenant_id=?1
 )"#;
 
@@ -44,14 +59,16 @@ fn workspace(value: &str) -> Result<&'static str, String> {
     match normalize(value, 40).as_str() {
         "lesson_materials" => Ok("lesson_materials"),
         "work_materials" => Ok("work_materials"),
+        "student_learning_materials" => Ok("student_learning_materials"),
         _ => Err("local_workspace_invalid".to_string()),
     }
 }
 
 fn membership_clause(value: &str) -> Result<&'static str, String> {
     Ok(match workspace(value)? {
-        "lesson_materials" => "p.page_id IN (SELECT page_id FROM lesson_pages)",
-        _ => "p.page_id NOT IN (SELECT page_id FROM lesson_pages) AND COALESCE(json_extract(p.properties_json,'$.systemKind'),'')=''",
+        "lesson_materials" => "p.page_id IN (SELECT page_id FROM lesson_pages) AND p.page_id NOT IN (SELECT page_id FROM student_pages)",
+        "student_learning_materials" => "p.page_id IN (SELECT page_id FROM student_pages)",
+        _ => "p.page_id NOT IN (SELECT page_id FROM lesson_pages) AND p.page_id NOT IN (SELECT page_id FROM student_pages) AND COALESCE(json_extract(p.properties_json,'$.systemKind'),'')=''",
     })
 }
 
@@ -81,7 +98,7 @@ fn tree(
     let selected_workspace = workspace(&raw_workspace)?;
     let membership = membership_clause(selected_workspace)?;
     let sql = format!(
-        r#"{LESSON_TREE_CTE}
+        r#"{MATERIAL_TREE_CTE}
       SELECT p.page_id,p.parent_id,p.title,p.emoji,p.position,p.updated_at_ms,
         json_extract(p.properties_json,'$.systemKind'),
         COUNT(a.attachment_id),COALESCE(SUM(a.byte_size),0)
@@ -93,7 +110,7 @@ fn tree(
       LIMIT ?2"#
     );
     let count_sql = format!(
-        r#"{LESSON_TREE_CTE}
+        r#"{MATERIAL_TREE_CTE}
       SELECT COUNT(*) FROM work_note_pages p WHERE p.tenant_id=?1 AND {membership}"#
     );
     let conn = store
@@ -140,7 +157,7 @@ fn page(
     let selected_workspace = workspace(&raw_workspace)?;
     let membership = membership_clause(selected_workspace)?;
     let sql = format!(
-        r#"{LESSON_TREE_CTE}
+        r#"{MATERIAL_TREE_CTE}
       SELECT p.page_id,p.parent_id,p.title,p.emoji,p.position,p.properties_json,
         p.document_json,p.markdown,p.created_at_ms,p.updated_at_ms
       FROM work_note_pages p
@@ -238,11 +255,11 @@ fn search(store: &SqliteStore, input: LocalWorkspaceSearchInput) -> Result<Value
     }
     let where_sql = filters.join(" AND ");
     let count_sql = format!(
-        r#"{LESSON_TREE_CTE}
+        r#"{MATERIAL_TREE_CTE}
       SELECT COUNT(*) FROM work_note_pages p WHERE {where_sql}"#
     );
     let list_sql = format!(
-        r#"{LESSON_TREE_CTE}
+        r#"{MATERIAL_TREE_CTE}
       SELECT p.page_id,p.parent_id,p.title,p.emoji,p.position,p.updated_at_ms,
         json_extract(p.properties_json,'$.systemKind'),COUNT(a.attachment_id),COALESCE(SUM(a.byte_size),0)
       FROM work_note_pages p
@@ -295,7 +312,7 @@ fn title_path(
 ) -> Result<Vec<String>, String> {
     let membership = membership_clause(selected_workspace)?;
     let sql = format!(
-        r#"{LESSON_TREE_CTE},
+        r#"{MATERIAL_TREE_CTE},
       ancestors(page_id,parent_id,title,depth) AS (
         SELECT p.page_id,p.parent_id,p.title,0
         FROM work_note_pages p
@@ -383,7 +400,7 @@ pub(crate) fn mcp_search(store: &SqliteStore, input: &Value) -> Result<Value, St
     }
     let where_sql = filters.join(" AND ");
     let list_sql = format!(
-        r#"{LESSON_TREE_CTE}
+        r#"{MATERIAL_TREE_CTE}
       SELECT p.page_id,p.title,p.markdown,p.updated_at_ms
       FROM work_note_pages p
       WHERE {where_sql}
@@ -473,7 +490,7 @@ pub(crate) fn mcp_page(store: &SqliteStore, input: &Value) -> Result<Value, Stri
     )?;
     let membership = membership_clause(selected_workspace)?;
     let sql = format!(
-        r#"{LESSON_TREE_CTE}
+        r#"{MATERIAL_TREE_CTE}
       SELECT p.title,p.markdown,p.document_json,p.updated_at_ms
       FROM work_note_pages p
       WHERE p.tenant_id=?1 AND p.page_id=?2 AND {membership}"#
@@ -604,7 +621,7 @@ mod tests {
     }
 
     #[test]
-    fn tree_partitions_lesson_and_work_without_returning_page_bodies() {
+    fn tree_partitions_three_material_workspaces_without_returning_page_bodies() {
         let (directory, store) = test_store();
         insert_page(
             &store,
@@ -621,6 +638,27 @@ mod tests {
             None,
         );
         insert_page(&store, "work-root", None, "업무자료", None);
+        insert_page(
+            &store,
+            STUDENT_MATERIAL_ROOT_PAGE_ID,
+            None,
+            "학생 학습자료",
+            Some(STUDENT_MATERIAL_ROOT_SYSTEM_KIND),
+        );
+        insert_page(
+            &store,
+            "student-child",
+            Some(STUDENT_MATERIAL_ROOT_PAGE_ID),
+            "태양계 활동지",
+            Some("student_learning_material"),
+        );
+        insert_page(
+            &store,
+            "legacy-student-child",
+            Some(LESSON_ROOT_PAGE_ID),
+            "기존 학생자료",
+            Some("student_learning_material"),
+        );
         let lessons = tree(
             &store,
             "tenant-a".to_string(),
@@ -629,8 +667,15 @@ mod tests {
         .expect("lesson tree");
         let work =
             tree(&store, "tenant-a".to_string(), "work_materials".to_string()).expect("work tree");
+        let student = tree(
+            &store,
+            "tenant-a".to_string(),
+            "student_learning_materials".to_string(),
+        )
+        .expect("student material tree");
         assert_eq!(lessons["total"], 2);
         assert_eq!(work["total"], 1);
+        assert_eq!(student["total"], 3);
         let serialized = serde_json::to_string(&lessons).expect("serialize tree");
         assert!(!serialized.contains("secret body"));
         let selected = page(
@@ -653,6 +698,26 @@ mod tests {
             )
             .unwrap_err(),
             "local_workspace_page_not_found"
+        );
+        assert_eq!(
+            page(
+                &store,
+                "tenant-a".to_string(),
+                "lesson_materials".to_string(),
+                "legacy-student-child".to_string()
+            )
+            .unwrap_err(),
+            "local_workspace_page_not_found"
+        );
+        assert_eq!(
+            page(
+                &store,
+                "tenant-a".to_string(),
+                "student_learning_materials".to_string(),
+                "legacy-student-child".to_string()
+            )
+            .expect("legacy student material page")["page"]["title"],
+            "기존 학생자료"
         );
         fs::remove_dir_all(directory).expect("remove test directory");
     }

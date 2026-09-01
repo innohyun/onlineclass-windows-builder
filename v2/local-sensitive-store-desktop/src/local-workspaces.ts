@@ -2,7 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { byteText, escapeHtml } from './data-explorer';
 import { openWorkspaceWorkNoteReader } from './work-note-reader';
 
-type WorkspaceKind = 'lesson_materials' | 'work_materials';
+type WorkspaceKind = 'lesson_materials' | 'work_materials' | 'student_learning_materials';
 type WorkspacePage = {
   pageId: string;
   parentId?: string | null;
@@ -17,7 +17,7 @@ type WorkspacePage = {
 type WorkspaceResult = { ok?: boolean; total?: number; truncated?: boolean; pages?: WorkspacePage[]; error?: string };
 
 type WorkspaceConfig = {
-  view: 'lesson-materials' | 'work-materials';
+  view: 'lesson-materials' | 'work-materials' | 'student-learning-materials';
   kind: WorkspaceKind;
   title: string;
   empty: string;
@@ -29,6 +29,7 @@ type LocalWorkspaceOptions = { getTenantId: () => string };
 const CONFIGS: WorkspaceConfig[] = [
   { view: 'lesson-materials', kind: 'lesson_materials', title: '수업자료', empty: '이 PC로 전환한 수업자료가 없습니다. 교사 홈의 수업계획에서 전체 수업자료를 로컬로 전환할 수 있습니다.', tutorialKey: 'localLessonMaterialsTutorial:v1' },
   { view: 'work-materials', kind: 'work_materials', title: '업무자료', empty: '이 PC에 저장된 업무자료가 없습니다. 교사 홈 업무노트에서 필요한 문서를 로컬로 전환할 수 있습니다.', tutorialKey: 'localWorkMaterialsTutorial:v1' },
+  { view: 'student-learning-materials', kind: 'student_learning_materials', title: '학생 학습자료', empty: '이 PC에 저장된 학생 학습자료가 없습니다. 교사 홈에서 새 자료를 작성하거나 ChatGPT 초안을 저장할 수 있습니다.', tutorialKey: 'localStudentLearningMaterialsTutorial:v1' },
 ];
 
 const DESIGN_PREVIEW = new URLSearchParams(window.location.search).get('designPreview');
@@ -43,6 +44,11 @@ const PREVIEW_PAGES: Record<WorkspaceKind, WorkspacePage[]> = {
     { pageId: 'work-parent', title: '학부모 안내 자료', emoji: '📨', position: 1, updatedAtMs: Date.now() - 172_800_000, attachmentCount: 5, attachmentBytes: 36_700_000 },
     { pageId: 'work-safety', parentId: 'work-meeting', title: '현장체험학습 안전 점검', emoji: '🚌', position: 0, updatedAtMs: Date.now() - 259_200_000, attachmentCount: 1, attachmentBytes: 2_100_000 },
   ],
+  student_learning_materials: [
+    { pageId: 'student-learning-materials-root', title: '학생 학습자료', emoji: '🎒', position: 0, updatedAtMs: Date.now(), systemKind: 'student_learning_materials_folder', attachmentCount: 0, attachmentBytes: 0 },
+    { pageId: 'student-science-activity', parentId: 'student-learning-materials-root', title: '태양계 조사 활동지', emoji: '📝', position: 0, updatedAtMs: Date.now() - 1_800_000, systemKind: 'student_learning_material', attachmentCount: 1, attachmentBytes: 640_000 },
+    { pageId: 'student-science-problem', parentId: 'student-learning-materials-root', title: '행성 특징 확인 문제', emoji: '✅', position: 1, updatedAtMs: Date.now() - 43_200_000, systemKind: 'student_learning_material', attachmentCount: 0, attachmentBytes: 0 },
+  ],
 };
 
 const required = <T extends HTMLElement>(id: string) => {
@@ -52,7 +58,9 @@ const required = <T extends HTMLElement>(id: string) => {
 };
 
 function suffix(config: WorkspaceConfig) {
-  return config.kind === 'lesson_materials' ? 'Lesson' : 'Work';
+  if (config.kind === 'lesson_materials') return 'Lesson';
+  if (config.kind === 'student_learning_materials') return 'Student';
+  return 'Work';
 }
 
 function dateText(value: number) {
@@ -102,7 +110,7 @@ function render(config: WorkspaceConfig, result: WorkspaceResult, selectedPageId
   }
   const ordered = orderPages(pages); const selected = pages.some((page) => page.pageId === selectedPageId) ? selectedPageId : ordered.pages[0]?.pageId || '';
   list.innerHTML = ordered.pages.map((page) => {
-    const protectedRoot = page.systemKind === 'lesson_materials_folder';
+    const protectedRoot = ['lesson_materials_folder', 'student_learning_materials_folder'].includes(page.systemKind || '');
     const attachment = Number(page.attachmentCount || 0) > 0
       ? `<small><i class="fa-solid fa-paperclip" aria-hidden="true"></i> ${Number(page.attachmentCount)}개 · ${escapeHtml(byteText(Number(page.attachmentBytes || 0)))}</small>`
       : '<small>첨부 없음</small>';

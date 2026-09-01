@@ -49,13 +49,16 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-08-31.1-document-block-transform";
+pub(crate) const SERVICE_VERSION: &str = "2026-09-01.1-student-learning-materials";
 const WORK_MEETING_ROOT_PAGE_ID: &str = "classaimate:work-meeting-minutes";
 const WORK_MEETING_ROOT_TITLE: &str = "업무 회의록";
 const WORK_MEETING_ROOT_INTRO: &str = "모바일에서 확정한 업무 회의록이 자동으로 들어옵니다.";
 const WORK_REFERENCE_ROOT_PAGE_ID: &str = "classaimate:work-reference-materials";
 const WORK_REFERENCE_ROOT_TITLE: &str = "업무 참고자료";
 const WORK_REFERENCE_ROOT_INTRO: &str = "모바일에서 전사문만 사용한 업무 참고자료가 자동으로 들어옵니다.";
+const STUDENT_MATERIAL_ROOT_PAGE_ID: &str = "student-learning-materials-root";
+const STUDENT_MATERIAL_ROOT_TITLE: &str = "학생 학습자료";
+const STUDENT_MATERIAL_ROOT_SYSTEM_KIND: &str = "student_learning_materials_folder";
 const DB_FILE_NAME: &str = "onlineclass-sensitive.sqlite";
 const KEY_FILE_NAME: &str = "pairing-key.txt";
 const BROWSER_LINK_FILE_NAME: &str = "browser-link-tokens.json";
@@ -2064,6 +2067,14 @@ impl SqliteStore {
         if [WORK_MEETING_ROOT_PAGE_ID, WORK_REFERENCE_ROOT_PAGE_ID].contains(&page_id.as_str()) {
             return Err("work_note_system_folder_protected".to_string());
         }
+        if page_id == STUDENT_MATERIAL_ROOT_PAGE_ID
+            && (!parent_id.is_empty()
+                || title != STUDENT_MATERIAL_ROOT_TITLE
+                || properties.get("systemKind").and_then(Value::as_str)
+                    != Some(STUDENT_MATERIAL_ROOT_SYSTEM_KIND))
+        {
+            return Err("work_note_system_folder_protected".to_string());
+        }
         if parent_id == page_id { return Err("work_note_parent_cycle".to_string()); }
         if let Some((stored_parent, stored_title, stored_position)) =
             lesson_plan_bindings::stored_page_structure(self, &tenant_id, &page_id)? {
@@ -2148,7 +2159,9 @@ impl SqliteStore {
         let page = normalize_id_segment(Some(&Value::String(page_id)), 180);
         if tenant.is_empty() { return Err("tenant_id_required".to_string()); }
         if page.is_empty() { return Err("work_note_page_id_required".to_string()); }
-        if [WORK_MEETING_ROOT_PAGE_ID, WORK_REFERENCE_ROOT_PAGE_ID].contains(&page.as_str()) {
+        if [WORK_MEETING_ROOT_PAGE_ID, WORK_REFERENCE_ROOT_PAGE_ID, STUDENT_MATERIAL_ROOT_PAGE_ID]
+            .contains(&page.as_str())
+        {
             return Err("work_note_system_folder_protected".to_string());
         }
         let conn = self.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
@@ -2180,7 +2193,8 @@ impl SqliteStore {
         if source_id.is_empty() || target_id.is_empty() { return Err("work_note_page_id_required".to_string()); }
         if !["before", "inside", "after"].contains(&placement.as_str()) { return Err("work_note_move_placement_invalid".to_string()); }
         if source_id == target_id || source_id == "root"
-            || [WORK_MEETING_ROOT_PAGE_ID, WORK_REFERENCE_ROOT_PAGE_ID].contains(&source_id.as_str()) {
+            || [WORK_MEETING_ROOT_PAGE_ID, WORK_REFERENCE_ROOT_PAGE_ID, STUDENT_MATERIAL_ROOT_PAGE_ID]
+                .contains(&source_id.as_str()) {
             return Err("work_note_root_move_forbidden".to_string());
         }
         {
