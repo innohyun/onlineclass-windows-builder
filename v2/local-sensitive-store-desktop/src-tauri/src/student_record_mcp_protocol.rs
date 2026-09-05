@@ -176,7 +176,7 @@ mod tests {
 
     #[test]
     fn save_lock_serializes_managers_that_share_the_session_directory() {
-        let root = std::env::temp_dir().join(identifier("classaimate-mcp-save-lock"));
+        let root = std::env::temp_dir().join(format!("classaimate-mcp-save-lock-{}", crate::random_url_token()));
         fs::create_dir_all(&root).expect("create MCP lock fixture");
         let store =
             Arc::new(SqliteStore::open(root.join("fixture.sqlite")).expect("open fixture store"));
@@ -211,12 +211,13 @@ mod tests {
             .recv_timeout(std::time::Duration::from_secs(2))
             .expect("second manager acquires released lock");
         worker.join().expect("join save lock worker");
+        drop(first);
         fs::remove_dir_all(root).expect("remove MCP lock fixture");
     }
 
     #[tokio::test]
     async fn mcp_protocol_lists_only_the_four_purpose_built_tools_and_fails_closed() {
-        let root = std::env::temp_dir().join(identifier("classaimate-mcp-protocol"));
+        let root = std::env::temp_dir().join(format!("classaimate-mcp-protocol-{}", crate::random_url_token()));
         fs::create_dir_all(&root).expect("create MCP protocol fixture");
         let store =
             Arc::new(SqliteStore::open(root.join("fixture.sqlite")).expect("open fixture store"));

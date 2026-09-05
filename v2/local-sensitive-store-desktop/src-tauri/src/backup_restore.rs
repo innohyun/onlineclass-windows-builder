@@ -1481,6 +1481,7 @@ mod tests {
                 .get("backups").and_then(Value::as_array).map(Vec::len),
             Some(2)
         );
+        drop(store);
         fs::remove_dir_all(base).expect("remove test directory");
     }
 
@@ -1512,6 +1513,8 @@ mod tests {
         let mut bytes = Vec::new();
         restored.file.read_to_end(&mut bytes).expect("read restored attachment");
         assert_eq!(bytes, b"pdf-fixture");
+        drop(restored);
+        drop(store);
         fs::remove_dir_all(base).expect("remove test directory");
     }
 
@@ -1542,6 +1545,7 @@ mod tests {
         .expect_err("manual restore must reject equal revision conflict");
         assert_eq!(error, "lesson_plan_binding_revision_conflict");
         assert_eq!(lesson_binding_revision(&store), ("2026-08-26".to_string(), 4));
+        drop(store);
         fs::remove_dir_all(base).expect("remove lesson binding restore test directory");
     }
 
@@ -1566,6 +1570,7 @@ mod tests {
         let current = observation_row(&store, "guarded").expect("current row remains");
         assert_eq!(current.1, 200);
         assert!(current.0.contains("current new"));
+        drop(store);
         fs::remove_dir_all(base).expect("remove test directory");
     }
 

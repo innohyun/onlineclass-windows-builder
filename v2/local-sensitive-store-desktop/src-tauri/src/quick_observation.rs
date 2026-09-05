@@ -346,6 +346,7 @@ mod tests {
         })).expect("save observation");
         assert_eq!(result.get("savedCount").and_then(Value::as_u64), Some(1));
         assert_eq!(store.quick_roster_snapshot("tenant-b").expect("read other" ).is_none(), true);
+        drop(store);
         fs::remove_dir_all(dir).expect("remove fixture");
     }
 }

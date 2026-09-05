@@ -782,6 +782,7 @@ mod tests {
                 .map(Vec::len),
             Some(1)
         );
+        drop(store);
         fs::remove_dir_all(directory).expect("remove test directory");
     }
 
@@ -828,6 +829,7 @@ mod tests {
                 .unwrap_err(),
             "media_content_type_unsupported"
         );
+        drop(store);
         fs::remove_dir_all(directory).expect("remove test directory");
     }
 
@@ -906,6 +908,7 @@ mod tests {
             .expect("resolve work note attachment");
         assert!(path.starts_with(fs::canonicalize(&directory).expect("canonical directory")));
         assert_eq!(content_type, "application/pdf");
+        drop(store);
         fs::remove_dir_all(directory).expect("remove test directory");
     }
 
@@ -950,6 +953,7 @@ mod tests {
                 .and_then(Value::as_str),
             Some("eval-results")
         );
+        drop(store);
         fs::remove_dir_all(directory).expect("remove test directory");
     }
 

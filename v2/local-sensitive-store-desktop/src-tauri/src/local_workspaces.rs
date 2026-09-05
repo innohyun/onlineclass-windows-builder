@@ -719,6 +719,7 @@ mod tests {
             .expect("legacy student material page")["page"]["title"],
             "기존 학생자료"
         );
+        drop(store);
         fs::remove_dir_all(directory).expect("remove test directory");
     }
 
@@ -754,6 +755,7 @@ mod tests {
         assert_eq!(result["total"], 1);
         assert_eq!(result["pages"][0]["pageId"], "lesson-child");
         assert!(result["pages"][0].get("markdown").is_none());
+        drop(store);
         fs::remove_dir_all(directory).expect("remove test directory");
     }
 
@@ -911,6 +913,7 @@ mod tests {
             .expect("other tenant search")["total"],
             0
         );
+        drop(store);
         fs::remove_dir_all(directory).expect("remove test directory");
     }
 
@@ -996,6 +999,7 @@ mod tests {
             .unwrap_err(),
             "local_workspace_page_not_found"
         );
+        drop(store);
         fs::remove_dir_all(directory).expect("remove test directory");
     }
 }
