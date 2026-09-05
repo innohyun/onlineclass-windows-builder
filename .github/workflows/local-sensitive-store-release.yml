@@ -55,6 +55,7 @@ jobs:
         shell: pwsh
         run: |
           $env:ONLINECLASS_LOCAL_STORE_DIR = Join-Path $env:RUNNER_TEMP "classaimate-backup-regression"
+          $env:CLASSAIMATE_WINDOWS_TEST_MANIFEST = "1"
           cargo test --locked --release --manifest-path src-tauri/Cargo.toml --lib -- --test-threads=1
           if ($LASTEXITCODE -ne 0) { throw "Isolated local-store regression failed" }
 
