@@ -4,6 +4,7 @@
   "description": "Capability for the local sensitive store status window",
   "webviews": ["main"],
   "permissions": [
+    "allow-local-app-commands",
     "core:default",
     "core:webview:allow-set-webview-position",
     "core:webview:allow-set-webview-size",

@@ -581,6 +581,23 @@ pub(crate) fn tenant_content_sha256(tenant_id: &str) -> Result<String, String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+pub(crate) fn has_local_only_references(tenant_id: &str, archives: Option<&Value>) -> Result<bool, String> {
+    let incoming = archives.and_then(|value| value.get("records")).and_then(Value::as_array)
+        .into_iter().flatten().filter_map(|record| Some((
+            record.get("archiveId")?.as_str()?.to_string(),
+            record.get("manifestSha256")?.as_str()?.to_string(),
+        ))).collect::<HashSet<_>>();
+    let connection = shared_archive::open_db()?;
+    let mut statement = connection.prepare("SELECT id,manifest_sha256 FROM shared_archives WHERE tenant_id=?1")
+        .map_err(|e| format!("archive_sync_references_prepare_failed:{e}"))?;
+    let rows = statement.query_map(params![tenant_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+        .map_err(|e| format!("archive_sync_references_query_failed:{e}"))?;
+    for row in rows {
+        if !incoming.contains(&row.map_err(|e| format!("archive_sync_reference_failed:{e}"))?) { return Ok(true); }
+    }
+    Ok(false)
+}
+
 pub(crate) fn ensure_tenant_bundles(tenant_id: &str, tenant_dir: &Path) -> Result<Value, String> {
     let connection = shared_archive::open_db()?;
     ensure_tenant_bundles_from(&connection, tenant_id, tenant_dir)

@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "teacher-local-transport",
+  "description": "Mac teacher WebViews may send existing browser-token requests only to this app's loopback service.",
+  "platforms": ["macOS"],
+  "local": false,
+  "webviews": ["teacher-home", "teacher-popup-*"],
+  "remote": { "urls": ["https://t.classaimate.com/admin", "https://t.classaimate.com/admin/*"] },
+  "permissions": ["allow-teacher-local-request"]
+}

@@ -51,6 +51,13 @@ jobs:
       - name: Prepare student record MCP sidecar
         run: npm run prepare:student-record-mcp-sidecar
 
+      - name: Verify isolated Windows backup and local-store regressions
+        shell: pwsh
+        run: |
+          $env:ONLINECLASS_LOCAL_STORE_DIR = Join-Path $env:RUNNER_TEMP "classaimate-backup-regression"
+          cargo test --locked --release --manifest-path src-tauri/Cargo.toml --lib -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { throw "Isolated local-store regression failed" }
+
       - name: Build Windows installer
         run: npx tauri build --config src-tauri/tauri.sidecar.conf.json --bundles nsis
 
@@ -249,7 +256,7 @@ jobs:
           $currentLaunch = Start-GuiShortcut $shortcut.File.FullName $shortcut.Target
           $desktopProcess = $currentLaunch.Process
           $installedTarget = $currentLaunch.Path
-          Wait-LocalServiceVersion '2026-09-01.1-student-learning-materials'
+          Wait-LocalServiceVersion '2026-09-05.5-backup-sync-optimization'
           if ($quickShortcut.Target -and ([IO.Path]::GetFullPath($quickShortcut.Target) -ine [IO.Path]::GetFullPath($installedTarget))) { throw "Quick observation shortcut resolves to an unexpected GUI executable." }
           $backgroundProcessId = $desktopProcess.Id
           for ($cycle = 1; $cycle -le 10; $cycle++) {

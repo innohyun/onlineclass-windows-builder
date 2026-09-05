@@ -1,6 +1,10 @@
 use keyring::Entry;
 use std::path::PathBuf;
 
+#[cfg(all(test, target_os = "macos"))]
+#[path = "device_sync_credential_macos_tests.rs"]
+mod macos_tests;
+
 #[cfg(target_os = "windows")]
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 #[cfg(target_os = "windows")]

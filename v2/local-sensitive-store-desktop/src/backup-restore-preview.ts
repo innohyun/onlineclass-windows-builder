@@ -1,4 +1,5 @@
 import { confirmBackupRestore } from "./backup-restore-confirmation";
+import { renderDeviceSyncStatus } from "./device-sync-ui";
 
 type PreviewBackup = {
   date: string;
@@ -86,6 +87,10 @@ export function initBackupRestorePreview() {
     ["backupPreviewCare", "backupPreviewAttendance", "backupPreviewLearning", "backupPreviewStudentRecord", "backupPreviewBoard", "backupPreviewAttachments"].forEach((id) => { byId(id).textContent = "-"; });
     document.querySelectorAll<HTMLButtonElement>('.backup-view button[data-action="restore-backup"]').forEach((button) => { button.disabled = true; });
     if (previewState === "error") {
+      renderDeviceSyncStatus({
+        ok: true, connected: true, credentialAvailable: true,
+        oneDriveConfigured: false, backupError: "backup_list_dir_failed:fixture",
+      });
       byId("backupBadge").textContent = "자동 백업 폴더 확인 필요";
       byId("backupBadge").className = "status-badge badge-error";
       byId("backupStatus").textContent = "OneDrive 연결 또는 폴더 권한을 확인한 뒤 다시 찾아보세요.";

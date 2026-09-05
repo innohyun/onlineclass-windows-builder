@@ -1,0 +1,73 @@
+{
+  "permission": [
+    {
+      "identifier": "allow-local-app-commands",
+      "description": "Local main WebView commands; never grant this set to remote pages.",
+      "commands": {
+        "allow": [
+          "get_service_status",
+          "get_cloud_sync_status",
+          "get_device_connection_status",
+          "get_quick_observation_context",
+          "save_quick_observation_batch",
+          "take_desktop_activation_intent",
+          "acknowledge_desktop_activation_intent",
+          "prepare_teacher_home_bridge",
+          "create_teacher_home_webview",
+          "get_device_sync_status",
+          "run_device_sync_now",
+          "disconnect_local_store",
+          "get_desktop_preferences",
+          "set_desktop_preference",
+          "run_cloud_sync",
+          "get_backup_status",
+          "get_backup_storage_overview",
+          "preview_legacy_backup_cleanup",
+          "apply_legacy_backup_cleanup",
+          "undo_legacy_backup_cleanup",
+          "set_backup_folder",
+          "run_local_backup",
+          "discover_backup_tenants",
+          "list_local_backups",
+          "preview_local_backup_restore",
+          "restore_local_backup",
+          "get_local_overview",
+          "list_local_data_section",
+          "list_local_students",
+          "search_local_data",
+          "open_local_data_attachment",
+          "open_local_data_directory",
+          "get_local_workspace_tree",
+          "get_local_workspace_page",
+          "search_local_workspace",
+          "get_local_work_note_view",
+          "list_device_sync_conflicts",
+          "get_device_sync_conflict",
+          "review_device_sync_conflicts",
+          "delete_device_sync_conflicts",
+          "export_device_sync_conflicts",
+          "open_teacher_settings_url",
+          "start_device_authorization",
+          "reopen_device_authorization",
+          "poll_device_authorization",
+          "import_shared_archive",
+          "list_shared_archives",
+          "get_shared_archive",
+          "search_shared_archive_boards",
+          "get_shared_archive_board_view",
+          "export_shared_archive",
+          "open_shared_archive_file"
+        ]
+      }
+    },
+    {
+      "identifier": "allow-teacher-local-request",
+      "description": "Only the existing desktop browser-token loopback transport.",
+      "commands": {
+        "allow": [
+          "teacher_local_request"
+        ]
+      }
+    }
+  ]
+}

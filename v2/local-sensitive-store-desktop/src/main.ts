@@ -83,6 +83,7 @@ type CloudSyncStatus = {
   credentialStorage?: string;
   needsReconnect?: boolean;
   reconnectMessage?: string;
+  disabledReason?: string;
 };
 
 type DeviceConnectionStatus = DeviceAuthorizationResult & {
@@ -613,6 +614,19 @@ function renderConnectionStatus(status?: CloudSyncStatus | null) {
 
 function renderCloudSync(status: CloudSyncStatus | null) {
   cloudSyncSnapshot = status;
+  if (status?.disabledReason === "legacy_cloud_sync_disabled") {
+    setBadge("syncBadge", "사용 안함", "neutral");
+    setText("cloudSyncText", "Mac에서는 이전 Firebase 자동 수거를 사용하지 않습니다.");
+    setText("cloudSyncMetaText", "-");
+    setText("syncModeText", "V3 로컬 저장소");
+    for (const id of ["syncImportedCount", "syncPendingCount", "syncFailedCount", "syncServerCount"]) setText(id, "0");
+    setText("syncStatus", "PC 연결과 OneDrive 기기 동기화 상태는 별도로 확인합니다.");
+    setHealthPanelState("syncCard", "ok");
+    setHidden("healthSyncSettingsAction", true);
+    renderSummary();
+    refreshActionStates();
+    return;
+  }
   if (!status?.connected) {
     renderConnectionStatus(null);
     setBadge("syncBadge", "연결 전", "warning");
@@ -975,6 +989,8 @@ async function chooseBackupFolder() {
     await loadDeviceSyncStatus().catch(() => undefined);
     if (status?.ok) {
       setText("backupStatus", "백업 폴더 설정을 완료했습니다. 필요하면 지금 백업을 눌러 새 백업을 만들 수 있습니다.");
+      backupStorage.invalidate();
+      void backupStorage.refresh(true);
     }
     if (selectedBackupManifestPath) {
       void loadBackupPreview(selectedBackupManifestPath);
@@ -1016,6 +1032,7 @@ function selectBackupManifest(manifestPath: string) {
 }
 
 async function runBackupNow() {
+  if (busyActions.has("run-backup")) return;
   const tenantId = currentBackupTenantId();
   if (!tenantId) {
     setText("backupStatus", "먼저 학급 ID를 입력하거나 다시 연결하기로 학급을 연결해 주세요.");
@@ -1031,6 +1048,8 @@ async function runBackupNow() {
     }
     setBackupRestoreMessage("새 백업을 만들었습니다. 필요하면 이 백업을 다른 PC에서 복원할 수 있습니다.", "ok");
     await loadBackupStatus();
+    backupStorage.invalidate();
+    void backupStorage.refresh(true);
   } catch (error) {
     renderBackupStatus({ ok: false, configured: false, error: String((error as Error)?.message || error) });
   } finally {
@@ -1074,6 +1093,8 @@ async function restoreSelectedBackup() {
       setBackupRestoreMessage(`보호 백업 후 복원 완료: DB 반영 ${numberText(result.imported)}건, 첨부 복원 ${numberText(result.mediaRestored)}개${numeric(result.mediaMissing) ? `, 누락 ${numberText(result.mediaMissing)}개` : ""}.`, "ok");
       await loadBackupStatus();
       await loadDeviceSyncStatus().catch(() => undefined);
+      backupStorage.invalidate();
+      void backupStorage.refresh(true);
     }
   } catch (error) {
     setBackupRestoreMessage(`복원 실패: ${String((error as Error)?.message || error)}`, "error");
@@ -1145,7 +1166,10 @@ function bindUi() {
   actionButtons("run-sync").forEach((button) => button.addEventListener("click", runCloudSyncNow));
   actionButtons("run-device-sync").forEach((button) => button.addEventListener("click", () => void runDeviceSyncNow(async () => {
     await Promise.all([
-      loadBackupStatus(),
+      loadBackupStatus().then(() => {
+        backupStorage.invalidate();
+        void backupStorage.refresh(true);
+      }),
       dataExplorer.refresh(),
       sharedArchive.refresh(),
       loadHomeOverview(currentBackupTenantId()),
@@ -1171,11 +1195,12 @@ function bindUi() {
   });
 
   byId<HTMLInputElement>("backupTenantInput").addEventListener("change", () => {
+    backupStorage.clear();
     backupList = [];
     selectedBackupManifestPath = "";
     backupPreview = null;
     setBackupRestoreMessage("", "neutral");
-    loadBackupStatus().catch(renderBackupLoadError);
+    loadBackupStatus().then(() => backupStorage.refresh()).catch(renderBackupLoadError);
   });
 }
 

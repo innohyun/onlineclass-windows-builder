@@ -1,4 +1,5 @@
 use crate::SqliteStore;
+#[cfg(target_os = "windows")]
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::{DateTime, Utc};
 use keyring::Entry;
@@ -16,7 +17,6 @@ use url::Url;
 const KEYRING_SERVICE: &str = "OnlineClassLocalSensitiveStore";
 const SESSION_FILE_NAME: &str = "cloud-sync-session.json";
 const CREDENTIAL_FILE_NAME: &str = "cloud-sync-credentials.json";
-const MACOS_FALLBACK_PREFIX: &str = "macos_file_v1:";
 const RECONNECT_MESSAGE: &str = "저장된 로그인 연결이 만료되었거나 이 기기의 보안 저장소에서 찾을 수 없습니다. 이 PC 자동 연결을 다시 실행하세요.";
 const SYNC_INTERVAL_SECS: u64 = 60;
 const SYNC_LIMIT: i64 = 50;
@@ -338,12 +338,6 @@ fn protect_refresh_token(refresh_token: &str) -> Result<String, String> {
 }
 
 #[cfg(not(target_os = "windows"))]
-#[cfg(target_os = "macos")]
-fn protect_refresh_token(refresh_token: &str) -> Result<String, String> {
-    Ok(format!("{MACOS_FALLBACK_PREFIX}{}", BASE64_STANDARD.encode(refresh_token.as_bytes())))
-}
-
-#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 fn protect_refresh_token(_refresh_token: &str) -> Result<String, String> {
     Err("fallback_credential_unsupported".to_string())
 }
@@ -385,20 +379,15 @@ fn unprotect_refresh_token(protected_refresh_token: &str) -> Result<String, Stri
 }
 
 #[cfg(not(target_os = "windows"))]
-#[cfg(target_os = "macos")]
-fn unprotect_refresh_token(protected_refresh_token: &str) -> Result<String, String> {
-    let encoded = protected_refresh_token
-        .strip_prefix(MACOS_FALLBACK_PREFIX)
-        .ok_or_else(|| "macos_fallback_prefix_missing".to_string())?;
-    let bytes = BASE64_STANDARD
-        .decode(encoded)
-        .map_err(|e| format!("macos_fallback_base64_decode_failed:{e}"))?;
-    String::from_utf8(bytes).map_err(|e| format!("macos_fallback_utf8_failed:{e}"))
-}
-
-#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 fn unprotect_refresh_token(_protected_refresh_token: &str) -> Result<String, String> {
     Err("fallback_credential_unsupported".to_string())
+}
+
+#[cfg(all(test, not(target_os = "windows")))]
+#[test]
+fn refresh_token_file_fallback_is_unsupported() {
+    assert!(protect_refresh_token("synthetic-refresh-token").is_err());
+    assert!(unprotect_refresh_token("macos_file_v1:c3ludGhldGlj").is_err());
 }
 
 #[cfg(target_os = "windows")]
@@ -406,12 +395,7 @@ fn fallback_credential_storage_label() -> &'static str {
     "windows_dpapi_file"
 }
 
-#[cfg(target_os = "macos")]
-fn fallback_credential_storage_label() -> &'static str {
-    "macos_file"
-}
-
-#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+#[cfg(not(target_os = "windows"))]
 fn fallback_credential_storage_label() -> &'static str {
     "fallback_file"
 }
@@ -450,6 +434,8 @@ impl CloudSyncManager {
     }
 
     pub(crate) fn start_background_sync(self: &Arc<Self>) {
+        // The V3 Mac port must not resume a legacy Firebase session.
+        if cfg!(target_os = "macos") { return; }
         let manager = Arc::clone(self);
         thread::spawn(move || loop {
             thread::sleep(Duration::from_secs(15));
@@ -576,10 +562,6 @@ impl CloudSyncManager {
             #[cfg(target_os = "windows")]
             if self.save_fallback_refresh_token(account, refresh_token).is_ok() {
                 return Ok("keyring+windows_dpapi_file".to_string());
-            }
-            #[cfg(target_os = "macos")]
-            if self.save_fallback_refresh_token(account, refresh_token).is_ok() {
-                return Ok("keyring+macos_file".to_string());
             }
             return Ok("keyring".to_string());
         }
@@ -971,6 +953,9 @@ impl CloudSyncManager {
     }
 
     pub(crate) fn connect(&self, input: Value) -> Result<Value, String> {
+        if cfg!(target_os = "macos") {
+            return Err("legacy_cloud_sync_disabled".to_string());
+        }
         let tenant_id = normalize_tenant_id(input.get("tenantId"));
         let project_id = normalize_json_text(input.get("projectId"), 200);
         let api_key = normalize_json_text(input.get("apiKey"), 240);
@@ -1015,6 +1000,9 @@ impl CloudSyncManager {
     }
 
     pub(crate) fn status(&self) -> Result<Value, String> {
+        if cfg!(target_os = "macos") {
+            return Ok(json!({ "ok": true, "connected": false, "disabledReason": "legacy_cloud_sync_disabled" }));
+        }
         let session = self.load_session()?;
         Ok(status_from_session(session.as_ref()))
     }
@@ -1036,6 +1024,9 @@ impl CloudSyncManager {
     }
 
     pub(crate) fn run_once(&self) -> Result<Value, String> {
+        if cfg!(target_os = "macos") {
+            return Err("legacy_cloud_sync_disabled".to_string());
+        }
         let _guard = self
             .sync_lock
             .lock()

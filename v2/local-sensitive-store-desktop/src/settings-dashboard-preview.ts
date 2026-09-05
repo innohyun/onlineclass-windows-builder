@@ -1,6 +1,6 @@
-import { renderSettingsDashboard } from "./settings-dashboard";
+import { isMacDesktop, renderSettingsDashboard, renderSettingsPlatform } from "./settings-dashboard";
 
-type SettingsPreviewState = "normal" | "disconnected" | "pending" | "error" | "backup-unconfigured";
+type SettingsPreviewState = "normal" | "disconnected" | "pending" | "error" | "backup-unconfigured" | "backup-error" | "autostart-error" | "preferences-loading";
 
 function element<T extends HTMLElement>(id: string) {
   const found = document.getElementById(id);
@@ -38,7 +38,9 @@ function showAuth(state: SettingsPreviewState) {
 export function initSettingsDashboardPreview() {
   const params = new URLSearchParams(window.location.search);
   const state = (params.get("settingsState") || "normal") as SettingsPreviewState;
-  const normal = state === "normal" || state === "backup-unconfigured";
+  const normal = ["normal", "backup-unconfigured", "backup-error", "autostart-error", "preferences-loading"].includes(state);
+  const platform = params.get("settingsPlatform") === "macos" ? "MacIntel" : "Win32";
+  renderSettingsPlatform(platform);
 
   text("homeTenantLabel", "수영초등학교 5학년 1반");
   text("homeConnectionText", normal ? "연결됨" : "연결 필요");
@@ -50,21 +52,38 @@ export function initSettingsDashboardPreview() {
       tenantLabel: "수영초등학교 5학년 1반",
       accountLabel: "innohyun@suyeong.es.kr",
       backupConfigured: state !== "backup-unconfigured",
-      backupOk: true,
+      backupOk: state !== "backup-error",
       backupLocation: state === "backup-unconfigured" ? "아직 선택하지 않음" : "학교 OneDrive · OnlineClassLocalBackups",
       backupLatest: state === "backup-unconfigured" ? "아직 없음" : "어제 오후 5:58",
       appVersion: "0.2.28",
-    });
+    }, platform);
   } else {
     showAuth(state);
     text("settingsAppVersionFooter", "앱 v0.2.28");
   }
 
   for (const id of ["settingsStartWithWindows", "settingsKeepRunningOnClose"]) {
+    const input = element<HTMLInputElement>(id);
+    input.disabled = false;
+    input.checked = id === "settingsKeepRunningOnClose" || !isMacDesktop(platform);
     element<HTMLInputElement>(id).addEventListener("change", () => {
       text("settingsPreferenceStatus", "앱 동작 설정을 저장했습니다.");
       element("settingsPreferenceStatus").className = "settings-inline-status is-ok";
     });
+  }
+
+  if (state === "preferences-loading") {
+    for (const id of ["settingsStartWithWindows", "settingsKeepRunningOnClose"]) {
+      const input = element<HTMLInputElement>(id);
+      input.checked = false;
+      input.indeterminate = true;
+      input.disabled = true;
+    }
+    text("settingsPreferenceStatus", "앱 동작 설정을 확인하고 있습니다.");
+  } else if (state === "autostart-error") {
+    element<HTMLInputElement>("settingsStartWithWindows").indeterminate = true;
+    text("settingsPreferenceStatus", "자동 실행 등록을 확인하지 못했습니다. 스위치를 다시 설정해 주세요: macos_autostart_bootstrap_failed");
+    element("settingsPreferenceStatus").className = "settings-inline-status is-error";
   }
 
   element("settingsOpenTeacherButton").addEventListener("click", () => {

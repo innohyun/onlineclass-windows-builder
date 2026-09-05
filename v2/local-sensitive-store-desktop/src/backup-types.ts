@@ -105,6 +105,21 @@ export type CommandResult = {
 
 export type BackupStorageOverview = {
   ok: boolean;
+  storageBreakdown?: {
+    v5DatabaseBytes: number;
+    v5MetadataBytes: number;
+    legacySnapshotBytes: number;
+    objectBytes: number;
+    objectQuarantineBytes: number;
+    legacyQuarantineBytes: number;
+    archiveBundleBytes: number;
+    stagingBytes: number;
+    otherBytes: number;
+  };
+  totalLogicalBytes?: number;
+  scanComplete?: boolean;
+  scannedAtMs?: number;
+  scanErrors?: string[];
   snapshotVersion?: number;
   currentOriginalBytes?: number;
   currentOriginalCount?: number;

@@ -4,6 +4,7 @@ export type DesktopPreferences = {
   ok: boolean;
   startWithWindows: boolean;
   keepRunningOnClose: boolean;
+  autostartError?: string | null;
   error?: string;
 };
 
@@ -59,7 +60,26 @@ function setPreferenceStatus(message: string, tone: "neutral" | "ok" | "error" =
   status.className = `settings-inline-status${tone === "neutral" ? "" : ` is-${tone}`}`;
 }
 
-export function renderSettingsDashboard(view: SettingsDashboardView) {
+export function isMacDesktop(platform = navigator.platform) {
+  return /mac/i.test(platform);
+}
+
+export function renderSettingsPlatform(platform = navigator.platform) {
+  const mac = isMacDesktop(platform);
+  text("settingsAutostartLabel", mac ? "Mac 로그인 시 자동 실행" : "Windows 시작 시 자동 실행");
+  text("settingsAutostartDescription", mac
+    ? "기본은 꺼짐입니다. 켜면 이 사용자 계정의 로그인 항목에 등록합니다."
+    : "PC를 켜면 자동 수거와 백업을 준비합니다.");
+  text("settingsCloseDescription", mac
+    ? "창을 닫아도 백그라운드에서 실행하며 메뉴 막대에서 다시 열 수 있습니다."
+    : "창을 닫아도 백그라운드에서 자동 수거와 백업을 이어갑니다.");
+  text("settingsCredentialStorageText", mac
+    ? "교사 계정 인증정보는 macOS 키체인에 안전하게 보관"
+    : "교사 계정 정보는 Windows에서 암호화 보관");
+}
+
+export function renderSettingsDashboard(view: SettingsDashboardView, platform = navigator.platform) {
+  const mac = isMacDesktop(platform);
   element("settingsConnectedContent").hidden = !view.connected;
   element("deviceAuthPanel").hidden = view.connected;
   text("settingsTenantText", view.tenantLabel || "연결된 학급 없음");
@@ -78,13 +98,13 @@ export function renderSettingsDashboard(view: SettingsDashboardView) {
 
   if (!view.backupOk) {
     setBackupBadge("확인 필요", "error");
-    text("settingsBackupDescription", "OneDrive 연결 또는 백업 폴더 권한을 확인해 주세요.");
+    text("settingsBackupDescription", mac ? "선택한 백업 폴더의 연결과 접근 권한을 확인해 주세요." : "OneDrive 연결 또는 백업 폴더 권한을 확인해 주세요.");
   } else if (!view.backupConfigured) {
     setBackupBadge("설정 필요", "warning");
-    text("settingsBackupDescription", "학교 OneDrive 안에 백업 폴더를 선택해 주세요.");
+    text("settingsBackupDescription", mac ? "이 Mac에서 사용할 백업 폴더를 선택해 주세요. OneDrive 설치는 필수가 아닙니다." : "학교 OneDrive 안에 백업 폴더를 선택해 주세요.");
   } else {
     setBackupBadge("정상", "ok");
-    text("settingsBackupDescription", "학교 계정 OneDrive에 자동 백업하고 있습니다.");
+    text("settingsBackupDescription", mac ? "선택한 폴더에 자동 백업하고 있습니다." : "학교 계정 OneDrive에 자동 백업하고 있습니다.");
   }
 }
 
@@ -101,15 +121,39 @@ function confirmDisconnect() {
 }
 
 export function initSettingsDashboard(options: Options) {
+  renderSettingsPlatform();
   const startWithWindows = element<HTMLInputElement>("settingsStartWithWindows");
   const keepRunningOnClose = element<HTMLInputElement>("settingsKeepRunningOnClose");
+  let autostartUnverified = false;
+
+  function lockPreferences(locked: boolean) {
+    startWithWindows.disabled = locked;
+    keepRunningOnClose.disabled = locked;
+  }
+
+  function renderPreferences(result: DesktopPreferences) {
+    if (!result?.ok || typeof result.startWithWindows !== "boolean" || typeof result.keepRunningOnClose !== "boolean") {
+      throw new Error(result?.error || "desktop_preferences_invalid_response");
+    }
+    startWithWindows.checked = result.startWithWindows;
+    keepRunningOnClose.checked = result.keepRunningOnClose;
+    autostartUnverified = Boolean(result.autostartError);
+    startWithWindows.indeterminate = autostartUnverified;
+    setPreferenceStatus(result.autostartError
+      ? `자동 실행 등록을 확인하지 못했습니다. 스위치를 다시 설정해 주세요: ${result.autostartError}`
+      : "", result.autostartError ? "error" : "neutral");
+  }
 
   async function loadPreferences() {
+    lockPreferences(true);
+    startWithWindows.indeterminate = true;
+    keepRunningOnClose.indeterminate = true;
+    setPreferenceStatus("앱 동작 설정을 확인하고 있습니다.");
     try {
       const result = await invoke<DesktopPreferences>("get_desktop_preferences");
-      startWithWindows.checked = result.startWithWindows !== false;
-      keepRunningOnClose.checked = result.keepRunningOnClose !== false;
-      setPreferenceStatus("");
+      renderPreferences(result);
+      keepRunningOnClose.indeterminate = false;
+      lockPreferences(false);
     } catch (error) {
       setPreferenceStatus(`앱 동작 설정을 확인하지 못했습니다: ${String((error as Error)?.message || error)}`, "error");
     }
@@ -117,19 +161,19 @@ export function initSettingsDashboard(options: Options) {
 
   async function savePreference(input: HTMLInputElement, key: "startWithWindows" | "keepRunningOnClose") {
     const previous = !input.checked;
-    input.disabled = true;
+    lockPreferences(true);
     setPreferenceStatus("설정을 저장하고 있습니다.");
     try {
       const result = await invoke<DesktopPreferences>("set_desktop_preference", { key, enabled: input.checked });
-      if (!result?.ok) throw new Error(result?.error || "desktop_preference_failed");
-      startWithWindows.checked = result.startWithWindows !== false;
-      keepRunningOnClose.checked = result.keepRunningOnClose !== false;
-      setPreferenceStatus("앱 동작 설정을 저장했습니다.", "ok");
+      renderPreferences(result);
+      if (!result.autostartError) setPreferenceStatus("앱 동작 설정을 저장했습니다.", "ok");
     } catch (error) {
       input.checked = previous;
+      if (key === "startWithWindows") autostartUnverified = true;
+      startWithWindows.indeterminate = autostartUnverified;
       setPreferenceStatus(`설정을 저장하지 못했습니다: ${String((error as Error)?.message || error)}`, "error");
     } finally {
-      input.disabled = false;
+      lockPreferences(false);
     }
   }
 

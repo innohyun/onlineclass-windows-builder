@@ -700,10 +700,11 @@ pub(super) fn restore_generation(
         return Err("backup_sync_manifest_invalid".to_string());
     }
     let authoritative = authoritative_restore_manifest(manifest_path, &manifest, tenant_id)?;
-    let archive_result =
-        crate::backup_v4::apply_archives(manifest_path, &authoritative, tenant_id)?;
     seed_sync_records(store, tenant_id)?;
     let state = local_sync_state(store, tenant_id)?;
+    let archive_result =
+        crate::backup_v4::apply_archives(manifest_path, &authoritative, tenant_id)?;
+    let local_archives = crate::shared_archive_sync::has_local_only_references(tenant_id, authoritative.get("archives"))?;
     if generation <= state.applied_generation {
         return Ok(json!({
             "ok": true,
@@ -950,13 +951,13 @@ pub(super) fn restore_generation(
                    applied_generation = ?2,
                    latest_generation = MAX(latest_generation, ?2),
                    latest_status = ?3,
-                   first_dirty_at_ms = CASE WHEN ?4 = 0 THEN NULL ELSE first_dirty_at_ms END,
-                   last_dirty_at_ms = CASE WHEN ?4 = 0 THEN NULL ELSE last_dirty_at_ms END,
+                   first_dirty_at_ms = CASE WHEN ?4 = 0 AND change_sequence = ?6 AND ?7 = 0 THEN NULL ELSE COALESCE(first_dirty_at_ms, ?5) END,
+                   last_dirty_at_ms = CASE WHEN ?4 = 0 AND change_sequence = ?6 AND ?7 = 0 THEN NULL ELSE COALESCE(last_dirty_at_ms, ?5) END,
                    last_success_at_ms = ?5,
                    last_error = '',
                    applying = 0
                  WHERE tenant_id = ?1",
-                params![tenant_id, generation, latest_status, remaining_dirty, now_ms()],
+                params![tenant_id, generation, latest_status, remaining_dirty, now_ms(), state.change_sequence, local_archives],
             )
             .map_err(|e| format!("restore_sync_state_update_failed:{e}"))?;
         transaction
@@ -1086,6 +1087,7 @@ mod tests {
             Path::new(generation_one["manifestPath"].as_str().expect("manifest path")),
             &content_one,
             "announced",
+            generation_one["capturedSequence"].as_i64().expect("captured sequence"),
         )
             .expect("mark generation one published");
 
@@ -1230,7 +1232,7 @@ mod tests {
             .expect("create generation one");
         let generation_one_path = PathBuf::from(generation_one["manifestPath"].as_str().expect("generation one path"));
         let content_one = tenant_content_sha256(&source, "tenant-a").expect("source content root");
-        mark_sync_published(&source, "tenant-a", 1, &generation_one_path, &content_one, "announced")
+        mark_sync_published(&source, "tenant-a", 1, &generation_one_path, &content_one, "announced", generation_one["capturedSequence"].as_i64().expect("captured sequence"))
             .expect("mark generation one published");
         restore_generation(&target, "tenant-a", &generation_one_path, 1, "announced", false)
             .expect("restore page and attachment generation");
@@ -1441,6 +1443,8 @@ mod tests {
             std::thread::sleep(Duration::from_millis(2));
         }
         let tenant_dir = tenant_backup_dir(&backup_root, "tenant-a");
+        remember_checkpoint_pins(&store,"tenant-a",&json!({"checkpoint":null,"latestVerifiedCheckpoint":null})).unwrap();
+        maintenance::run_if_due(&store, "tenant-a", now_ms(), true).expect("daily maintenance");
         let manifests = manifest_paths_in_dir(&tenant_dir).expect("list manifests");
         let kinds = manifests.iter().map(|path| {
             read_manifest(path).expect("read retained manifest")["kind"].as_str().unwrap_or("").to_string()

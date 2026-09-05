@@ -3,6 +3,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+#[cfg(target_os = "macos")]
+#[path = "macos_autostart.rs"]
+mod macos_autostart;
+
 const PREFERENCES_FILE_NAME: &str = "desktop-preferences.json";
 #[cfg(windows)]
 const AUTOSTART_VALUE_NAME: &str = "OnlineClassLocalSensitiveStore";
@@ -17,7 +21,10 @@ pub struct DesktopPreferences {
 impl Default for DesktopPreferences {
     fn default() -> Self {
         Self {
+            #[cfg(not(target_os = "macos"))]
             start_with_windows: true,
+            #[cfg(target_os = "macos")]
+            start_with_windows: false,
             keep_running_on_close: true,
         }
     }
@@ -26,6 +33,7 @@ impl Default for DesktopPreferences {
 pub struct DesktopPreferencesStore {
     path: PathBuf,
     value: Mutex<DesktopPreferences>,
+    startup_error: Mutex<Option<String>>,
 }
 
 impl DesktopPreferencesStore {
@@ -38,6 +46,7 @@ impl DesktopPreferencesStore {
         Self {
             path,
             value: Mutex::new(value),
+            startup_error: Mutex::new(None),
         }
     }
 
@@ -49,11 +58,46 @@ impl DesktopPreferencesStore {
     }
 
     pub fn apply_startup_setting(&self) -> Result<(), String> {
-        apply_start_with_windows(self.snapshot().start_with_windows)
+        // Opening an isolated/new Mac store must never change this user's login items.
+        #[cfg(target_os = "macos")]
+        let result = macos_autostart::verify(self.snapshot().start_with_windows);
+        #[cfg(not(target_os = "macos"))]
+        let result = apply_start_with_windows(self.snapshot().start_with_windows);
+        if let Ok(mut error) = self.startup_error.lock() {
+            *error = result.as_ref().err().cloned();
+        }
+        result
+    }
+
+    pub fn startup_error(&self) -> Option<String> {
+        self.startup_error
+            .lock()
+            .ok()
+            .and_then(|error| error.clone())
+    }
+
+    fn remember_startup_error(&self, error: String) -> String {
+        if let Ok(mut stored) = self.startup_error.lock() {
+            *stored = Some(error.clone());
+        }
+        error
     }
 
     pub fn set(&self, key: &str, enabled: bool) -> Result<DesktopPreferences, String> {
-        let previous = self.snapshot();
+        self.set_with_autostart(key, enabled, apply_start_with_windows)
+    }
+
+    fn set_with_autostart(
+        &self,
+        key: &str,
+        enabled: bool,
+        apply: impl Fn(bool) -> Result<(), String>,
+    ) -> Result<DesktopPreferences, String> {
+        let mut value = self
+            .value
+            .lock()
+            .map_err(|_| "desktop_preferences_lock_failed".to_string())?;
+        let previous = value.clone();
         let mut next = previous.clone();
         match key {
             "startWithWindows" => next.start_with_windows = enabled,
@@ -62,19 +106,27 @@ impl DesktopPreferencesStore {
         }
 
         if key == "startWithWindows" {
-            apply_start_with_windows(enabled)?;
+            if let Err(error) = apply(enabled) {
+                return Err(self.remember_startup_error(error));
+            }
         }
         if let Err(error) = self.persist(&next) {
             if key == "startWithWindows" {
-                let _ = apply_start_with_windows(previous.start_with_windows);
+                if let Err(rollback_error) = apply(previous.start_with_windows) {
+                    return Err(self.remember_startup_error(format!(
+                        "{error};autostart_rollback_failed:{rollback_error}"
+                    )));
+                }
+                return Err(self.remember_startup_error(error));
             }
             return Err(error);
         }
-        let mut value = self
-            .value
-            .lock()
-            .map_err(|_| "desktop_preferences_lock_failed".to_string())?;
         *value = next.clone();
+        if key == "startWithWindows" {
+            if let Ok(mut error) = self.startup_error.lock() {
+                *error = None;
+            }
+        }
         Ok(next)
     }
 
@@ -117,7 +169,12 @@ fn apply_start_with_windows(enabled: bool) -> Result<(), String> {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn apply_start_with_windows(enabled: bool) -> Result<(), String> {
+    macos_autostart::apply(enabled)
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn apply_start_with_windows(_enabled: bool) -> Result<(), String> {
     Ok(())
 }
@@ -140,8 +197,9 @@ mod tests {
         let _ = fs::remove_dir_all(&directory);
         let store = DesktopPreferencesStore::open(&directory);
         let value = store.snapshot();
-        assert!(value.start_with_windows);
+        assert_eq!(value.start_with_windows, !cfg!(target_os = "macos"));
         assert!(value.keep_running_on_close);
+        fs::remove_dir_all(&directory).ok();
     }
 
     #[test]
@@ -160,7 +218,7 @@ mod tests {
         assert_eq!(persisted.as_object().expect("preference object").len(), 2);
         assert_eq!(
             persisted.get("startWithWindows"),
-            Some(&serde_json::Value::Bool(true))
+            Some(&serde_json::Value::Bool(!cfg!(target_os = "macos")))
         );
         assert_eq!(
             persisted.get("keepRunningOnClose"),
@@ -176,5 +234,78 @@ mod tests {
                 .keep_running_on_close
         );
         fs::remove_dir_all(&directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn registration_failure_preserves_preferences_without_real_os_changes() {
+        let directory = test_dir("registration-failure");
+        let store = DesktopPreferencesStore::open(&directory);
+        let before = store.snapshot().start_with_windows;
+        assert_eq!(
+            store
+                .set_with_autostart("startWithWindows", !before, |_| Err(
+                    "injected_failure".into()
+                ))
+                .unwrap_err(),
+            "injected_failure"
+        );
+        assert_eq!(store.snapshot().start_with_windows, before);
+        assert!(!directory.join(PREFERENCES_FILE_NAME).exists());
+        assert_eq!(store.startup_error().as_deref(), Some("injected_failure"));
+        store
+            .set_with_autostart("startWithWindows", before, |_| Ok(()))
+            .unwrap();
+        assert!(store.startup_error().is_none());
+        fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn persistence_and_rollback_failures_remain_visible_to_later_reads() {
+        use std::cell::Cell;
+        for rollback_fails in [false, true] {
+            let directory = test_dir(if rollback_fails {
+                "rollback-failure"
+            } else {
+                "persist-failure"
+            });
+            fs::create_dir_all(directory.join(PREFERENCES_FILE_NAME)).unwrap();
+            let store = DesktopPreferencesStore::open(&directory);
+            let before = store.snapshot().start_with_windows;
+            let calls = Cell::new(0);
+            let error = store
+                .set_with_autostart("startWithWindows", !before, |enabled| {
+                    calls.set(calls.get() + 1);
+                    if calls.get() == 1 {
+                        assert_eq!(enabled, !before);
+                        Ok(())
+                    } else {
+                        assert_eq!(enabled, before);
+                        if rollback_fails {
+                            Err("injected_rollback_failure".into())
+                        } else {
+                            Ok(())
+                        }
+                    }
+                })
+                .unwrap_err();
+            assert!(error.starts_with("desktop_preferences_write_failed"));
+            assert_eq!(error.contains("autostart_rollback_failed"), rollback_fails);
+            assert_eq!(store.startup_error().as_deref(), Some(error.as_str()));
+            assert_eq!(store.snapshot().start_with_windows, before);
+            assert_eq!(calls.get(), 2);
+            fs::remove_dir_all(&directory).unwrap();
+        }
+    }
+
+    #[test]
+    fn existing_json_choice_survives_platform_default_change() {
+        for enabled in [true, false] {
+            let value: DesktopPreferences = serde_json::from_str(&format!(
+                "{{\"startWithWindows\":{enabled},\"keepRunningOnClose\":false}}"
+            ))
+            .unwrap();
+            assert_eq!(value.start_with_windows, enabled);
+            assert!(!value.keep_running_on_close);
+        }
     }
 }

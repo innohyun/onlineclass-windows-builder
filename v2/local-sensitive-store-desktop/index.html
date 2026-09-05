@@ -367,17 +367,24 @@
                 <div><h2 id="backupStorageTitle">백업 저장공간</h2><p id="backupStorageStatus" role="status">중복 제거 상태를 확인하고 있습니다.</p></div>
                 <div class="backup-storage-heading-actions"><span class="status-badge badge-neutral" id="backupStorageBadge">확인 중</span><button id="backupStorageHelp" type="button"><i class="fa-solid fa-circle-question" aria-hidden="true"></i> 안내</button></div>
               </header>
-              <dl class="backup-storage-metrics">
-                <div><dt>현재 첨부 원본</dt><dd id="backupStorageOriginal">-</dd></div>
+              <div class="backup-storage-total" id="backupStorageTotalSummary"><div><span>백업 폴더 총 논리 크기</span><strong id="backupStorageTotal">-</strong></div><p>아래 항목을 중복 없이 합산한 파일 크기입니다. OneDrive 할당량이나 이 PC의 실제 디스크 사용량과는 다를 수 있습니다.</p><small id="backupStorageScannedAt">아직 확인하지 않았습니다.</small></div>
+              <dl class="backup-storage-metrics" id="backupStorageBreakdown">
+                <div><dt>v5 DB 백업</dt><dd id="backupStorageDatabase">-</dd></div>
+                <div><dt>v5 백업 정보</dt><dd id="backupStorageMetadata">-</dd></div>
+                <div><dt>이전 방식 백업 전체</dt><dd id="backupStorageLegacy">-</dd></div>
                 <div><dt>중복 제거 객체</dt><dd id="backupStorageObjects">-</dd></div>
-                <div><dt>DB 백업 이력</dt><dd id="backupStorageDatabase">-</dd></div>
-                <div><dt>이전 방식 백업</dt><dd id="backupStorageLegacy">-</dd></div>
-                <div><dt>30일 자동 격리</dt><dd id="backupStorageReclaimable">-</dd></div>
+                <div><dt>격리된 첨부 객체 · 아직 점유</dt><dd id="backupStorageObjectQuarantine">-</dd></div>
+                <div><dt>격리된 이전 백업 · 아직 점유</dt><dd id="backupStorageReclaimable">-</dd></div>
+                <div><dt>보관본 묶음</dt><dd id="backupStorageArchives">-</dd></div>
+                <div><dt>생성 중 임시 파일</dt><dd id="backupStorageStaging">-</dd></div>
+                <div><dt>기타 파일</dt><dd id="backupStorageOther">-</dd></div>
               </dl>
+              <p class="backup-storage-quarantine-note" id="backupStorageQuarantineNote">격리 파일도 정리되기 전까지 백업 폴더 용량에 포함됩니다.</p>
+              <div class="backup-storage-reference" id="backupStorageOriginalReference"><span>참고 · 현재 첨부 원본 <strong id="backupStorageOriginal">-</strong></span><p>현재 자료의 첨부 크기이며 위 합계에 더하지 않습니다. 원본과 중복 제거 객체의 용량이 같아도 정상일 수 있습니다.</p></div>
               <div class="backup-storage-large-files" id="backupStorageLargeFiles"><p>100MB 이상 첨부파일이 있으면 여기에 표시합니다. 원본은 자동으로 줄이거나 삭제하지 않습니다.</p></div>
-              <details class="backup-storage-policy"><summary>보관 기준 자세히</summary><p>최근 10개, 30일간 일별 1개, 12개월간 월별 1개와 복원 전 5개를 자동 보관합니다. 정상 v5 백업을 검증한 뒤 안전한 이전 방식 백업만 30일 격리하며, 그동안 되돌릴 수 있습니다. 수동 백업과 동기화에 필요한 세대는 유지합니다.</p></details>
+              <details class="backup-storage-policy" id="backupStoragePolicy"><summary>보관 기준 자세히</summary><p>최근 10개, 30일간 일별 1개, 12개월간 월별 1개와 복원 전 5개를 자동 보관합니다. 수동 백업과 동기화에 필요한 세대는 유지합니다. 정상 v5 백업을 검증한 뒤 안전한 이전 방식 백업만 30일 격리하며, 그동안 되돌릴 수 있습니다. 격리 만료일 이후 앱 시작 시와 실행 중 하루 한 번 안전 조건을 확인한 뒤 정리합니다. 파일 상태를 완전히 확인하지 못하면 정리를 보류합니다.</p></details>
               <div class="backup-storage-actions"><button class="secondary-action" id="backupStorageRefresh" type="button">용량 새로고침</button><button class="primary-action" id="backupLegacyUndo" type="button" disabled>자동 격리 되돌리기</button></div>
-              <aside class="local-reader-tutorial" id="backupStorageTutorial" hidden><header><span id="backupStorageTutorialStep">1 / 3</span><button id="backupStorageTutorialClose" type="button" aria-label="백업 저장공간 안내 닫기"><i class="fa-solid fa-xmark"></i></button></header><h2 id="backupStorageTutorialTitle">백업 저장공간</h2><p id="backupStorageTutorialCopy"></p><footer><button id="backupStorageTutorialNext" type="button">다음</button></footer></aside>
+              <aside class="local-reader-tutorial" id="backupStorageTutorial" role="region" aria-label="백업 저장공간 안내" hidden><header><span id="backupStorageTutorialStep">1 / 4</span><button id="backupStorageTutorialClose" type="button" aria-label="백업 저장공간 안내 닫기"><i class="fa-solid fa-xmark"></i></button></header><h2 id="backupStorageTutorialTitle">백업 저장공간</h2><p id="backupStorageTutorialCopy"></p><footer><button id="backupStorageTutorialNext" type="button">다음</button></footer></aside>
             </section>
 
             <section class="device-conflict-viewer" id="deviceConflictViewer" aria-labelledby="deviceConflictTitle" hidden>
@@ -531,15 +538,15 @@
               <section class="settings-wide-panel settings-behavior-panel" aria-labelledby="settingsBehaviorTitle">
                 <header><span class="settings-section-icon is-blue" aria-hidden="true"><i class="fa-solid fa-gear"></i></span><h2 id="settingsBehaviorTitle">앱 동작</h2></header>
                 <div class="settings-preference-list">
-                  <label class="settings-preference-row" for="settingsStartWithWindows"><span class="settings-preference-icon" aria-hidden="true"><i class="fa-solid fa-power-off"></i></span><span><strong>Windows 시작 시 자동 실행</strong><small>PC를 켜면 자동 수거와 백업을 준비합니다.</small></span><input id="settingsStartWithWindows" type="checkbox" role="switch" checked><span class="settings-switch" aria-hidden="true"></span></label>
-                  <label class="settings-preference-row" for="settingsKeepRunningOnClose"><span class="settings-preference-icon" aria-hidden="true"><i class="fa-solid fa-window-restore"></i></span><span><strong>창을 닫아도 계속 실행</strong><small>작업 표시줄 트레이에서 안전하게 실행됩니다.</small></span><input id="settingsKeepRunningOnClose" type="checkbox" role="switch" checked><span class="settings-switch" aria-hidden="true"></span></label>
+                  <label class="settings-preference-row" for="settingsStartWithWindows"><span class="settings-preference-icon" aria-hidden="true"><i class="fa-solid fa-power-off"></i></span><span><strong id="settingsAutostartLabel">로그인 시 자동 실행</strong><small id="settingsAutostartDescription">설치된 운영체제의 설정을 확인하고 있습니다.</small></span><input id="settingsStartWithWindows" type="checkbox" role="switch" disabled><span class="settings-switch" aria-hidden="true"></span></label>
+                  <label class="settings-preference-row" for="settingsKeepRunningOnClose"><span class="settings-preference-icon" aria-hidden="true"><i class="fa-solid fa-window-restore"></i></span><span><strong>창을 닫아도 계속 실행</strong><small id="settingsCloseDescription">설정을 확인한 뒤 백그라운드 실행 여부를 변경할 수 있습니다.</small></span><input id="settingsKeepRunningOnClose" type="checkbox" role="switch" disabled><span class="settings-switch" aria-hidden="true"></span></label>
                 </div>
                 <p class="settings-inline-status" id="settingsPreferenceStatus" role="status" aria-live="polite"></p>
               </section>
 
               <section class="settings-security-strip" aria-labelledby="settingsSecurityTitle">
                 <header><span class="settings-section-icon is-green" aria-hidden="true"><i class="fa-solid fa-shield-halved"></i></span><h2 id="settingsSecurityTitle">보안과 저장</h2></header>
-                <div><p><i class="fa-solid fa-shield" aria-hidden="true"></i><span>민감자료 원문은 이 PC에만 저장</span></p><p><i class="fa-solid fa-lock" aria-hidden="true"></i><span>교사 계정 정보는 Windows에서 암호화 보관</span></p><p><i class="fa-solid fa-file-lines" aria-hidden="true"></i><span>연결을 해제해도 저장 자료는 삭제되지 않음</span></p></div>
+                <div><p><i class="fa-solid fa-shield" aria-hidden="true"></i><span>민감자료 원문은 이 PC에만 저장</span></p><p><i class="fa-solid fa-lock" aria-hidden="true"></i><span id="settingsCredentialStorageText">교사 계정 인증정보는 운영체제 보안 저장소에 보관</span></p><p><i class="fa-solid fa-file-lines" aria-hidden="true"></i><span>연결을 해제해도 저장 자료는 삭제되지 않음</span></p></div>
               </section>
             </div>
 

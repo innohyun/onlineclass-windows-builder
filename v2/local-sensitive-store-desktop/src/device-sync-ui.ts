@@ -6,6 +6,7 @@ export type DeviceSyncStatus = {
   tenantId?: string;
   credentialAvailable?: boolean;
   oneDriveConfigured?: boolean;
+  backupError?: string | null;
   appliedGeneration?: number;
   publishedGeneration?: number;
   latestGeneration?: number;
@@ -22,6 +23,8 @@ export type DeviceSyncStatus = {
 };
 
 let snapshot: DeviceSyncStatus | null = null;
+let syncRun: Promise<void> | null = null;
+let statusRevision = 0;
 
 function element(id: string) {
   const target = document.getElementById(id);
@@ -76,7 +79,8 @@ export function deviceSyncErrorMessage(error?: string) {
 }
 
 function updateActionState(busy = false) {
-  const unavailable = !snapshot?.connected || !snapshot.credentialAvailable || !snapshot.oneDriveConfigured;
+  busy = busy || syncRun !== null;
+  const unavailable = !snapshot?.connected || !snapshot.credentialAvailable || !snapshot.oneDriveConfigured || Boolean(snapshot.backupError);
   document.querySelectorAll<HTMLButtonElement>('button[data-action="run-device-sync"]').forEach((button) => {
     button.disabled = busy || unavailable;
   });
@@ -103,6 +107,9 @@ export function renderDeviceSyncStatus(status: DeviceSyncStatus | null) {
   } else if (!status.credentialAvailable) {
     setBadge("재연결 필요", "warning");
     setText("deviceSyncStatus", "기기 동기화 자격 증명을 확인할 수 없습니다. 교사 설정에서 PC를 다시 연결해 주세요.");
+  } else if (status.backupError) {
+    setBadge("백업 폴더 확인 필요", "warning");
+    setText("deviceSyncStatus", "PC 연결은 완료되었습니다. 백업 폴더에 접근할 수 없어 기기 간 동기화만 보류합니다. 로컬 자료는 계속 사용할 수 있으며, 백업·복원에서 폴더 연결과 접근 권한을 확인해 주세요.");
   } else if (!status.oneDriveConfigured) {
     setBadge("OneDrive 설정 필요", "warning");
     setText("deviceSyncStatus", "학교 OneDrive 안의 백업 폴더를 선택하면 자동 동기화를 시작합니다.");
@@ -128,21 +135,35 @@ export function renderDeviceSyncStatus(status: DeviceSyncStatus | null) {
 }
 
 export async function loadDeviceSyncStatus() {
-  renderDeviceSyncStatus(await invoke<DeviceSyncStatus>("get_device_sync_status"));
+  const requestRevision = ++statusRevision;
+  try {
+    const status = await invoke<DeviceSyncStatus>("get_device_sync_status");
+    if (!syncRun && requestRevision === statusRevision) renderDeviceSyncStatus(status);
+  } catch (error) {
+    if (!syncRun && requestRevision === statusRevision) throw error;
+  }
 }
 
 export async function runDeviceSyncNow(afterRun: () => Promise<unknown>) {
+  if (syncRun) return syncRun;
+  statusRevision += 1;
   updateActionState(true);
   setText("deviceSyncStatus", "OneDrive 최신 파일과 서버 세대를 대조하고 있습니다.");
-  try {
-    const status = await invoke<DeviceSyncStatus>("run_device_sync_now");
-    if (!status?.ok) throw new Error(status?.error || "device_sync_failed");
-    renderDeviceSyncStatus(status);
-    await afterRun();
-  } catch (error) {
-    const message = String((error as Error)?.message || error || "device_sync_failed");
-    renderDeviceSyncStatus({ ...(snapshot || { connected: false }), ok: false, lastError: message });
-  } finally {
-    updateActionState();
-  }
+  syncRun = (async () => {
+    try {
+      const status = await invoke<DeviceSyncStatus>("run_device_sync_now");
+      if (!status?.ok) throw new Error(status?.error || "device_sync_failed");
+      renderDeviceSyncStatus(status);
+      try { await afterRun(); }
+      catch { setText("deviceSyncStatus", "동기화는 완료했지만 일부 화면을 새로 읽지 못했습니다. 상태 확인을 눌러 다시 확인해 주세요."); }
+    } catch (error) {
+      const message = String((error as Error)?.message || error || "device_sync_failed");
+      renderDeviceSyncStatus({ ...(snapshot || { connected: false }), ok: false, error: message, lastError: message });
+    } finally {
+      statusRevision += 1;
+      syncRun = null;
+      updateActionState();
+    }
+  })();
+  return syncRun;
 }

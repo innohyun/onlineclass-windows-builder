@@ -3,11 +3,12 @@ import { LogicalPosition, LogicalSize } from "@tauri-apps/api/dpi";
 import { listen } from "@tauri-apps/api/event";
 import { Webview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { isMacDesktop } from "./settings-dashboard";
 
 const SHELL_HEIGHT = 56;
 const TEACHER_WEBVIEW_LABEL = "teacher-home";
 const TEACHER_HOME_URL = "https://t.classaimate.com/admin/";
-const TUTORIAL_KEY = "classaimateDesktopShellTutorial:v6";
+const TUTORIAL_KEY = "classaimateDesktopShellTutorial:v9";
 
 type ShellMode = "teacher" | "local";
 export type DesktopActivationIntent = "show-main" | "quick-observation";
@@ -218,7 +219,9 @@ export function initDesktopShell(): DesktopShellController {
     },
     {
       target: localButton,
-      text: "로컬 자료함은 같은 SQLite를 수업자료·학생 학습자료·업무자료·학생별 보기·빠른 관찰로 나눠 쓰는 공간입니다. 일반 바로가기는 현재 화면을, 빠른 관찰기록 바로가기는 이 앱의 관찰 화면을 곧바로 엽니다. 데이터나 백업이 복제되지는 않습니다.",
+      text: "로컬 자료함은 같은 SQLite를 수업자료·학생 학습자료·업무자료·학생별 보기·빠른 관찰로 나눠 쓰는 공간입니다. " + (isMacDesktop()
+        ? "Mac 로그인 시 자동 실행은 기본으로 꺼져 있습니다. 설정에서 켤 수 있고, 창을 닫은 뒤에는 메뉴 막대에서 다시 열 수 있습니다. 인증정보는 macOS 키체인에 보관합니다. 내장 교사 홈은 승인된 학급의 로컬 요청만 이 앱을 통해 전달합니다. 새로운 파일 접근이나 기기 권한을 허용하지 않습니다. PC 연결과 백업은 별개입니다. 백업 폴더 오류가 있어도 로컬 자료는 사용할 수 있고 기기 간 동기화만 보류됩니다. 이 안내는 자동 실행이나 자료 복원을 대신 실행하지 않습니다."
+        : "일반 바로가기는 현재 화면을, 빠른 관찰기록 바로가기는 이 앱의 관찰 화면을 곧바로 엽니다. 데이터나 백업이 복제되지는 않습니다."),
     },
   ];
 

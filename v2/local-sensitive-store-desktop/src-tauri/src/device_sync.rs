@@ -40,6 +40,8 @@ pub(crate) struct DeviceSyncManager {
     credential_store: DeviceSyncCredentialStore,
     store: Arc<SqliteStore>,
     sync_lock: Mutex<()>,
+    #[cfg(test)]
+    test_api_root: Option<String>,
 }
 
 fn now_ms() -> i64 {
@@ -118,6 +120,12 @@ fn checkpoint_status(checkpoint: Option<&Value>) -> String {
         .to_string()
 }
 
+#[path = "device_sync_publication.rs"]
+mod publication;
+#[cfg(test)]
+#[path = "device_sync_publication_tests.rs"]
+mod publication_tests;
+
 impl DeviceSyncManager {
     pub(crate) fn new(data_dir: PathBuf, store: Arc<SqliteStore>) -> Self {
         Self {
@@ -125,6 +133,8 @@ impl DeviceSyncManager {
             credential_store: DeviceSyncCredentialStore::new(data_dir),
             store,
             sync_lock: Mutex::new(()),
+            #[cfg(test)]
+            test_api_root: None,
         }
     }
 
@@ -134,6 +144,12 @@ impl DeviceSyncManager {
             .timeout_read(Duration::from_secs(12))
             .timeout_write(Duration::from_secs(12))
             .build()
+    }
+
+    fn api_root(&self) -> String {
+        #[cfg(test)]
+        if let Some(root) = &self.test_api_root { return root.clone(); }
+        api_root()
     }
 
     fn load_session(&self) -> Result<Option<DeviceSyncSession>, String> {
@@ -233,7 +249,7 @@ impl DeviceSyncManager {
     ) -> Result<Value, String> {
         response_data(
             self.agent()
-                .get(&format!("{}{path}", api_root()))
+                .get(&format!("{}{path}", self.api_root()))
                 .set("Authorization", &format!("Bearer {credential}"))
                 .set("X-Local-Store-Device-Id", &session.device_id)
                 .set("X-Local-Store-Snapshot-Max", &SNAPSHOT_FORMAT_MAX.to_string())
@@ -250,7 +266,7 @@ impl DeviceSyncManager {
     ) -> Result<Value, String> {
         response_data(
             self.agent()
-                .post(&format!("{}{path}", api_root()))
+                .post(&format!("{}{path}", self.api_root()))
                 .set("Authorization", &format!("Bearer {credential}"))
                 .set("X-Local-Store-Device-Id", &session.device_id)
                 .set("X-Local-Store-Snapshot-Max", &SNAPSHOT_FORMAT_MAX.to_string())
@@ -266,7 +282,7 @@ impl DeviceSyncManager {
     ) -> Result<Value, String> {
         response_data(
             self.agent()
-                .delete(&format!("{}{path}", api_root()))
+                .delete(&format!("{}{path}", self.api_root()))
                 .set("Authorization", &format!("Bearer {credential}"))
                 .set("X-Local-Store-Device-Id", &session.device_id)
                 .set("X-Local-Store-Snapshot-Max", &SNAPSHOT_FORMAT_MAX.to_string())
@@ -280,6 +296,7 @@ impl DeviceSyncManager {
         credential: &str,
     ) -> Result<(Option<Value>, i64), String> {
         let data = self.authorized_get(session, credential, "/checkpoints/latest")?;
+        backup::remember_checkpoint_pins(&self.store, &session.tenant_id, &data)?;
         let checkpoint = data.get("checkpoint").cloned().filter(|value| !value.is_null());
         let snapshot_version = data
             .pointer("/snapshotPolicy/maxWritableSnapshotVersion")
@@ -356,6 +373,10 @@ impl DeviceSyncManager {
         if generation <= state.applied_generation && source_device_id == session.device_id {
             return Ok(());
         }
+        if generation <= state.applied_generation
+            && backup::acknowledged_locally(&self.store, &session.tenant_id, generation, &session.device_id, &artifact_root)? {
+            return Ok(());
+        }
         let snapshot = self.verified_snapshot(
             &session.tenant_id,
             artifact_generation,
@@ -383,6 +404,7 @@ impl DeviceSyncManager {
                 &format!("/checkpoints/{generation}/acks"),
                 json!({ "artifactSetSha256": artifact_root }),
             )?;
+            backup::remember_ack(&self.store, &session.tenant_id, generation, &session.device_id, &artifact_root)?;
             backup::mark_sync_latest(
                 &self.store,
                 &session.tenant_id,
@@ -409,7 +431,9 @@ impl DeviceSyncManager {
                 &manifest_path,
                 &content_sha256,
                 &status,
+                self.pending_sequence(&session.tenant_id, generation, &artifact_root)?,
             )?;
+            backup::save_pending_publication(&self.store, &session.tenant_id, None)?;
             return Ok(());
         }
         backup::restore_generation(
@@ -428,6 +452,7 @@ impl DeviceSyncManager {
                 &format!("/checkpoints/{generation}/acks"),
                 json!({ "artifactSetSha256": artifact_root }),
             )?;
+            backup::remember_ack(&self.store, &session.tenant_id, generation, &session.device_id, &artifact_root)?;
             backup::mark_sync_latest(
                 &self.store,
                 &session.tenant_id,
@@ -441,68 +466,6 @@ impl DeviceSyncManager {
         Ok(())
     }
 
-    fn publish(
-        &self,
-        session: &DeviceSyncSession,
-        credential: &str,
-        base_generation: i64,
-        latest_status: &str,
-        snapshot_version: i64,
-    ) -> Result<(), String> {
-        let content_sha256 = backup::tenant_content_sha256(&self.store, &session.tenant_id)?;
-        let state = backup::local_sync_state(&self.store, &session.tenant_id)?;
-        if !state.last_content_sha256.is_empty() && state.last_content_sha256 == content_sha256 {
-            backup::mark_sync_unchanged(&self.store, &session.tenant_id, base_generation)?;
-            return Ok(());
-        }
-        let generation = base_generation + 1;
-        let snapshot = backup::run_with_kind_version(
-            &self.store,
-            session.tenant_id.clone(),
-            "auto_sync",
-            Some(generation),
-            snapshot_version,
-        )?;
-        if snapshot.get("ok").and_then(Value::as_bool) != Some(true) {
-            return Err("device_sync_snapshot_incomplete".to_string());
-        }
-        let artifact_root = snapshot
-            .get("artifactSetSha256")
-            .and_then(Value::as_str)
-            .ok_or_else(|| "device_sync_snapshot_invalid".to_string())?;
-        let database_sha256 = snapshot
-            .get("databaseSha256")
-            .and_then(Value::as_str)
-            .ok_or_else(|| "device_sync_snapshot_invalid".to_string())?;
-        let checkpoint = self.authorized_post(
-            session,
-            credential,
-            "/checkpoints",
-            json!({
-                "baseGeneration": base_generation,
-                "artifactSetSha256": artifact_root,
-                "databaseSha256": database_sha256,
-                "snapshotVersion": snapshot_version,
-            }),
-        )?;
-        let manifest_path = Path::new(
-            snapshot
-                .get("manifestPath")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "backup_manifest_required".to_string())?,
-        );
-        backup::mark_sync_published(
-            &self.store,
-            &session.tenant_id,
-            generation,
-            manifest_path,
-            &content_sha256,
-            checkpoint
-                .get("status")
-                .and_then(Value::as_str)
-                .unwrap_or(latest_status),
-        )
-    }
 
     fn run_locked(&self, force_publish: bool) -> Result<Value, String> {
         let session = match self.load_session()? {
@@ -510,6 +473,7 @@ impl DeviceSyncManager {
             None => return Ok(json!({ "ok": true, "connected": false })),
         };
         let credential = self.credential(&session)?;
+        backup::seed_sync_records(&self.store, &session.tenant_id)?;
         let _ = backup::auto_configure_onedrive(&self.store, &session.tenant_id)?;
         let (mut latest, mut snapshot_version) = self.latest_checkpoint(&session, &credential)?;
         backup::mark_sync_latest(
@@ -523,7 +487,7 @@ impl DeviceSyncManager {
         }
         let state = backup::local_sync_state(&self.store, &session.tenant_id)?;
         let now = now_ms();
-        let publish_due = force_publish
+        let publish_due = force_publish || backup::pending_publication(&self.store, &session.tenant_id)?.is_some()
             || (state.first_dirty_at_ms > 0
                 && (now.saturating_sub(state.last_dirty_at_ms) >= IDLE_PUBLISH_MS
                     || now.saturating_sub(state.first_dirty_at_ms) >= MAX_DIRTY_MS));
@@ -607,7 +571,7 @@ impl DeviceSyncManager {
                 self.credential_store.delete(&previous.keyring_account);
             }
         }
-        let _ = backup::auto_configure_onedrive(&self.store, &tenant_id)?;
+        // Backup discovery runs in the sync worker, after authorization is complete.
         self.status()
     }
 
@@ -617,7 +581,7 @@ impl DeviceSyncManager {
             None => return Ok(json!({ "ok": true, "connected": false })),
         };
         let state = backup::local_sync_state(&self.store, &session.tenant_id)?;
-        let backup_status = backup::status(&self.store, session.tenant_id.clone())?;
+        let backup_status = backup::connection_status(&self.store, &session.tenant_id);
         Ok(json!({
             "ok": true,
             "connected": true,
@@ -630,7 +594,8 @@ impl DeviceSyncManager {
             "credentialStorage": session.credential_storage,
             "credentialAvailable": self.credential(&session).is_ok(),
             "connectedAtMs": session.connected_at_ms,
-            "oneDriveConfigured": backup_status.get("configured").and_then(Value::as_bool).unwrap_or(false),
+            "oneDriveConfigured": backup_status.as_ref().ok().and_then(|value| value.get("configured")).and_then(Value::as_bool).unwrap_or(false),
+            "backupError": backup_status.err(),
             "appliedGeneration": state.applied_generation,
             "publishedGeneration": state.published_generation,
             "latestGeneration": state.latest_generation,
@@ -650,20 +615,32 @@ impl DeviceSyncManager {
     }
 
     pub(crate) fn run_once(&self, force_publish: bool) -> Result<Value, String> {
-        let _guard = self
-            .sync_lock
-            .lock()
-            .map_err(|_| "device_sync_lock_failed".to_string())?;
+        let _guard = match self.sync_lock.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::WouldBlock) => {
+                let mut status = self.status()?;
+                status["busy"] = json!(true);
+                return Ok(status);
+            }
+            Err(_) => return Err("device_sync_lock_failed".into()),
+        };
         let tenant_id = self
             .load_session()?
             .as_ref()
             .map(|session| session.tenant_id.clone())
             .unwrap_or_default();
+        if !force_publish && !tenant_id.is_empty() && !backup::retry_due(&self.store, &tenant_id, now_ms())? {
+            return self.status();
+        }
         match self.run_locked(force_publish) {
-            Ok(value) => Ok(value),
+            Ok(value) => {
+                if !tenant_id.is_empty() { backup::update_retry(&self.store, &tenant_id, false, now_ms())?; }
+                Ok(value)
+            }
             Err(error) => {
                 if !tenant_id.is_empty() {
                     backup::mark_sync_error(&self.store, &tenant_id, &error);
+                    let _ = backup::update_retry(&self.store, &tenant_id, true, now_ms());
                 }
                 Err(error)
             }
@@ -715,6 +692,10 @@ impl DeviceSyncManager {
                     Ok(state) => state,
                     Err(_) => continue,
                 };
+                if !backup::retry_due(&manager.store, &session.tenant_id, current).unwrap_or(false) { continue; }
+                let retry_pending = backup::retry_pending(&manager.store, &session.tenant_id).unwrap_or(false);
+                let pending = backup::pending_publication(&manager.store, &session.tenant_id)
+                    .map(|value| value.is_some()).unwrap_or(false);
                 let local_commit_ahead =
                     backup::highest_local_generation(&manager.store, &session.tenant_id)
                         .map(|generation| generation > state.applied_generation)
@@ -724,7 +705,7 @@ impl DeviceSyncManager {
                         || current.saturating_sub(state.first_dirty_at_ms) >= MAX_DIRTY_MS);
                 let safety_due = state.last_checked_at_ms == 0
                     || current.saturating_sub(state.last_checked_at_ms) >= SAFETY_CHECK_MS;
-                if resumed || local_commit_ahead || publish_due || safety_due {
+                if resumed || retry_pending || pending || local_commit_ahead || publish_due || safety_due {
                     let _ = manager.run_once(false);
                 }
             }
@@ -735,6 +716,55 @@ impl DeviceSyncManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn backup_failure_preserves_connection_and_reports_sync_unavailable() {
+        let root = env::temp_dir().join(format!("classaimate-device-status-{}", crate::random_url_token()));
+        let data_dir = root.join("local");
+        fs::create_dir_all(&data_dir).unwrap();
+        let store = Arc::new(SqliteStore::open(data_dir.join("fixture.sqlite")).unwrap());
+        let manager = DeviceSyncManager::new(data_dir.clone(), Arc::clone(&store));
+        let session = DeviceSyncSession {
+            version: 1,
+            tenant_id: "qa-tenant".to_string(),
+            device_id: "qa-device".to_string(),
+            keyring_account: format!("qa-missing-{}", crate::random_url_token()),
+            ..DeviceSyncSession::default()
+        };
+        manager.save_session(&session).unwrap();
+        let before = fs::read(&manager.session_path).unwrap();
+        let backup_root = root.join("backup");
+        let tenant_dir = backup_root.join("OnlineClassLocalBackups/tenants/qa-tenant");
+        fs::create_dir_all(tenant_dir.parent().unwrap()).unwrap();
+        // A file at the directory path deterministically reproduces read_dir failure.
+        fs::write(&tenant_dir, b"not a directory").unwrap();
+        let config_path = data_dir.join("backup-config.json");
+        let config = json!({ "tenants": { "qa-tenant": { "backupRootDir": backup_root } } });
+        fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+        let config_before = fs::read(&config_path).unwrap();
+        assert!(backup::status(&store, session.tenant_id.clone()).unwrap_err().starts_with("backup_list_dir_failed:"));
+
+        let status = manager.status().expect("backup failure must not fail device status");
+        assert_eq!(status["ok"], true);
+        assert_eq!(status["connected"], true);
+        assert_eq!(status["tenantId"], "qa-tenant");
+        assert_eq!(status["credentialAvailable"], false);
+        assert_eq!(status["oneDriveConfigured"], false);
+        assert!(status["backupError"].as_str().unwrap().starts_with("backup_list_dir_failed:"));
+        assert_eq!(fs::read(&manager.session_path).unwrap(), before);
+        assert_eq!(fs::read(&config_path).unwrap(), config_before);
+
+        fs::remove_file(&tenant_dir).unwrap();
+        fs::create_dir(&tenant_dir).unwrap();
+        let recovered = manager.status().unwrap();
+        assert_eq!(recovered["connected"], true);
+        assert_eq!(recovered["oneDriveConfigured"], true);
+        assert!(recovered["backupError"].is_null());
+        assert_eq!(fs::read(&manager.session_path).unwrap(), before);
+        drop(manager);
+        drop(store);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn device_sync_api_root_rejects_non_classaimate_remote_hosts() {

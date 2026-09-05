@@ -1,6 +1,7 @@
 use base64::{engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD}, Engine as _};
 use chrono::{DateTime, Utc};
 mod backup;
+mod backup_http_worker;
 mod backup_v4;
 mod backup_v5;
 mod cloud_sync;
@@ -8,6 +9,7 @@ mod data_explorer;
 mod device_sync;
 mod device_sync_credential;
 mod desktop_activation;
+mod desktop_local_transport;
 mod desktop_preferences;
 mod shared_archive;
 mod shared_archive_apply;
@@ -26,6 +28,8 @@ mod local_workspaces;
 mod password_vault;
 mod password_vault_crypto;
 mod quick_observation;
+mod machine_identity;
+pub(crate) use machine_identity::local_pc_name;
 use rand::{distributions::Alphanumeric, Rng};
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, ToSql};
 use serde::{Deserialize, Serialize};
@@ -49,7 +53,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-09-01.1-student-learning-materials";
+pub(crate) const SERVICE_VERSION: &str = "2026-09-05.5-backup-sync-optimization";
 const WORK_MEETING_ROOT_PAGE_ID: &str = "classaimate:work-meeting-minutes";
 const WORK_MEETING_ROOT_TITLE: &str = "업무 회의록";
 const WORK_MEETING_ROOT_INTRO: &str = "모바일에서 확정한 업무 회의록이 자동으로 들어옵니다.";
@@ -326,13 +330,6 @@ fn normalize(value: impl ToString, max_len: usize) -> String {
         text = text.chars().take(max_len).collect();
     }
     text
-}
-
-pub(crate) fn local_pc_name() -> String {
-    env::var("COMPUTERNAME")
-        .or_else(|_| env::var("HOSTNAME"))
-        .map(|value| normalize(value, 120))
-        .unwrap_or_default()
 }
 
 pub(crate) fn local_os_name() -> String {
@@ -3754,6 +3751,9 @@ impl SqliteStore {
             .join(&board_id)
             .join(format!("{media_id}.{extension}"));
         let absolute_path = self.data_dir.join(&relative_path);
+        // Capture observes the old file metadata with the old DB row, or the
+        // new pair. File copying/hashing in backup does not hold this mutex.
+        let conn = self.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
         if let Some(parent) = absolute_path.parent() {
             fs::create_dir_all(parent).map_err(|e| format!("media_dir_create_failed:{e}"))?;
         }
@@ -3772,7 +3772,6 @@ impl SqliteStore {
             "archivedAtMs": archived_at_ms
         });
         let payload_json = serde_json::to_string(&payload).map_err(|e| format!("payload_encode_failed:{e}"))?;
-        let conn = self.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
         conn.execute(
             "INSERT INTO board_media_files
              (tenant_id, board_id, post_id, media_id, storage_path, local_path, content_type, file_name, size, expires_at_ms, archived_at_ms, payload_json)
@@ -6259,17 +6258,24 @@ fn start_service() -> Result<(
     let thread_browser_links = Arc::clone(&browser_links);
     let thread_key = pairing_key.clone();
 
+    let request_handler = Arc::new(move |request| {
+        handle_request(
+            request,
+            Arc::clone(&thread_store),
+            Arc::clone(&thread_sync_manager),
+            Arc::clone(&thread_device_sync_manager),
+            Arc::clone(&thread_student_record_mcp_manager),
+            Arc::clone(&thread_browser_links),
+            thread_key.clone(),
+        );
+    });
+    let backup_handler = Arc::clone(&request_handler);
+    let backup_requests = backup_http_worker::BackupHttpWorker::start(move |request| backup_handler(request))?;
     thread::spawn(move || {
         for request in server.incoming_requests() {
-            handle_request(
-                request,
-                Arc::clone(&thread_store),
-                Arc::clone(&thread_sync_manager),
-                Arc::clone(&thread_device_sync_manager),
-                Arc::clone(&thread_student_record_mcp_manager),
-                Arc::clone(&thread_browser_links),
-                thread_key.clone(),
-            );
+            if let Some(request) = backup_requests.dispatch_or_return(request) {
+                request_handler(request);
+            }
         }
     });
 
@@ -6651,6 +6657,8 @@ fn create_teacher_popup(
     .on_new_window(move |nested_url, nested_features| {
         create_teacher_popup(nested_app.clone(), nested_url, nested_features)
     });
+    #[cfg(target_os = "macos")]
+    let builder = builder.initialization_script(include_str!("desktop_local_transport.js"));
     match builder.build() {
         Ok(window) => tauri::webview::NewWindowResponse::Create { window },
         Err(error) => {
@@ -6681,6 +6689,8 @@ async fn create_teacher_home_webview(app: tauri::AppHandle, options: TeacherHome
         .disable_drag_drop_handler()
         .devtools(false)
         .on_new_window(move |popup_url, features| create_teacher_popup(popup_app.clone(), popup_url, features));
+    #[cfg(target_os = "macos")]
+    let builder = builder.initialization_script(include_str!("desktop_local_transport.js"));
     window.add_child(
         builder,
         tauri::LogicalPosition::new(options.x, options.y),
@@ -6689,31 +6699,27 @@ async fn create_teacher_home_webview(app: tauri::AppHandle, options: TeacherHome
 }
 
 #[tauri::command]
-fn get_device_sync_status(state: tauri::State<'_, AppState>) -> Value {
-    let manager = state
-        .device_sync_manager
-        .lock()
-        .ok()
-        .and_then(|manager| manager.clone())
-        .ok_or_else(|| "device_sync_unavailable".to_string());
-    match manager.and_then(|manager| manager.status()) {
-        Ok(status) => status,
-        Err(error) => json!({ "ok": false, "connected": false, "error": error }),
-    }
+async fn get_device_sync_status(state: tauri::State<'_, AppState>) -> Result<Value, String> {
+    let Some(manager) = state.device_sync_manager.lock().ok().and_then(|manager| manager.clone()) else {
+        return Ok(json!({ "ok": false, "connected": false, "error": "device_sync_unavailable" }));
+    };
+    Ok(match tauri::async_runtime::spawn_blocking(move || manager.status()).await {
+        Ok(Ok(status)) => status,
+        Ok(Err(error)) => json!({ "ok": false, "connected": false, "error": error }),
+        Err(_) => json!({ "ok": false, "connected": false, "error": "device_sync_status_failed" }),
+    })
 }
 
 #[tauri::command]
-fn run_device_sync_now(state: tauri::State<'_, AppState>) -> Value {
-    let manager = state
-        .device_sync_manager
-        .lock()
-        .ok()
-        .and_then(|manager| manager.clone())
-        .ok_or_else(|| "device_sync_unavailable".to_string());
-    match manager.and_then(|manager| manager.run_once(true)) {
-        Ok(status) => status,
-        Err(error) => json!({ "ok": false, "error": error }),
-    }
+async fn run_device_sync_now(state: tauri::State<'_, AppState>) -> Result<Value, String> {
+    let Some(manager) = state.device_sync_manager.lock().ok().and_then(|manager| manager.clone()) else {
+        return Ok(json!({ "ok": false, "error": "device_sync_unavailable" }));
+    };
+    Ok(match tauri::async_runtime::spawn_blocking(move || manager.run_once(true)).await {
+        Ok(Ok(status)) => status,
+        Ok(Err(error)) => json!({ "ok": false, "error": error }),
+        Err(_) => json!({ "ok": false, "error": "device_sync_failed" }),
+    })
 }
 
 #[tauri::command]
@@ -6762,7 +6768,8 @@ fn get_desktop_preferences(state: tauri::State<'_, AppState>) -> Value {
     json!({
         "ok": true,
         "startWithWindows": value.start_with_windows,
-        "keepRunningOnClose": value.keep_running_on_close
+        "keepRunningOnClose": value.keep_running_on_close,
+        "autostartError": state.preferences.startup_error()
     })
 }
 
@@ -6776,7 +6783,8 @@ fn set_desktop_preference(
         Ok(value) => json!({
             "ok": true,
             "startWithWindows": value.start_with_windows,
-            "keepRunningOnClose": value.keep_running_on_close
+            "keepRunningOnClose": value.keep_running_on_close,
+            "autostartError": state.preferences.startup_error()
         }),
         Err(error) => json!({ "ok": false, "error": error }),
     }
@@ -6812,7 +6820,10 @@ async fn get_backup_status(
 async fn get_backup_storage_overview(
     state: tauri::State<'_, AppState>,
     tenant_id: String,
+    force_refresh: Option<bool>,
 ) -> Result<Value, String> {
+    // The Webview owns the 30-second cache; each native invocation is a fresh scan.
+    let _ = force_refresh;
     let Some(store) = state.store.lock().ok().and_then(|store| store.clone()) else {
         return Ok(json!({ "ok": false, "error": "local_store_unavailable" }));
     };
@@ -6870,36 +6881,39 @@ async fn undo_legacy_backup_cleanup(
 }
 
 #[tauri::command]
-fn set_backup_folder(state: tauri::State<'_, AppState>, tenant_id: String, folder_path: String) -> Value {
-    state
-        .store
-        .lock()
-        .ok()
-        .and_then(|store| store.clone())
-        .and_then(|store| backup::set_folder(&store, tenant_id, folder_path).ok())
-        .unwrap_or_else(|| json!({ "ok": false, "error": "backup_folder_set_failed" }))
+async fn set_backup_folder(state: tauri::State<'_, AppState>, tenant_id: String, folder_path: String) -> Result<Value, String> {
+    let Some(store) = state.store.lock().ok().and_then(|store| store.clone()) else {
+        return Ok(json!({ "ok": false, "error": "local_store_unavailable" }));
+    };
+    Ok(match tauri::async_runtime::spawn_blocking(move || backup::set_folder(&store, tenant_id, folder_path)).await {
+        Ok(Ok(value)) => value,
+        Ok(Err(error)) => json!({ "ok": false, "error": error }),
+        Err(_) => json!({ "ok": false, "error": "backup_folder_set_failed" }),
+    })
 }
 
 #[tauri::command]
-fn run_local_backup(state: tauri::State<'_, AppState>, tenant_id: String) -> Value {
-    state
-        .store
-        .lock()
-        .ok()
-        .and_then(|store| store.clone())
-        .and_then(|store| backup::run_now(&store, tenant_id).ok())
-        .unwrap_or_else(|| json!({ "ok": false, "error": "backup_run_failed" }))
+async fn run_local_backup(state: tauri::State<'_, AppState>, tenant_id: String) -> Result<Value, String> {
+    let Some(store) = state.store.lock().ok().and_then(|store| store.clone()) else {
+        return Ok(json!({ "ok": false, "error": "local_store_unavailable" }));
+    };
+    Ok(match tauri::async_runtime::spawn_blocking(move || backup::run_now(&store, tenant_id)).await {
+        Ok(Ok(value)) => value,
+        Ok(Err(error)) => json!({ "ok": false, "error": error }),
+        Err(_) => json!({ "ok": false, "error": "backup_run_failed" }),
+    })
 }
 
 #[tauri::command]
-fn discover_backup_tenants(state: tauri::State<'_, AppState>, folder_path: String) -> Value {
-    state
-        .store
-        .lock()
-        .ok()
-        .and_then(|store| store.clone())
-        .and_then(|store| backup::discover_tenants(&store, folder_path).ok())
-        .unwrap_or_else(|| json!({ "ok": false, "error": "backup_discovery_failed" }))
+async fn discover_backup_tenants(state: tauri::State<'_, AppState>, folder_path: String) -> Result<Value, String> {
+    let Some(store) = state.store.lock().ok().and_then(|store| store.clone()) else {
+        return Ok(json!({ "ok": false, "error": "local_store_unavailable" }));
+    };
+    Ok(match tauri::async_runtime::spawn_blocking(move || backup::discover_tenants(&store, folder_path)).await {
+        Ok(Ok(value)) => value,
+        Ok(Err(error)) => json!({ "ok": false, "error": error }),
+        Err(_) => json!({ "ok": false, "error": "backup_discovery_failed" }),
+    })
 }
 
 #[tauri::command]
@@ -6919,41 +6933,43 @@ async fn list_local_backups(
 }
 
 #[tauri::command]
-fn preview_local_backup_restore(
+async fn preview_local_backup_restore(
     state: tauri::State<'_, AppState>,
     tenant_id: String,
     manifest_path: String,
-) -> Value {
+) -> Result<Value, String> {
     let store = match state.store.lock().ok().and_then(|store| store.clone()) {
         Some(store) => store,
-        None => return json!({ "ok": false, "error": "local_store_unavailable" }),
+        None => return Ok(json!({ "ok": false, "error": "local_store_unavailable" })),
     };
-    match backup::restore_preview(
+    Ok(match tauri::async_runtime::spawn_blocking(move || backup::restore_preview(
         &store,
         json!({ "tenantId": tenant_id, "manifestPath": manifest_path }),
-    ) {
-        Ok(value) => value,
-        Err(error) => json!({ "ok": false, "error": error }),
-    }
+    )).await {
+        Ok(Ok(value)) => value,
+        Ok(Err(error)) => json!({ "ok": false, "error": error }),
+        Err(_) => json!({ "ok": false, "error": "backup_restore_preview_failed" }),
+    })
 }
 
 #[tauri::command]
-fn restore_local_backup(
+async fn restore_local_backup(
     state: tauri::State<'_, AppState>,
     tenant_id: String,
     manifest_path: String,
-) -> Value {
+) -> Result<Value, String> {
     let store = match state.store.lock().ok().and_then(|store| store.clone()) {
         Some(store) => store,
-        None => return json!({ "ok": false, "error": "local_store_unavailable" }),
+        None => return Ok(json!({ "ok": false, "error": "local_store_unavailable" })),
     };
-    match backup::restore(
+    Ok(match tauri::async_runtime::spawn_blocking(move || backup::restore(
         &store,
         json!({ "tenantId": tenant_id, "manifestPath": manifest_path }),
-    ) {
-        Ok(value) => value,
-        Err(error) => json!({ "ok": false, "error": error }),
-    }
+    )).await {
+        Ok(Ok(value)) => value,
+        Ok(Err(error)) => json!({ "ok": false, "error": error }),
+        Err(_) => json!({ "ok": false, "error": "backup_restore_failed" }),
+    })
 }
 
 #[tauri::command]
@@ -7517,6 +7533,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            desktop_local_transport::teacher_local_request,
             get_service_status,
             get_cloud_sync_status,
             get_device_connection_status,
