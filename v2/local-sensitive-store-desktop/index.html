@@ -369,7 +369,7 @@
               </header>
               <div class="backup-storage-total" id="backupStorageTotalSummary"><div><span>백업 폴더 총 논리 크기</span><strong id="backupStorageTotal">-</strong></div><p>아래 항목을 중복 없이 합산한 파일 크기입니다. OneDrive 할당량이나 이 PC의 실제 디스크 사용량과는 다를 수 있습니다.</p><small id="backupStorageScannedAt">아직 확인하지 않았습니다.</small></div>
               <dl class="backup-storage-metrics" id="backupStorageBreakdown">
-                <div><dt>v5 DB 백업</dt><dd id="backupStorageDatabase">-</dd></div>
+                <div><dt>v5 시점별 DB 사본</dt><dd id="backupStorageDatabase">-</dd></div>
                 <div><dt>v5 백업 정보</dt><dd id="backupStorageMetadata">-</dd></div>
                 <div><dt>이전 방식 백업 전체</dt><dd id="backupStorageLegacy">-</dd></div>
                 <div><dt>중복 제거 객체</dt><dd id="backupStorageObjects">-</dd></div>
@@ -380,11 +380,15 @@
                 <div><dt>기타 파일</dt><dd id="backupStorageOther">-</dd></div>
               </dl>
               <p class="backup-storage-quarantine-note" id="backupStorageQuarantineNote">격리 파일도 정리되기 전까지 백업 폴더 용량에 포함됩니다.</p>
+              <section class="backup-manual-manager" id="backupManualManager" aria-labelledby="backupManualTitle">
+                <header><div><h3 id="backupManualTitle">수동 백업</h3><strong id="backupManualSummary">-</strong></div><p>최대 10개를 보관하며 11번째 생성 직후 가장 오래된 정상 수동 백업을 정리합니다. DB는 시점마다 전체 사본이고, 같은 첨부파일은 내용 기준 객체 하나를 함께 사용합니다.</p></header>
+                <div class="backup-manual-list" id="backupManualBackups" aria-live="polite"><p>수동 백업을 확인하고 있습니다.</p></div>
+              </section>
               <div class="backup-storage-reference" id="backupStorageOriginalReference"><span>참고 · 현재 첨부 원본 <strong id="backupStorageOriginal">-</strong></span><p>현재 자료의 첨부 크기이며 위 합계에 더하지 않습니다. 원본과 중복 제거 객체의 용량이 같아도 정상일 수 있습니다.</p></div>
               <div class="backup-storage-large-files" id="backupStorageLargeFiles"><p>100MB 이상 첨부파일이 있으면 여기에 표시합니다. 원본은 자동으로 줄이거나 삭제하지 않습니다.</p></div>
-              <details class="backup-storage-policy" id="backupStoragePolicy"><summary>보관 기준 자세히</summary><p>최근 10개, 30일간 일별 1개, 12개월간 월별 1개와 복원 전 5개를 자동 보관합니다. 수동 백업과 동기화에 필요한 세대는 유지합니다. 정상 v5 백업을 검증한 뒤 안전한 이전 방식 백업만 30일 격리하며, 그동안 되돌릴 수 있습니다. 격리 만료일 이후 앱 시작 시와 실행 중 하루 한 번 안전 조건을 확인한 뒤 정리합니다. 파일 상태를 완전히 확인하지 못하면 정리를 보류합니다.</p></details>
+              <details class="backup-storage-policy" id="backupStoragePolicy"><summary>보관 기준 자세히</summary><p>자동·기기 동기화 백업은 최근 10개, 30일간 일별 1개, 12개월간 월별 1개를 보관하고 복원 전 보호 백업은 5개를 유지합니다. 정상 수동 백업은 최신 10개를 보관하며 각 항목을 직접 삭제할 수도 있습니다. 동기화에 필요한 세대는 이 상한과 별도로 보호합니다. 정상 v5 백업을 검증한 뒤 안전한 이전 방식 백업만 30일 격리하며, 파일 상태를 완전히 확인하지 못하면 정리를 보류합니다.</p></details>
               <div class="backup-storage-actions"><button class="secondary-action" id="backupStorageRefresh" type="button">용량 새로고침</button><button class="primary-action" id="backupLegacyUndo" type="button" disabled>자동 격리 되돌리기</button></div>
-              <aside class="local-reader-tutorial" id="backupStorageTutorial" role="region" aria-label="백업 저장공간 안내" hidden><header><span id="backupStorageTutorialStep">1 / 4</span><button id="backupStorageTutorialClose" type="button" aria-label="백업 저장공간 안내 닫기"><i class="fa-solid fa-xmark"></i></button></header><h2 id="backupStorageTutorialTitle">백업 저장공간</h2><p id="backupStorageTutorialCopy"></p><footer><button id="backupStorageTutorialNext" type="button">다음</button></footer></aside>
+              <aside class="local-reader-tutorial" id="backupStorageTutorial" role="region" aria-label="백업 저장공간 안내" hidden><header><span id="backupStorageTutorialStep">1 / 5</span><button id="backupStorageTutorialClose" type="button" aria-label="백업 저장공간 안내 닫기"><i class="fa-solid fa-xmark"></i></button></header><h2 id="backupStorageTutorialTitle">백업 저장공간</h2><p id="backupStorageTutorialCopy"></p><footer><button id="backupStorageTutorialNext" type="button">다음</button></footer></aside>
             </section>
 
             <section class="device-conflict-viewer" id="deviceConflictViewer" aria-labelledby="deviceConflictTitle" hidden>
@@ -431,6 +435,16 @@
                 <p id="backupCleanupConfirmSummary">30일 보관 중인 이전 방식 백업을 원래 위치로 복원합니다.</p>
                 <aside><i class="fa-solid fa-shield-halved" aria-hidden="true"></i><span>격리 기록과 파일 지문이 정확히 일치하는 항목만 되돌립니다. 달라진 항목은 삭제하거나 덮어쓰지 않고 검토 필요로 남깁니다.</span></aside>
                 <div><button class="secondary-action" value="cancel" type="submit">취소</button><button class="primary-action" value="confirm" type="submit">격리 되돌리기</button></div>
+              </form>
+            </dialog>
+            <dialog class="backup-confirm-dialog" id="backupManualDeleteConfirmDialog" aria-labelledby="backupManualDeleteConfirmTitle">
+              <form method="dialog">
+                <span class="backup-confirm-icon is-danger" aria-hidden="true"><i class="fa-solid fa-trash-can"></i></span>
+                <h2 id="backupManualDeleteConfirmTitle">이 수동 백업을 삭제할까요?</h2>
+                <p>선택한 복원 시점의 DB 사본과 백업 정보가 제거됩니다.</p>
+                <dl><div><dt>백업 시점</dt><dd id="backupManualDeleteDate">-</dd></div><div><dt>원본 PC</dt><dd id="backupManualDeleteSource">-</dd></div><div><dt>차지한 용량</dt><dd id="backupManualDeleteBytes">-</dd></div></dl>
+                <aside class="is-danger"><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i><span>앱 안에서는 되돌릴 수 없습니다. 다른 백업이나 현재 자료가 쓰는 첨부 객체는 함께 삭제하지 않습니다.</span></aside>
+                <div><button class="secondary-action" value="cancel" type="submit">취소</button><button class="backup-confirm-danger" value="confirm" type="submit">수동 백업 삭제</button></div>
               </form>
             </dialog>
           </section>

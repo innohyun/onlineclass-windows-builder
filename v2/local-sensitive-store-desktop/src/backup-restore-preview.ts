@@ -2,6 +2,7 @@ import { confirmBackupRestore } from "./backup-restore-confirmation";
 import { renderDeviceSyncStatus } from "./device-sync-ui";
 
 type PreviewBackup = {
+  kind: "manual" | "scheduled" | "auto_sync";
   date: string;
   relation: string;
   pc: string;
@@ -15,12 +16,18 @@ type PreviewBackup = {
 };
 
 const backups: PreviewBackup[] = [
-  { date: "2026년 8월 3일 오후 5:58", relation: "이 PC", pc: "SONG", os: "Windows 11", care: 327, attendance: 93, learning: 874, studentRecord: 174, board: 39, attachments: 248 },
-  { date: "2026년 8월 2일 오후 5:58", relation: "이 PC", pc: "SONG", os: "Windows 11", care: 322, attendance: 91, learning: 861, studentRecord: 172, board: 38, attachments: 245 },
-  { date: "2026년 8월 1일 오후 5:58", relation: "이 PC", pc: "SONG", os: "Windows 11", care: 318, attendance: 89, learning: 842, studentRecord: 170, board: 37, attachments: 239 },
-  { date: "2026년 7월 31일 오후 5:58", relation: "이 PC", pc: "SONG", os: "Windows 11", care: 310, attendance: 87, learning: 823, studentRecord: 167, board: 36, attachments: 231 },
-  { date: "2026년 7월 30일 오후 5:58", relation: "다른 PC", pc: "SHONG-KWS", os: "Windows 11", care: 305, attendance: 85, learning: 812, studentRecord: 165, board: 35, attachments: 226 },
+  { kind: "manual", date: "2026년 8월 3일 오후 5:58", relation: "이 PC", pc: "SONG", os: "Windows 11", care: 327, attendance: 93, learning: 874, studentRecord: 174, board: 39, attachments: 248 },
+  { kind: "scheduled", date: "2026년 8월 2일 오후 5:58", relation: "이 PC", pc: "SONG", os: "Windows 11", care: 322, attendance: 91, learning: 861, studentRecord: 172, board: 38, attachments: 245 },
+  { kind: "auto_sync", date: "2026년 8월 1일 오후 5:58", relation: "이 PC", pc: "SONG", os: "Windows 11", care: 318, attendance: 89, learning: 842, studentRecord: 170, board: 37, attachments: 239 },
+  { kind: "scheduled", date: "2026년 7월 31일 오후 5:58", relation: "이 PC", pc: "SONG", os: "Windows 11", care: 310, attendance: 87, learning: 823, studentRecord: 167, board: 36, attachments: 231 },
+  { kind: "auto_sync", date: "2026년 7월 30일 오후 5:58", relation: "다른 PC", pc: "SHONG-KWS", os: "Windows 11", care: 305, attendance: 85, learning: 812, studentRecord: 165, board: 35, attachments: 226 },
 ];
+
+function backupKindLabel(kind: PreviewBackup["kind"]) {
+  if (kind === "manual") return "수동";
+  if (kind === "auto_sync") return "기기 동기화";
+  return "자동";
+}
 
 function byId<T extends HTMLElement>(id: string) {
   const element = document.getElementById(id);
@@ -34,7 +41,7 @@ function listMarkup(selectedIndex: number) {
       <span class="backup-list-row__radio" aria-hidden="true"></span>
       <span class="backup-list-row__device" aria-hidden="true"><i class="fa-solid fa-desktop"></i></span>
       <span class="backup-list-row__main">
-        <strong class="backup-list-row__time"><span>${backup.date}</span>${index === 0 ? '<span class="backup-list-row__badge">최신</span>' : ""}</strong>
+        <strong class="backup-list-row__time"><span>${backup.date}</span><span class="backup-list-row__badge backup-list-row__badge--kind">${backupKindLabel(backup.kind)}</span>${index === 0 ? '<span class="backup-list-row__badge">최신</span>' : ""}</strong>
         <span class="backup-list-row__meta">${backup.relation} · ${backup.pc} · ${backup.os}</span>
         <span class="backup-list-row__counts">관찰·상담 ${backup.care}건 · 출결·증빙 ${backup.attendance}건 · 평가·학습 ${backup.learning}건 · 학생부 ${backup.studentRecord}건 · 게시판 ${backup.board}건 · 첨부 ${backup.attachments}개</span>
       </span>

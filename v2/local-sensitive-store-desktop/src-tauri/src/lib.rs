@@ -53,7 +53,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-09-05.5-backup-sync-optimization";
+pub(crate) const SERVICE_VERSION: &str = "2026-09-06.1-manual-backup-retention";
 const WORK_MEETING_ROOT_PAGE_ID: &str = "classaimate:work-meeting-minutes";
 const WORK_MEETING_ROOT_TITLE: &str = "업무 회의록";
 const WORK_MEETING_ROOT_INTRO: &str = "모바일에서 확정한 업무 회의록이 자동으로 들어옵니다.";
@@ -6933,6 +6933,22 @@ async fn list_local_backups(
 }
 
 #[tauri::command]
+async fn delete_manual_backup(
+    state: tauri::State<'_, AppState>,
+    tenant_id: String,
+    manifest_path: String,
+) -> Result<Value, String> {
+    let Some(store) = state.store.lock().ok().and_then(|store| store.clone()) else {
+        return Ok(json!({ "ok": false, "error": "local_store_unavailable" }));
+    };
+    Ok(match tauri::async_runtime::spawn_blocking(move || backup::delete_manual_backup(&store, tenant_id, manifest_path)).await {
+        Ok(Ok(value)) => value,
+        Ok(Err(error)) => json!({ "ok": false, "error": error }),
+        Err(_) => json!({ "ok": false, "error": "backup_manual_delete_failed" }),
+    })
+}
+
+#[tauri::command]
 async fn preview_local_backup_restore(
     state: tauri::State<'_, AppState>,
     tenant_id: String,
@@ -7558,6 +7574,7 @@ pub fn run() {
             run_local_backup,
             discover_backup_tenants,
             list_local_backups,
+            delete_manual_backup,
             preview_local_backup_restore,
             restore_local_backup,
             get_local_overview,

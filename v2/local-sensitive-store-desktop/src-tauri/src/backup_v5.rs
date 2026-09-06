@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 pub(crate) const SNAPSHOT_VERSION: i64 = 5;
 const RECENT_KEEP: usize = 10;
+pub(crate) const MANUAL_KEEP: usize = 10;
 const DAILY_KEEP_DAYS: i64 = 30;
 const MONTHLY_KEEP_MONTHS: i32 = 12;
 const PRE_RESTORE_KEEP: usize = 5;
@@ -35,7 +36,7 @@ pub(crate) use legacy::{
     legacy_cleanup_summary_from_scan, legacy_quarantine_summary, maintain_legacy_quarantine,
     purge_legacy_quarantine, quarantine_legacy_snapshots, undo_legacy_quarantine,
 };
-pub(crate) use retention::prune_snapshots;
+pub(crate) use retention::{prune_manual_snapshots, prune_snapshots};
 pub(crate) use storage::{scan_storage, StorageScan};
 
 fn json_file(path: &Path) -> Option<Value> {

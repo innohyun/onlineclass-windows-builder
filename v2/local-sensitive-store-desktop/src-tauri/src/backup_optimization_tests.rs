@@ -418,3 +418,91 @@ fn backup_maintenance_error_does_not_invalidate_committed_snapshot() {
     drop(store);
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn manual_backup_creation_enforces_limit_even_when_daily_maintenance_already_ran() {
+    let (root, store) = fixture();
+    edit(&store, "manual retention", 1);
+    for _ in 0..11 {
+        assert_eq!(run_now(&store, "qa-sync".into()).unwrap()["ok"], true);
+    }
+    let listed = list_backups(&store, "qa-sync".into(), 50).unwrap();
+    let manual_count = listed["backups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|backup| backup["kind"] == "manual")
+        .count();
+    assert_eq!(manual_count, 10);
+    drop(store);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn explicit_delete_only_accepts_a_manual_snapshot_inside_the_configured_tenant_root() {
+    let (root, store) = fixture();
+    edit(&store, "manual delete", 1);
+    let manual = run_now(&store, "qa-sync".into()).unwrap();
+    let automatic = run_with_kind(&store, "qa-sync".into(), "scheduled", None).unwrap();
+
+    let overview = storage_overview(&store, "qa-sync".into()).unwrap();
+    assert_eq!(overview["manualSnapshotCount"], 1);
+    assert!(overview["manualSnapshotBytes"].as_i64().unwrap() > 0);
+    assert_eq!(overview["manualBackups"].as_array().unwrap().len(), 1);
+    assert_eq!(overview["manualBackups"][0]["backupId"], manual["backupId"]);
+    assert_eq!(
+        delete_manual_backup(&store, "qa-sync".into(), String::new()).unwrap_err(),
+        "backup_manual_delete_manifest_required"
+    );
+    assert_eq!(
+        delete_manual_backup(
+            &store,
+            "qa-sync".into(),
+            root.join("outside-manifest.json").to_string_lossy().into(),
+        )
+        .unwrap_err(),
+        "backup_manifest_outside_configured_root"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        let snapshot = Path::new(manual["manifestPath"].as_str().unwrap())
+            .parent()
+            .unwrap();
+        let alias = snapshot.parent().unwrap().join("manual-symlink");
+        symlink(snapshot, &alias).unwrap();
+        assert_eq!(
+            delete_manual_backup(
+                &store,
+                "qa-sync".into(),
+                alias.join("manifest.json").to_string_lossy().into(),
+            )
+            .unwrap_err(),
+            "backup_manual_delete_symlink_rejected"
+        );
+        fs::remove_file(alias).unwrap();
+    }
+    assert_eq!(
+        delete_manual_backup(
+            &store,
+            "qa-sync".into(),
+            automatic["manifestPath"].as_str().unwrap().into(),
+        )
+        .unwrap_err(),
+        "backup_manual_delete_kind_required"
+    );
+    let deleted = delete_manual_backup(
+        &store,
+        "qa-sync".into(),
+        manual["manifestPath"].as_str().unwrap().into(),
+    )
+    .unwrap();
+    assert_eq!(deleted["ok"], true);
+    assert_eq!(deleted["backupId"], manual["backupId"]);
+    assert!(!Path::new(manual["manifestPath"].as_str().unwrap()).exists());
+    let overview = storage_overview(&store, "qa-sync".into()).unwrap();
+    assert_eq!(overview["manualSnapshotCount"], 0);
+    assert!(overview["manualBackups"].as_array().unwrap().is_empty());
+    drop(store);
+    fs::remove_dir_all(root).unwrap();
+}

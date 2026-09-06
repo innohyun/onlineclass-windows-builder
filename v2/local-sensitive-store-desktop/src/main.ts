@@ -34,7 +34,7 @@ import { initSettingsDashboardPreview } from "./settings-dashboard-preview";
 import { loadDeviceSyncStatus, renderDeviceSyncStatus, runDeviceSyncNow } from "./device-sync-ui";
 import { initDesktopShell } from "./desktop-shell";
 import { initLocalWorkspaces } from "./local-workspaces";
-import { initBackupStorage } from "./backup-storage";
+import { backupKindLabel, initBackupStorage } from "./backup-storage";
 import { initQuickObservation } from "./quick-observation";
 import type { BackupDiscovery, BackupItem, BackupPreview, BackupSource, BackupStatus, CommandResult } from "./backup-types";
 
@@ -852,7 +852,7 @@ function renderBackupRestorePanel() {
           <span class="backup-list-row__device" aria-hidden="true"><i class="fa-solid fa-desktop"></i></span>
           <span class="backup-list-row__main">
             <strong class="backup-list-row__time">
-              <span>${escapeHtml(formatBackupDateTime(backup.createdAtMs))}</span>
+              <span>${escapeHtml(formatBackupDateTime(backup.createdAtMs))}</span><span class="backup-list-row__badge backup-list-row__badge--kind">${escapeHtml(backupKindLabel(backup.kind))}</span>
               ${index === 0 ? `<span class="backup-list-row__badge">최신</span>` : ""}
             </strong>
             <span class="backup-list-row__meta">${escapeHtml(backupSourceListText(backup.source))}</span>
@@ -1216,7 +1216,7 @@ const studentTimeline = initStudentTimeline({ getTenantId: currentBackupTenantId
 const localWorkspaces = initLocalWorkspaces({ getTenantId: currentBackupTenantId });
 const backupStorage = initBackupStorage({
   getTenantId: currentBackupTenantId,
-  isConfigured: () => designPreview === "backup" || backupSnapshot?.configured === true,
+  isConfigured: () => designPreview === "backup" || backupSnapshot?.configured === true, onBackupsChanged: () => loadBackupStatus().catch(renderBackupLoadError),
 });
 initHomeDashboard({
   onViewChange(view, context) {

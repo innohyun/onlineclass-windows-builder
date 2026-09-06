@@ -364,6 +364,12 @@
   font-weight: 850;
 }
 
+.backup-list-row__badge--kind {
+  background: #f4f0ff;
+  border-color: #d8c9ff;
+  color: #5e35a8;
+}
+
 .backup-list-row__meta {
   color: #3e4f69 !important;
   font-size: 12px !important;
@@ -554,6 +560,7 @@
 .backup-confirm-dialog::backdrop { background: rgba(9, 23, 48, .55); backdrop-filter: blur(2px); }
 .backup-confirm-dialog form { display: grid; justify-items: center; padding: 30px; text-align: center; }
 .backup-confirm-icon { width: 48px; height: 48px; display: grid; place-items: center; border-radius: 50%; background: #e9f2ff; color: var(--backup-blue); font-size: 20px; }
+.backup-confirm-icon.is-danger { color: #b42318; background: #fff0ee; }
 .backup-confirm-dialog h2 { margin: 16px 0 8px; font-size: 21px; }
 .backup-confirm-dialog > form > p { margin: 0; color: var(--backup-muted); font-size: 13px; line-height: 1.5; }
 .backup-confirm-dialog dl { width: 100%; display: grid; gap: 8px; margin: 20px 0 14px; text-align: left; }
@@ -561,7 +568,10 @@
 .backup-confirm-dialog dt { color: #6a7890; font-size: 12px; }
 .backup-confirm-dialog dd { margin: 0; color: var(--backup-navy); font-size: 12px; font-weight: 800; overflow-wrap: anywhere; }
 .backup-confirm-dialog aside { display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 9px; border: 1px solid #bfdbfe; border-radius: 8px; padding: 12px; color: #1d68c9; background: #f1f7ff; font-size: 11px; line-height: 1.5; text-align: left; }
+.backup-confirm-dialog aside.is-danger { border-color: #fecaca; color: #a32017; background: #fff5f4; }
 .backup-confirm-dialog form > div:last-child { width: 100%; display: grid; grid-template-columns: 1fr 1.45fr; gap: 9px; margin-top: 20px; }
+.backup-confirm-danger { border: 1px solid #b42318; border-radius: 7px; color: #fff; background: #b42318; font-weight: 850; }
+.backup-confirm-danger:hover { background: #951d15; }
 
 .backup-storage-panel {
   display: grid;
@@ -599,6 +609,20 @@
 .backup-storage-large-files li { display: flex; justify-content: space-between; gap: 14px; padding: 7px 10px; border-radius: 6px; background: #f6f8fb; color: #46556d; font-size: 11px; }
 .backup-storage-large-files li span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .backup-storage-large-files li b { flex: none; color: var(--backup-navy); }
+.backup-manual-manager { display: grid; gap: 11px; border: 1px solid #cfe0f7; border-radius: 8px; padding: 14px; background: #f8fbff; }
+.backup-manual-manager > header { display: grid; gap: 6px; }
+.backup-manual-manager > header > div { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px; }
+.backup-manual-manager h3 { margin: 0; color: var(--backup-navy); font-size: 14px; }
+.backup-manual-manager header strong { color: var(--backup-blue); font-size: 14px; }
+.backup-manual-manager header p, .backup-manual-list > p { margin: 0; color: var(--backup-muted); font-size: 11px; line-height: 1.55; }
+.backup-manual-list { display: grid; gap: 6px; }
+.backup-manual-item { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; border: 1px solid #dbe6f4; border-radius: 7px; padding: 9px 10px 9px 12px; background: #fff; }
+.backup-manual-item > span { min-width: 0; display: grid; gap: 3px; }
+.backup-manual-item strong { overflow: hidden; color: var(--backup-navy); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.backup-manual-item small { overflow: hidden; color: #677790; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.backup-manual-item button { min-width: 54px; min-height: 40px; border: 1px solid #f1b8b3; border-radius: 6px; padding: 7px 10px; color: #a32017; background: #fff7f6; font: inherit; font-size: 11px; font-weight: 850; cursor: pointer; }
+.backup-manual-item button:hover:not(:disabled) { background: #fff0ee; }
+.backup-manual-item button:disabled { opacity: .55; cursor: wait; }
 .backup-storage-policy summary { cursor: pointer; color: #34527e; font-size: 12px; font-weight: 800; }
 .backup-storage-policy p { margin-top: 8px; }
 .backup-storage-actions { display: flex; justify-content: flex-end; gap: 8px; }
@@ -648,6 +672,8 @@
   .backup-device-sync-metrics div:nth-child(odd) { border-left: 0; padding-left: 0; }
   .backup-device-sync-actions { display: grid; }
   .backup-storage-panel { padding: 18px 16px; }
+  .backup-manual-item { grid-template-columns: minmax(0, 1fr) 58px; gap: 8px; }
+  .backup-manual-item button { min-height: 44px; padding-inline: 8px; }
   .backup-storage-panel > header { flex-wrap: wrap; }
   .backup-storage-metrics { grid-template-columns: 1fr; }
   .backup-storage-metrics div, .backup-storage-metrics div:nth-child(3n + 1) { border-left: 0; border-top: 1px solid var(--backup-border); }

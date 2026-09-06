@@ -8,6 +8,8 @@ pub(crate) struct StorageScan {
     pub(crate) database_history_bytes: i64,
     pub(crate) legacy_snapshot_count: i64,
     pub(crate) legacy_snapshot_bytes: i64,
+    pub(crate) manual_snapshot_count: i64,
+    pub(crate) manual_snapshot_bytes: i64,
     pub(crate) storage_breakdown: Value,
     pub(crate) total_logical_bytes: i64,
     pub(crate) scan_complete: bool,
@@ -86,7 +88,7 @@ pub(crate) fn scan_storage(tenant_dir: &Path) -> StorageScan {
     };
     let mut files = Vec::new();
     collect_files(tenant_dir, tenant_dir, &mut files, &mut scan.errors);
-    let mut snapshots = HashMap::<String, (i64, PathBuf)>::new();
+    let mut snapshots = HashMap::<String, (i64, PathBuf, String)>::new();
     for (relative, _) in &files {
         let parts = relative
             .iter()
@@ -122,7 +124,15 @@ pub(crate) fn scan_storage(tenant_dir: &Path) -> StorageScan {
         if version < SNAPSHOT_VERSION {
             scan.legacy_snapshot_count += 1;
         }
-        snapshots.insert(parts[1].to_string(), (version, database.unwrap()));
+        let kind = manifest
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or("legacy")
+            .to_string();
+        if version == SNAPSHOT_VERSION && kind == "manual" {
+            scan.manual_snapshot_count += 1;
+        }
+        snapshots.insert(parts[1].to_string(), (version, database.unwrap(), kind));
     }
     let mut missing_databases = snapshots.keys().cloned().collect::<HashSet<_>>();
     for (relative, size) in files {
@@ -165,7 +175,7 @@ pub(crate) fn scan_storage(tenant_dir: &Path) -> StorageScan {
             let snapshot_dir = tenant_dir.join("snapshots").join(parts[1].as_ref());
             let bytes = scan.snapshot_bytes.entry(snapshot_dir).or_default();
             *bytes = bytes.saturating_add(size);
-            if let Some((version, database)) = snapshots.get(parts[1].as_ref()) {
+            if let Some((version, database, kind)) = snapshots.get(parts[1].as_ref()) {
                 let is_database = relative
                     == Path::new("snapshots")
                         .join(parts[1].as_ref())
@@ -178,6 +188,10 @@ pub(crate) fn scan_storage(tenant_dir: &Path) -> StorageScan {
                     category = "legacySnapshotBytes";
                     scan.legacy_snapshot_bytes = scan.legacy_snapshot_bytes.saturating_add(size);
                 } else {
+                    if kind == "manual" {
+                        scan.manual_snapshot_bytes =
+                            scan.manual_snapshot_bytes.saturating_add(size);
+                    }
                     category = if is_database {
                         "v5DatabaseBytes"
                     } else {

@@ -84,15 +84,7 @@ fn kst_retention_keeps_recent_daily_monthly_and_five_pre_restore() {
             None,
         );
     }
-    let manual = snapshots.join("manual");
-    fs::create_dir_all(&manual).unwrap();
-    fs::write(
-        manual.join("manifest.json"),
-        json!({"version":5,"kind":"manual","createdAtMs":1}).to_string(),
-    )
-    .unwrap();
     prune_snapshots(&root, now, &HashSet::new()).expect("prune snapshots");
-    assert!(manual.exists());
     assert_eq!(
         fs::read_dir(&snapshots)
             .unwrap()
@@ -105,6 +97,37 @@ fn kst_retention_keeps_recent_daily_monthly_and_five_pre_restore() {
     assert!(snapshots.join("auto-29").exists());
     assert!(!snapshots.join("auto-44").exists());
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn manual_retention_keeps_ten_verified_snapshots_and_preserves_unverified_items() {
+    let fixture = FixtureRoot::new("manual-retention");
+    let root = &fixture.0;
+    for index in 0..12 {
+        valid_snapshot(
+            root,
+            &format!("manual-{index:02}"),
+            "manual",
+            100 - index,
+            None,
+        );
+    }
+    let unverified = valid_snapshot(root, "manual-unverified", "manual", 1, None);
+    fs::write(
+        unverified.join("db/local-sensitive.sqlite"),
+        b"changed after sealing",
+    )
+    .unwrap();
+
+    let result = prune_manual_snapshots(root).expect("prune manual snapshots");
+
+    assert_eq!(result["deleted"], 2);
+    assert_eq!(result["retained"], 10);
+    assert_eq!(result["reviewCount"], 1);
+    assert!(root.join("snapshots/manual-09").exists());
+    assert!(!root.join("snapshots/manual-10").exists());
+    assert!(!root.join("snapshots/manual-11").exists());
+    assert!(unverified.exists());
 }
 
 #[test]
@@ -566,6 +589,8 @@ fn storage_breakdown_counts_every_file_once_including_review_and_staging() {
     assert_eq!(scan.storage_breakdown["stagingBytes"], 7);
     assert_eq!(scan.database_history_bytes, 18 + 9);
     assert_eq!(scan.legacy_snapshot_count, 1);
+    assert_eq!(scan.manual_snapshot_count, 1);
+    assert_eq!(scan.manual_snapshot_bytes, directory_size(&modern));
     fs::write(legacy.join("manifest.json"), b"{partial").unwrap();
     let incomplete = scan_storage(root);
     assert!(!incomplete.scan_complete);

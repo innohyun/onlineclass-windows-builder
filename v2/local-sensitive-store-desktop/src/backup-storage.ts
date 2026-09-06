@@ -1,8 +1,8 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { BackupStorageOverview } from './backup-types';
+import type { BackupStorageOverview, ManualBackupItem } from './backup-types';
 
-type Options = { getTenantId: () => string; isConfigured: () => boolean };
-const TUTORIAL_KEY = 'localBackupStorageTutorial:v3';
+type Options = { getTenantId: () => string; isConfigured: () => boolean; onBackupsChanged?: () => void | Promise<void> };
+const TUTORIAL_KEY = 'localBackupStorageTutorial:v4';
 const CACHE_MS = 30_000;
 const DESIGN_PREVIEW = new URLSearchParams(window.location.search).get('designPreview') === 'backup';
 const PREVIEW_STORAGE: BackupStorageOverview = {
@@ -29,6 +29,13 @@ const PREVIEW_STORAGE: BackupStorageOverview = {
   databaseHistoryBytes: 486_000_000,
   legacySnapshotCount: 12,
   legacySnapshotBytes: 3_760_000_000,
+  manualSnapshotCount: 2,
+  manualSnapshotBytes: 648_000_000,
+  retention: { recent: 10, dailyDays: 30, monthlyMonths: 12, preRestore: 5, manual: 10 },
+  manualBackups: [
+    { ok: true, backupId: 'manual-new', createdAtMs: Date.now() - 3_600_000, manifestPath: 'preview/manual-new/manifest.json', snapshotBytes: 324_000_000, source: { pcName: 'SONG', os: 'Windows 11' } },
+    { ok: true, backupId: 'manual-old', createdAtMs: Date.now() - 86_400_000, manifestPath: 'preview/manual-old/manifest.json', snapshotBytes: 324_000_000, source: { pcName: 'SONG', os: 'Windows 11' } },
+  ],
   legacyCleanupCandidateCount: 9,
   legacyReclaimableBytes: 2_940_000_000,
   legacyQuarantineCount: 9,
@@ -62,11 +69,24 @@ function dateText(value?: number) {
   if (!timestamp) return '';
   return new Intl.DateTimeFormat('ko-KR', { month: 'long', day: 'numeric' }).format(new Date(timestamp));
 }
+function dateTimeText(value?: number) {
+  const timestamp = numeric(value);
+  if (!timestamp) return '시각 정보 없음';
+  return new Intl.DateTimeFormat('ko-KR', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(timestamp));
+}
 function escapeHtml(value: string) {
   return String(value || '').replace(/[&<>'"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[character] || character);
 }
 function badge(label: string, tone: 'ok' | 'warning' | 'neutral') {
   const node = required('backupStorageBadge'); node.textContent = label; node.className = `status-badge badge-${tone}`;
+}
+
+export function backupKindLabel(kind?: string) {
+  if (kind === 'manual') return '수동';
+  if (kind === 'pre_restore') return '복원 전 보호';
+  if (kind === 'auto_sync') return '기기 동기화';
+  if (kind === 'scheduled') return '자동';
+  return '이전 방식';
 }
 
 export function initBackupStorage(options: Options) {
@@ -76,6 +96,7 @@ export function initBackupStorage(options: Options) {
   let cache: { tenantId: string; storedAtMs: number; storage: BackupStorageOverview } | null = null;
   const pending = new Map<string, { revision: number; promise: Promise<void> }>();
   let undoBusy = false;
+  let deleteBusy = false;
   let tutorialIndex = -1;
 
   const currentRequest = (tenantId: string, requestRevision: number) => tenantId === options.getTenantId()
@@ -84,12 +105,26 @@ export function initBackupStorage(options: Options) {
   const updateActions = () => {
     const busy = pending.has(options.getTenantId());
     const refreshButton = required<HTMLButtonElement>('backupStorageRefresh');
-    refreshButton.disabled = !options.isConfigured() || busy || undoBusy;
+    refreshButton.disabled = !options.isConfigured() || busy || undoBusy || deleteBusy;
     refreshButton.textContent = busy ? '용량 확인 중…' : '용량 새로고침';
-    required('backupStoragePanel').setAttribute('aria-busy', String(busy || undoBusy));
-    required<HTMLButtonElement>('backupLegacyUndo').disabled = busy || undoBusy
+    required('backupStoragePanel').setAttribute('aria-busy', String(busy || undoBusy || deleteBusy));
+    required<HTMLButtonElement>('backupLegacyUndo').disabled = busy || undoBusy || deleteBusy
       || snapshotTenantId !== options.getTenantId() || !snapshot?.ok
       || !numeric(snapshot.legacyQuarantineCount) || Boolean(snapshot.legacyQuarantineError);
+    required('backupManualBackups').querySelectorAll<HTMLButtonElement>('[data-manual-backup-index]').forEach((button) => {
+      button.disabled = busy || undoBusy || deleteBusy;
+    });
+  };
+
+  const renderManualBackups = (storage: BackupStorageOverview | null, complete: boolean) => {
+    const limit = numeric(storage?.retention?.manual) || 10;
+    const count = numeric(storage?.manualSnapshotCount);
+    const bytes = storage?.manualSnapshotBytes;
+    text('backupManualSummary', storage?.ok ? `${numberText(count)}/${numberText(limit)}개 · ${complete ? byteText(bytes) : '확인 필요'}` : '-');
+    const backups = Array.isArray(storage?.manualBackups) ? storage.manualBackups : [];
+    required('backupManualBackups').innerHTML = backups.length
+      ? backups.map((backup, index) => `<article class="backup-manual-item"><span><strong>${escapeHtml(dateTimeText(backup.createdAtMs))} · ${byteText(backup.snapshotBytes)}</strong><small>${escapeHtml(backup.source?.pcName || 'PC 정보 없음')} · ${escapeHtml(backup.source?.os || '운영체제 정보 없음')}${backup.ok === false ? ' · 확인 필요' : ''}</small></span><button type="button" data-manual-backup-index="${index}">삭제</button></article>`).join('')
+      : `<p>${storage?.ok && complete ? '보관 중인 수동 백업이 없습니다.' : '수동 백업 목록을 확인하지 못했습니다.'}</p>`;
   };
 
   const render = (storage: BackupStorageOverview | null, error = '') => {
@@ -105,6 +140,7 @@ export function initBackupStorage(options: Options) {
       ['backupStorageTotal', 'backupStorageOriginal', 'backupStorageObjects', 'backupStorageDatabase', 'backupStorageMetadata', 'backupStorageLegacy', 'backupStorageReclaimable', 'backupStorageObjectQuarantine', 'backupStorageArchives', 'backupStorageStaging', 'backupStorageOther'].forEach((id) => text(id, failed ? '확인 필요' : '-'));
       text('backupStorageScannedAt', '전체 용량을 아직 확인하지 못했습니다.');
       text('backupStorageQuarantineNote', '격리 파일도 정리되기 전까지 백업 폴더 용량에 포함됩니다.');
+      renderManualBackups(storage, false);
       required('backupStorageLargeFiles').innerHTML = '<p>100MB 이상 첨부파일이 있으면 여기에 표시합니다. 원본은 자동으로 줄이거나 삭제하지 않습니다.</p>';
       updateActions(); return;
     }
@@ -116,13 +152,17 @@ export function initBackupStorage(options: Options) {
       return byteText(value);
     };
     const reviewCount = numeric(storage.legacyQuarantineReviewCount);
+    const manualLimit = numeric(storage.retention?.manual) || 10;
+    const manualOverLimit = numeric(storage.manualSnapshotCount) > manualLimit;
     const quarantineError = String(storage.legacyQuarantineError || '');
-    const healthy = complete && storage.snapshotVersion === 5 && !reviewCount && !quarantineError;
+    const healthy = complete && storage.snapshotVersion === 5 && !reviewCount && !quarantineError && !manualOverLimit;
     badge(healthy ? 'v5 자동 관리' : complete ? '확인 필요' : '용량 일부 미확인', healthy ? 'ok' : 'warning');
     text('backupStorageStatus', !complete
       ? '일부 파일을 읽지 못해 전체 용량을 확정할 수 없습니다. 폴더 접근과 OneDrive 상태를 확인한 뒤 새로고침해 주세요.'
       : quarantineError
         ? `자동 격리 기록을 확인해야 합니다: ${quarantineError}`
+      : manualOverLimit
+          ? `수동 백업이 ${numberText(storage.manualSnapshotCount)}개입니다. 확인할 수 없는 항목은 자동 삭제하지 않으므로 목록에서 직접 확인해 주세요.`
         : reviewCount
           ? `파일 상태가 달라 자동 삭제하지 않은 이전 백업 ${numberText(reviewCount)}개가 있습니다.`
           : '정상 v5 백업을 확인한 뒤 안전한 이전 백업만 30일 동안 자동 격리합니다.');
@@ -142,6 +182,7 @@ export function initBackupStorage(options: Options) {
     const quarantineCount = numeric(storage.legacyQuarantineCount);
     const purgeDate = dateText(storage.legacyQuarantinePurgeAfterMs);
     text('backupStorageReclaimable', `${numberText(quarantineCount)}개 · ${storageBytes(breakdown?.legacyQuarantineBytes)}`);
+    renderManualBackups(storage, complete);
     text('backupStorageQuarantineNote', purgeDate
       ? `격리된 이전 백업은 ${purgeDate} 이후 앱 실행 중 안전 조건을 확인한 뒤 정리합니다. 정리 전까지 이 용량은 계속 포함됩니다.`
       : '격리 파일도 정리되기 전까지 백업 폴더 용량에 포함됩니다. 만료 후 앱 실행 중 안전 조건을 확인한 뒤 정리합니다.');
@@ -195,6 +236,38 @@ export function initBackupStorage(options: Options) {
     return request.promise;
   };
 
+  const deleteManualBackup = async (backup: ManualBackupItem) => {
+    const tenantId = options.getTenantId();
+    const manifestPath = String(backup.manifestPath || '').trim();
+    if (!tenantId || !manifestPath || deleteBusy || snapshotTenantId !== tenantId) return;
+    const dialog = required<HTMLDialogElement>('backupManualDeleteConfirmDialog');
+    dialog.returnValue = '';
+    text('backupManualDeleteDate', dateTimeText(backup.createdAtMs));
+    text('backupManualDeleteSource', [backup.source?.pcName, backup.source?.os].filter(Boolean).join(' · ') || 'PC 정보 없음');
+    text('backupManualDeleteBytes', byteText(backup.snapshotBytes));
+    const confirmed = await new Promise<boolean>((resolve) => {
+      dialog.addEventListener('close', () => resolve(dialog.returnValue === 'confirm'), { once: true });
+      dialog.showModal();
+    });
+    if (!confirmed || tenantId !== options.getTenantId()) return;
+    deleteBusy = true; updateActions();
+    try {
+      const result = await invoke<{ ok?: boolean; deletedBytes?: number; error?: string }>('delete_manual_backup', { tenantId, manifestPath });
+      if (!result?.ok) throw new Error(result?.error || 'backup_manual_delete_failed');
+      invalidate();
+      await Promise.resolve(options.onBackupsChanged?.()).catch(() => undefined);
+      await refresh(true);
+      if (tenantId === options.getTenantId()) {
+        text('backupStorageStatus', `수동 백업 1개(${byteText(result.deletedBytes)})를 삭제했습니다. ${required('backupStorageStatus').textContent || ''}`);
+      }
+    } catch (error) {
+      invalidate(); await refresh(true);
+      if (tenantId === options.getTenantId()) text('backupStorageStatus', `수동 백업 삭제 실패: ${String((error as Error)?.message || error)}. ${required('backupStorageStatus').textContent || ''}`);
+    } finally {
+      deleteBusy = false; updateActions();
+    }
+  };
+
   const undoCleanup = async () => {
     const tenantId = options.getTenantId();
     const quarantineCount = numeric(snapshot?.legacyQuarantineCount);
@@ -226,8 +299,9 @@ export function initBackupStorage(options: Options) {
   let policyWasOpen = false;
   const tutorialSteps = [
     { target: required('backupStorageTotalSummary'), title: '중복 없이 보는 백업 용량', copy: 'DB, 첨부 객체, 이전 백업, 격리 파일을 한 번씩 합산한 논리 크기입니다. 일부 파일을 읽지 못하면 전체 용량을 확정하지 않고 확인 필요로 표시합니다.' },
+    { target: required('backupManualManager'), title: '수동 백업은 최대 10개', copy: 'DB는 시점마다 전체 사본을 만들고 첨부는 같은 내용의 객체를 함께 씁니다. 11번째 정상 수동 백업을 만들면 가장 오래된 항목을 정리하며, 각 행의 삭제 버튼으로 직접 제거할 수도 있습니다.' },
     { target: required('backupStorageOriginalReference'), title: '현재 원본은 참고값', copy: '현재 첨부 원본은 백업 폴더 합계에 더하지 않습니다. 같은 내용은 객체 하나만 보관합니다. 아래 큰 원본 목록도 자동 압축·삭제하지 않습니다.' },
-    { target: policy, title: '격리 중에도 용량은 포함', copy: '격리 파일은 30일이 지나고 앱이 실행 중일 때 안전 조건을 다시 확인한 뒤 정리합니다. 읽지 못하거나 상태가 바뀐 파일은 보류하며, 수동 백업과 동기화에 필요한 세대는 유지합니다.' },
+    { target: policy, title: '격리 중에도 용량은 포함', copy: '격리 파일은 30일이 지나고 앱이 실행 중일 때 안전 조건을 다시 확인한 뒤 정리합니다. 읽지 못하거나 상태가 바뀐 파일과 동기화에 필요한 세대는 자동 삭제하지 않습니다.' },
     { target: required('backupLegacyUndo'), title: '30일 안에는 되돌리기', copy: '자동 격리한 이전 백업이 있으면 이 버튼으로 원래 위치에 되돌릴 수 있습니다. 안내는 버튼을 대신 누르거나 파일을 변경하지 않습니다.' },
   ];
   const clearTutorialTarget = () => required('backupStoragePanel').querySelectorAll('.local-reader-tutorial-target').forEach((node) => node.classList.remove('local-reader-tutorial-target'));
@@ -269,6 +343,11 @@ export function initBackupStorage(options: Options) {
 
   required('backupStorageRefresh').addEventListener('click', () => void refresh(true));
   required('backupLegacyUndo').addEventListener('click', () => void undoCleanup());
+  required('backupManualBackups').addEventListener('click', (event) => {
+    const button = (event.target as HTMLElement | null)?.closest<HTMLButtonElement>('[data-manual-backup-index]');
+    const backup = button ? snapshot?.manualBackups?.[Number(button.dataset.manualBackupIndex || 0)] : null;
+    if (backup) void deleteManualBackup(backup);
+  });
   required('backupStorageHelp').addEventListener('click', openTutorial);
   required('backupStorageTutorialClose').addEventListener('click', () => closeTutorial(false));
   required('backupStorageTutorialNext').addEventListener('click', () => { if (tutorialIndex >= tutorialSteps.length - 1) closeTutorial(true); else { tutorialIndex += 1; renderTutorial(); } });

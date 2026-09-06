@@ -29,6 +29,7 @@
           "run_local_backup",
           "discover_backup_tenants",
           "list_local_backups",
+          "delete_manual_backup",
           "preview_local_backup_restore",
           "restore_local_backup",
           "get_local_overview",

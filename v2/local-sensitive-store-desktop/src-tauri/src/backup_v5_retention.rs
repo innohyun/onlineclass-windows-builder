@@ -58,6 +58,79 @@ fn snapshot_identity(path: &Path, manifest: &Value) -> Option<SnapshotIdentity> 
     Some(identity)
 }
 
+pub(crate) fn prune_manual_snapshots(tenant_dir: &Path) -> Result<Value, String> {
+    let snapshots_root = tenant_dir.join("snapshots");
+    let candidates = snapshot_manifests(tenant_dir, false)
+        .into_iter()
+        .filter_map(|path| {
+            let manifest = json_file(&path)?;
+            (manifest.get("version").and_then(Value::as_i64) == Some(SNAPSHOT_VERSION)
+                && manifest.get("kind").and_then(Value::as_str) == Some("manual")
+                && manifest.get("generation").is_none_or(Value::is_null))
+            .then_some((path, manifest))
+        })
+        .collect::<Vec<_>>();
+    if candidates.len() <= MANUAL_KEEP {
+        return Ok(json!({
+            "ok": true,
+            "limit": MANUAL_KEEP,
+            "retained": candidates.len(),
+            "deleted": 0,
+            "reviewCount": 0
+        }));
+    }
+
+    let mut verified = Vec::new();
+    let mut review_count = 0usize;
+    for (path, manifest) in candidates {
+        let Some(identity) = snapshot_identity(&path, &manifest) else {
+            review_count += 1;
+            continue;
+        };
+        if !verified_snapshot(&path, &manifest)
+            || snapshot_identity(&path, &manifest).as_ref() != Some(&identity)
+        {
+            review_count += 1;
+            continue;
+        }
+        verified.push((
+            path,
+            manifest
+                .get("createdAtMs")
+                .and_then(Value::as_i64)
+                .unwrap_or(0),
+            manifest,
+            identity,
+        ));
+    }
+    verified.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    let retained = verified.len().min(MANUAL_KEEP);
+    let mut deleted = 0usize;
+    for (path, _, manifest, identity) in verified.into_iter().skip(MANUAL_KEEP) {
+        let snapshot = path
+            .parent()
+            .ok_or_else(|| "backup_snapshot_parent_missing".to_string())?;
+        if snapshot.parent() != Some(snapshots_root.as_path()) {
+            return Err("backup_snapshot_prune_scope_invalid".to_string());
+        }
+        if json_file(&path).as_ref() != Some(&manifest)
+            || snapshot_identity(&path, &manifest).as_ref() != Some(&identity)
+        {
+            return Err("backup_snapshot_prune_changed".to_string());
+        }
+        fs::remove_dir_all(snapshot)
+            .map_err(|error| format!("backup_snapshot_prune_failed:{error}"))?;
+        deleted += 1;
+    }
+    Ok(json!({
+        "ok": true,
+        "limit": MANUAL_KEEP,
+        "retained": retained,
+        "deleted": deleted,
+        "reviewCount": review_count
+    }))
+}
+
 pub(crate) fn prune_snapshots(
     tenant_dir: &Path,
     now_ms: i64,

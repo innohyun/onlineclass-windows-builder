@@ -148,6 +148,47 @@ pub(super) fn pinned_sync_generations(
     Ok(pins)
 }
 
+fn manual_backup_summaries(
+    tenant_dir: &Path,
+    tenant_id: &str,
+    scan: &crate::backup_v5::StorageScan,
+) -> Result<Vec<Value>, String> {
+    let mut backups = manifest_paths_in_dir(tenant_dir)?
+        .into_iter()
+        .filter_map(|path| {
+            let manifest = listed_manifest(&path).ok()?;
+            if manifest.get("version").and_then(Value::as_i64)
+                != Some(crate::backup_v5::SNAPSHOT_VERSION)
+                || manifest.get("kind").and_then(Value::as_str) != Some("manual")
+                || manifest.get("tenantId").and_then(Value::as_str) != Some(tenant_id)
+            {
+                return None;
+            }
+            let snapshot_bytes = path
+                .parent()
+                .and_then(|snapshot| scan.snapshot_bytes.get(snapshot))
+                .copied()
+                .unwrap_or(0);
+            Some(json!({
+                "ok": manifest.get("ok").and_then(Value::as_bool).unwrap_or(false),
+                "backupId": manifest.get("backupId").and_then(Value::as_str).unwrap_or(""),
+                "createdAtMs": manifest.get("createdAtMs").and_then(Value::as_i64).unwrap_or(0),
+                "manifestPath": path.to_string_lossy(),
+                "snapshotBytes": snapshot_bytes,
+                "source": manifest.get("source").cloned().unwrap_or_else(|| json!({}))
+            }))
+        })
+        .collect::<Vec<_>>();
+    backups.sort_by(|left, right| {
+        right
+            .get("createdAtMs")
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+            .cmp(&left.get("createdAtMs").and_then(Value::as_i64).unwrap_or(0))
+    });
+    Ok(backups)
+}
+
 pub(crate) fn storage_overview(store: &SqliteStore, tenant_id: String) -> Result<Value, String> {
     let tenant_id = normalize_tenant_id(Some(&Value::String(tenant_id)));
     if tenant_id.is_empty() {
@@ -156,6 +197,7 @@ pub(crate) fn storage_overview(store: &SqliteStore, tenant_id: String) -> Result
     let tenant_dir = configured_tenant_dir(store, &tenant_id)?;
     let _operation = root_operation(store, &tenant_dir)?;
     let scan = crate::backup_v5::scan_storage(&tenant_dir);
+    let manual_backups = manual_backup_summaries(&tenant_dir, &tenant_id, &scan)?;
     let cleanup = crate::backup_v5::legacy_cleanup_summary_from_scan(
         &tenant_dir,
         &pinned_sync_generations(store, &tenant_id)?,
@@ -207,6 +249,9 @@ pub(crate) fn storage_overview(store: &SqliteStore, tenant_id: String) -> Result
         "scanErrors": scan.errors,
         "legacySnapshotCount": scan.legacy_snapshot_count,
         "legacySnapshotBytes": scan.legacy_snapshot_bytes,
+        "manualSnapshotCount": scan.manual_snapshot_count,
+        "manualSnapshotBytes": scan.manual_snapshot_bytes,
+        "manualBackups": manual_backups,
         "legacyReclaimableBytes": cleanup.get("reclaimableBytes").cloned().unwrap_or(json!(0)),
         "legacyCleanupCandidateCount": cleanup.get("candidateCount").cloned().unwrap_or(json!(0)),
         "legacyQuarantineCount": quarantine.get("quarantinedCount").cloned().unwrap_or(json!(0)),
@@ -216,7 +261,138 @@ pub(crate) fn storage_overview(store: &SqliteStore, tenant_id: String) -> Result
         "legacyQuarantineError": quarantine.get("error").cloned().unwrap_or(Value::Null),
         "largeFileThresholdBytes": 100 * 1024 * 1024,
         "largestFiles": largest_files,
-        "retention": { "recent": 10, "dailyDays": 30, "monthlyMonths": 12, "preRestore": 5, "manual": "explicit_delete_only" }
+        "retention": { "recent": 10, "dailyDays": 30, "monthlyMonths": 12, "preRestore": 5, "manual": crate::backup_v5::MANUAL_KEEP }
+    }))
+}
+
+type SnapshotTreeIdentity = Vec<(PathBuf, u64, std::time::SystemTime)>;
+
+fn snapshot_tree_identity(path: &Path) -> Result<(i64, SnapshotTreeIdentity), String> {
+    fn collect(
+        path: &Path,
+        bytes: &mut i64,
+        identity: &mut SnapshotTreeIdentity,
+    ) -> Result<(), String> {
+        let metadata = fs::symlink_metadata(path)
+            .map_err(|error| format!("backup_manual_delete_metadata_failed:{error}"))?;
+        if metadata.file_type().is_symlink() {
+            return Err("backup_manual_delete_symlink_rejected".to_string());
+        }
+        identity.push((
+            path.to_path_buf(),
+            metadata.len(),
+            metadata
+                .modified()
+                .map_err(|error| format!("backup_manual_delete_metadata_failed:{error}"))?,
+        ));
+        if metadata.is_file() {
+            *bytes = bytes.saturating_add(metadata.len().min(i64::MAX as u64) as i64);
+        } else if metadata.is_dir() {
+            for entry in fs::read_dir(path)
+                .map_err(|error| format!("backup_manual_delete_read_failed:{error}"))?
+            {
+                collect(
+                    &entry
+                        .map_err(|error| format!("backup_manual_delete_entry_failed:{error}"))?
+                        .path(),
+                    bytes,
+                    identity,
+                )?;
+            }
+        } else {
+            return Err("backup_manual_delete_file_type_rejected".to_string());
+        }
+        Ok(())
+    }
+    let mut bytes = 0i64;
+    let mut identity = Vec::new();
+    collect(path, &mut bytes, &mut identity)?;
+    identity.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok((bytes, identity))
+}
+
+pub(crate) fn delete_manual_backup(
+    store: &SqliteStore,
+    tenant_id: String,
+    manifest_path: String,
+) -> Result<Value, String> {
+    let tenant_id = normalize_tenant_id(Some(&Value::String(tenant_id)));
+    if tenant_id.is_empty() {
+        return Err("tenant_id_required".to_string());
+    }
+    let tenant_dir = configured_tenant_dir(store, &tenant_id)?;
+    let _operation = root_operation(store, &tenant_dir)?;
+    let requested_manifest = PathBuf::from(manifest_path.trim());
+    if manifest_path.trim().is_empty() {
+        return Err("backup_manual_delete_manifest_required".to_string());
+    }
+    let requested_snapshot = requested_manifest
+        .parent()
+        .ok_or_else(|| "backup_manual_delete_parent_missing".to_string())?;
+    let snapshots_entry = tenant_dir.join("snapshots");
+    for path in [
+        snapshots_entry.as_path(),
+        requested_snapshot,
+        requested_manifest.as_path(),
+    ] {
+        if fs::symlink_metadata(path)
+            .is_ok_and(|metadata| metadata.file_type().is_symlink())
+        {
+            return Err("backup_manual_delete_symlink_rejected".to_string());
+        }
+    }
+    let manifest_path = resolve_manifest_path(
+        store,
+        &tenant_id,
+        Some(&Value::String(
+            requested_manifest.to_string_lossy().into_owned(),
+        )),
+    )?;
+    let snapshot = manifest_path
+        .parent()
+        .ok_or_else(|| "backup_manual_delete_parent_missing".to_string())?;
+    let snapshots_root = snapshots_entry
+        .canonicalize()
+        .unwrap_or_else(|_| tenant_dir.join("snapshots"));
+    if manifest_path.file_name().and_then(|name| name.to_str()) != Some("manifest.json")
+        || snapshot.parent() != Some(snapshots_root.as_path())
+        || snapshot
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().ends_with(".staging"))
+    {
+        return Err("backup_manual_delete_scope_invalid".to_string());
+    }
+    let manifest = read_manifest(&manifest_path)?;
+    if manifest.get("version").and_then(Value::as_i64) != Some(crate::backup_v5::SNAPSHOT_VERSION) {
+        return Err("backup_manual_delete_version_required".to_string());
+    }
+    if manifest.get("tenantId").and_then(Value::as_str) != Some(tenant_id.as_str()) {
+        return Err("backup_manual_delete_tenant_mismatch".to_string());
+    }
+    if manifest.get("kind").and_then(Value::as_str) != Some("manual") {
+        return Err("backup_manual_delete_kind_required".to_string());
+    }
+    if manifest
+        .get("generation")
+        .is_some_and(|value| !value.is_null())
+    {
+        return Err("backup_manual_delete_generation_rejected".to_string());
+    }
+    let (deleted_bytes, identity) = snapshot_tree_identity(snapshot)?;
+    if read_manifest(&manifest_path)? != manifest || snapshot_tree_identity(snapshot)?.1 != identity
+    {
+        return Err("backup_manual_delete_changed".to_string());
+    }
+    let backup_id = manifest
+        .get("backupId")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    fs::remove_dir_all(snapshot).map_err(|error| format!("backup_manual_delete_failed:{error}"))?;
+    Ok(json!({
+        "ok": true,
+        "backupId": backup_id,
+        "deletedBytes": deleted_bytes
     }))
 }
 
@@ -502,6 +678,8 @@ pub(super) fn backup_manifest_summary(path: &Path, fallback_tenant_id: &str) -> 
         "createdAtMs": manifest.get("createdAtMs").and_then(|value| value.as_i64()).unwrap_or(0),
         "manifestPath": path.to_string_lossy(),
         "dbPath": db_path,
+        "kind": manifest.get("kind").and_then(Value::as_str).unwrap_or("legacy"),
+        "generation": manifest.get("generation").and_then(Value::as_i64),
         "source": manifest.get("source").cloned().unwrap_or_else(|| json!({})),
         "counts": manifest.get("counts").cloned().unwrap_or_else(|| json!({})),
         "media": manifest.get("media").cloned().unwrap_or_else(|| json!({})),

@@ -77,6 +77,7 @@ pub(super) fn run_if_due(
 ) -> Result<Value, String> {
     let tenant_dir = configured_tenant_dir(store, tenant_id)?;
     let _operation = root_operation(store, &tenant_dir)?;
+    let manual_retention = crate::backup_v5::prune_manual_snapshots(&tenant_dir)?;
     {
         let conn = store.conn.lock().map_err(|_| "db_lock_failed")?;
         let last: i64 = conn
@@ -89,7 +90,9 @@ pub(super) fn run_if_due(
             .map_err(|e| format!("backup_maintenance_read_failed:{e}"))?
             .unwrap_or(0);
         if !force && last > 0 && now.saturating_sub(last) < BACKUP_INTERVAL_MS {
-            return Ok(json!({"ok":true,"skipped":true,"nextRunAtMs":last + BACKUP_INTERVAL_MS}));
+            return Ok(
+                json!({"ok":true,"skipped":true,"manualRetention":manual_retention,"nextRunAtMs":last + BACKUP_INTERVAL_MS}),
+            );
         }
         // Persist attempts as well as successes: unavailable OneDrive must not
         // turn the 15-second device poll into a recursive cleanup scan.
@@ -130,5 +133,7 @@ pub(super) fn run_if_due(
     };
     let legacy =
         crate::backup_v5::maintain_legacy_quarantine(&tenant_dir, &pins, verified_at, now)?;
-    Ok(json!({"ok":true,"objects":objects,"legacy":legacy,"nextRunAtMs":now + BACKUP_INTERVAL_MS}))
+    Ok(
+        json!({"ok":true,"manualRetention":manual_retention,"objects":objects,"legacy":legacy,"nextRunAtMs":now + BACKUP_INTERVAL_MS}),
+    )
 }

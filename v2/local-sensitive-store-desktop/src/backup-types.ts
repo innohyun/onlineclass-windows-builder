@@ -16,6 +16,8 @@ export type BackupItem = {
   createdAtMs?: number;
   manifestPath?: string;
   dbPath?: string;
+  kind?: string;
+  generation?: number;
   source?: BackupSource;
   counts?: Record<string, number>;
   media?: {
@@ -26,6 +28,15 @@ export type BackupItem = {
     failed?: number;
     bytes?: number;
   };
+};
+
+export type ManualBackupItem = {
+  ok?: boolean;
+  backupId?: string;
+  createdAtMs?: number;
+  manifestPath?: string;
+  snapshotBytes?: number;
+  source?: BackupSource;
 };
 
 export type BackupStatus = {
@@ -128,6 +139,16 @@ export type BackupStorageOverview = {
   databaseHistoryBytes?: number;
   legacySnapshotCount?: number;
   legacySnapshotBytes?: number;
+  manualSnapshotCount?: number;
+  manualSnapshotBytes?: number;
+  manualBackups?: ManualBackupItem[];
+  retention?: {
+    recent?: number;
+    dailyDays?: number;
+    monthlyMonths?: number;
+    preRestore?: number;
+    manual?: number;
+  };
   legacyReclaimableBytes?: number;
   legacyCleanupCandidateCount?: number;
   legacyQuarantineCount?: number;
