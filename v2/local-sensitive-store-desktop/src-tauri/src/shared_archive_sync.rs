@@ -43,15 +43,16 @@ fn sha256_bytes(bytes: &[u8]) -> String {
 
 pub(crate) fn sha256_file(path: &Path) -> Result<(u64, String), String> {
     use std::io::Read;
+    crate::onedrive_download::prepare(path)?;
     let mut file =
-        fs::File::open(path).map_err(|e| format!("archive_sync_file_open_failed:{e}"))?;
+        fs::File::open(path).map_err(|e| crate::onedrive_download::io_error(path, "archive_sync_file_open_failed", &e))?;
     let mut hasher = Sha256::new();
     let mut size = 0u64;
     let mut buffer = [0u8; 64 * 1024];
     loop {
         let read = file
             .read(&mut buffer)
-            .map_err(|e| format!("archive_sync_file_read_failed:{e}"))?;
+            .map_err(|e| crate::onedrive_download::io_error(path, "archive_sync_file_read_failed", &e))?;
         if read == 0 {
             break;
         }
@@ -414,7 +415,8 @@ fn write_bundle(
 }
 
 fn read_json(path: &Path, error: &str) -> Result<Value, String> {
-    let raw = fs::read(path).map_err(|e| format!("{error}:{e}"))?;
+    crate::onedrive_download::prepare(path)?;
+    let raw = fs::read(path).map_err(|e| crate::onedrive_download::io_error(path, error, &e))?;
     serde_json::from_slice(&raw).map_err(|e| format!("{error}:{e}"))
 }
 
@@ -453,8 +455,9 @@ pub(crate) fn verify_bundle_reference_at(
         return Err("archive_sync_commit_mismatch".to_string());
     }
     let document_path = bundle_dir.join(ARCHIVE_DOCUMENT);
-    let document_bytes =
-        fs::read(&document_path).map_err(|e| format!("archive_sync_document_read_failed:{e}"))?;
+    crate::onedrive_download::prepare(&document_path)?;
+    let document_bytes = fs::read(&document_path)
+        .map_err(|e| crate::onedrive_download::io_error(&document_path, "archive_sync_document_read_failed", &e))?;
     let document: Value = serde_json::from_slice(&document_bytes)
         .map_err(|e| format!("archive_sync_document_decode_failed:{e}"))?;
     let archive = document
@@ -507,6 +510,8 @@ pub(crate) fn verify_bundle_reference_at(
     let mut file_ordinals = HashSet::new();
     let mut file_paths = HashSet::new();
     let mut total_bytes = 0u64;
+    let mut selected_files = Vec::new();
+    let mut pending = None;
     for file in files {
         let ordinal = file.get("ordinal").and_then(Value::as_i64).unwrap_or(-1);
         let relative = reference_text(file, "bundleRelativePath")?;
@@ -531,7 +536,17 @@ pub(crate) fn verify_bundle_reference_at(
         }
         let safe = safe_relative_path(relative)
             .ok_or_else(|| "archive_sync_bundle_file_path_invalid".to_string())?;
-        let (size, sha256) = sha256_file(&bundle_dir.join(safe))?;
+        let target = bundle_dir.join(safe);
+        match crate::onedrive_download::prepare(&target) {
+            Err(error) if crate::onedrive_download::is_pending(&error) => pending = Some(error),
+            Err(error) => return Err(error),
+            Ok(()) => {}
+        }
+        selected_files.push((target, relative, expected_size, expected_sha256));
+    }
+    if let Some(error) = pending { return Err(error); }
+    for (target, relative, expected_size, expected_sha256) in selected_files {
+        let (size, sha256) = sha256_file(&target)?;
         if size != expected_size || sha256 != expected_sha256 {
             return Err("archive_sync_bundle_file_digest_mismatch".to_string());
         }
@@ -657,6 +672,7 @@ pub(crate) fn verify_snapshot_bundles(
         .ok_or_else(|| "archive_sync_references_required".to_string())?;
     let mut archive_ids = HashSet::new();
     let mut manifest_hashes = HashSet::new();
+    let mut pending = None;
     for reference in references {
         let archive_id = reference_text(reference, "archiveId")?;
         let manifest_sha256 = reference_text(reference, "manifestSha256")?;
@@ -665,11 +681,16 @@ pub(crate) fn verify_snapshot_bundles(
         {
             return Err("archive_sync_reference_duplicate".to_string());
         }
-        verify_bundle_reference(tenant_dir, tenant_id, reference)?;
+        match verify_bundle_reference(tenant_dir, tenant_id, reference) {
+            Err(error) if crate::onedrive_download::is_pending(&error) => pending = Some(error),
+            Err(error) => return Err(error),
+            Ok(_) => {}
+        }
     }
     if archives.get("count").and_then(Value::as_u64) != Some(references.len() as u64) {
         return Err("archive_sync_reference_count_mismatch".to_string());
     }
+    if let Some(error) = pending { return Err(error); }
     Ok(())
 }
 

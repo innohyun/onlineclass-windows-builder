@@ -48,12 +48,13 @@ pub(crate) struct ArtifactDigest {
 
 pub(crate) fn sha256_file(path: &Path) -> Result<(u64, String), String> {
     use sha2::{Digest, Sha256};
-    let mut file = File::open(path).map_err(|e| format!("backup_hash_open_failed:{e}"))?;
+    crate::onedrive_download::prepare(path)?;
+    let mut file = File::open(path).map_err(|e| crate::onedrive_download::io_error(path, "backup_hash_open_failed", &e))?;
     let mut hasher = Sha256::new();
     let mut size = 0u64;
     let mut buffer = [0u8; 64 * 1024];
     loop {
-        let read = file.read(&mut buffer).map_err(|e| format!("backup_hash_read_failed:{e}"))?;
+        let read = file.read(&mut buffer).map_err(|e| crate::onedrive_download::io_error(path, "backup_hash_read_failed", &e))?;
         if read == 0 { break; }
         hasher.update(&buffer[..read]);
         size = size.saturating_add(read as u64);
@@ -772,7 +773,8 @@ fn media_extension(row: &MediaRow) -> String {
 }
 
 fn read_manifest(path: &Path) -> Result<Value, String> {
-    let raw = fs::read_to_string(path).map_err(|e| format!("backup_manifest_read_failed:{e}"))?;
+    crate::onedrive_download::prepare(path)?;
+    let raw = fs::read_to_string(path).map_err(|e| crate::onedrive_download::io_error(path, "backup_manifest_read_failed", &e))?;
     serde_json::from_str::<Value>(&raw).map_err(|e| format!("backup_manifest_decode_failed:{e}"))
 }
 
@@ -884,6 +886,21 @@ fn verify_snapshot_artifacts(
     {
         return Err("backup_commit_checkpoint_mismatch".to_string());
     }
+    // Queue every selected artifact before hashing so a large DB does not delay
+    // requesting all following attachments until the next sync retry.
+    let mut pending = None;
+    for artifact in manifest.get("artifacts").and_then(Value::as_array).ok_or_else(|| "backup_artifacts_required".to_string())? {
+        let relative = artifact.get("relativePath").and_then(Value::as_str).ok_or_else(|| "backup_artifact_path_required".to_string())?;
+        let safe = safe_relative_path(relative).ok_or_else(|| "backup_artifact_path_invalid".to_string())?;
+        let version = manifest.get("version").and_then(Value::as_i64).unwrap_or(0);
+        let target = crate::backup_v5::artifact_path(path, version, &safe)?;
+        match crate::onedrive_download::prepare(&target) {
+            Err(error) if crate::onedrive_download::is_pending(&error) => pending = Some(error),
+            Err(error) => return Err(error),
+            Ok(()) => {}
+        }
+    }
+    if let Some(error) = pending { return Err(error); }
     let mut verified = Vec::new();
     for artifact in manifest.get("artifacts").and_then(Value::as_array).ok_or_else(|| "backup_artifacts_required".to_string())? {
         let relative = artifact.get("relativePath").and_then(Value::as_str).ok_or_else(|| "backup_artifact_path_required".to_string())?;
@@ -956,9 +973,11 @@ pub(crate) fn find_and_verify_generation(
     if root_text.is_empty() { return Ok(None); }
     let tenant_dir = tenant_backup_dir(&backup_root_dir(root_text), tenant_id);
     let mut mismatch = None;
+    let mut unavailable = None;
     for path in manifest_paths_in_dir(&tenant_dir)? {
         let manifest = match read_manifest(&path) {
             Ok(value) => value,
+            Err(error) if error.starts_with("onedrive_download_") => { unavailable = Some(error); continue; }
             Err(_) => continue,
         };
         if !matches!(
@@ -974,6 +993,7 @@ pub(crate) fn find_and_verify_generation(
         }
     }
     if let Some(error) = mismatch { return Err(error); }
+    if let Some(error) = unavailable { return Err(error); }
     Ok(None)
 }
 

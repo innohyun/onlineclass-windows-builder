@@ -25,6 +25,11 @@ export type DeviceSyncStatus = {
 let snapshot: DeviceSyncStatus | null = null;
 let syncRun: Promise<void> | null = null;
 let statusRevision = 0;
+const ONE_DRIVE_DOWNLOAD_PENDING_MESSAGE = "최신 세대에 필요한 OneDrive 파일만 다운로드 요청하고 있습니다. 준비되면 무결성을 검증한 뒤 자동으로 반영합니다. 기다리는 동안 현재 로컬 자료는 유지됩니다.";
+
+function isOneDriveDownloadPending(error?: string) {
+  return /^(onedrive_download_pending|onedrive_snapshot_pending)(?::|$)/u.test(String(error || ""));
+}
 
 function element(id: string) {
   const target = document.getElementById(id);
@@ -66,6 +71,11 @@ function verificationLabel(status: DeviceSyncStatus) {
 
 export function deviceSyncErrorMessage(error?: string) {
   const value = String(error || "");
+  if (isOneDriveDownloadPending(value)) return ONE_DRIVE_DOWNLOAD_PENDING_MESSAGE;
+  if (/^onedrive_download_failed(?::|$)/u.test(value)
+      || (value.startsWith("backup_hash_read_failed:") && value.includes("(os error 380)"))) {
+    return "OneDrive에서 필요한 파일을 내려받지 못했습니다. OneDrive 연결·로그인 상태를 확인한 뒤 지금 동기화를 다시 눌러 주세요. 현재 로컬 자료는 유지됩니다.";
+  }
   if (value.startsWith("restore_sync_merge_failed:work_note_attachments:")) {
     return "업무노트와 첨부파일의 연결 순서를 확인하지 못했습니다. 최신 앱에서 다시 동기화해 주세요. 복원 전 보호 백업과 현재 자료는 유지됩니다.";
   }
@@ -99,8 +109,11 @@ export function renderDeviceSyncStatus(status: DeviceSyncStatus | null) {
     ? `미검토 ${Number(status.conflictUnreviewedCount || 0)} · 보관 ${Number(status.conflictRetainedCount ?? status.conflictCount ?? 0)} · 누적 ${Number(status.conflictLifetimeCount ?? status.conflictCount ?? 0)}`
     : "-");
   if (status?.ok === false && status.error) {
-    setBadge("확인 필요", "error");
-    setText("deviceSyncStatus", `기기 동기화 상태를 확인하지 못했습니다: ${deviceSyncErrorMessage(status.error)}`);
+    const pending = isOneDriveDownloadPending(status.error);
+    setBadge(pending ? "OneDrive 다운로드 대기" : "확인 필요", pending ? "warning" : "error");
+    setText("deviceSyncStatus", pending
+      ? ONE_DRIVE_DOWNLOAD_PENDING_MESSAGE
+      : `기기 동기화 상태를 확인하지 못했습니다: ${deviceSyncErrorMessage(status.error)}`);
   } else if (!status?.connected) {
     setBadge("PC 연결 필요", "warning");
     setText("deviceSyncStatus", "교사 설정에서 이 PC를 연결하면 OneDrive 최신 내용을 자동으로 맞춥니다.");
@@ -114,11 +127,14 @@ export function renderDeviceSyncStatus(status: DeviceSyncStatus | null) {
     setBadge("OneDrive 설정 필요", "warning");
     setText("deviceSyncStatus", "학교 OneDrive 안의 백업 폴더를 선택하면 자동 동기화를 시작합니다.");
   } else if (status.lastError) {
-    setBadge("확인 필요", "error");
-    setText("deviceSyncStatus", `마지막 동기화 문제: ${deviceSyncErrorMessage(status.lastError)}`);
+    const pending = isOneDriveDownloadPending(status.lastError);
+    setBadge(pending ? "OneDrive 다운로드 대기" : "확인 필요", pending ? "warning" : "error");
+    setText("deviceSyncStatus", pending
+      ? ONE_DRIVE_DOWNLOAD_PENDING_MESSAGE
+      : `마지막 동기화 문제: ${deviceSyncErrorMessage(status.lastError)}`);
   } else if (status.waitingForOneDrive) {
-    setBadge("파일 도착 대기", "warning");
-    setText("deviceSyncStatus", "서버의 최신 세대를 확인했습니다. OneDrive 파일이 이 PC에 도착하면 자동으로 반영합니다.");
+    setBadge("OneDrive 다운로드 대기", "warning");
+    setText("deviceSyncStatus", ONE_DRIVE_DOWNLOAD_PENDING_MESSAGE);
   } else if (status.hasUnsyncedChanges) {
     setBadge("변경 내용 대기", "warning");
     setText("deviceSyncStatus", "이 PC의 최근 변경 내용을 잠시 모은 뒤 자동으로 새 세대에 반영합니다.");
@@ -148,14 +164,17 @@ export async function runDeviceSyncNow(afterRun: () => Promise<unknown>) {
   if (syncRun) return syncRun;
   statusRevision += 1;
   updateActionState(true);
-  setText("deviceSyncStatus", "OneDrive 최신 파일과 서버 세대를 대조하고 있습니다.");
+  setText("deviceSyncStatus", "필요한 OneDrive 파일을 요청하고 최신 세대를 확인하고 있습니다. 다운로드가 준비되면 검증한 뒤 반영합니다.");
   syncRun = (async () => {
     try {
       const status = await invoke<DeviceSyncStatus>("run_device_sync_now");
       if (!status?.ok) throw new Error(status?.error || "device_sync_failed");
       renderDeviceSyncStatus(status);
       try { await afterRun(); }
-      catch { setText("deviceSyncStatus", "동기화는 완료했지만 일부 화면을 새로 읽지 못했습니다. 상태 확인을 눌러 다시 확인해 주세요."); }
+      catch {
+        if (status.lastError || status.waitingForOneDrive) renderDeviceSyncStatus(status);
+        else setText("deviceSyncStatus", "일부 화면을 새로 읽지 못했습니다. 상태 확인을 눌러 다시 확인해 주세요.");
+      }
     } catch (error) {
       const message = String((error as Error)?.message || error || "device_sync_failed");
       renderDeviceSyncStatus({ ...(snapshot || { connected: false }), ok: false, error: message, lastError: message });

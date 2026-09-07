@@ -164,6 +164,14 @@ pub(crate) fn update_retry(
     Ok(())
 }
 
+pub(crate) fn defer_download_retry(store: &SqliteStore, tenant_id: &str, now: i64) -> Result<(), String> {
+    let conn = store.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
+    conn.execute("INSERT INTO local_store_device_sync_runtime (tenant_id,retry_at_ms,retry_count) VALUES (?1,?2+30000,1)
+        ON CONFLICT(tenant_id) DO UPDATE SET retry_at_ms=excluded.retry_at_ms,retry_count=1",
+        params![tenant_id,now]).map_err(|e| format!("db_sync_retry_write_failed:{e}"))?;
+    Ok(())
+}
+
 pub(crate) fn acknowledged_locally(
     store: &SqliteStore,
     tenant_id: &str,

@@ -8,7 +8,8 @@ pub(crate) const APPLY_INDEX_RELATIVE_PATH: &str = "meta/apply-index.json";
 const APPLY_INDEX_SCHEMA: &str = "classaimate-device-sync-apply-index-v1";
 
 fn read_json(path: &Path) -> Result<Value, String> {
-    let raw = fs::read(path).map_err(|e| format!("backup_apply_index_read_failed:{e}"))?;
+    crate::onedrive_download::prepare(path)?;
+    let raw = fs::read(path).map_err(|e| crate::onedrive_download::io_error(path, "backup_apply_index_read_failed", &e))?;
     serde_json::from_slice(&raw).map_err(|e| format!("backup_apply_index_decode_failed:{e}"))
 }
 

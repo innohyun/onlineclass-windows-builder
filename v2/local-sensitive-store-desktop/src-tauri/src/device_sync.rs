@@ -318,12 +318,12 @@ impl DeviceSyncManager {
             if delay > 0 {
                 thread::sleep(Duration::from_secs(delay));
             }
-            match backup::find_and_verify_generation(
+            match crate::onedrive_download::with_downloads(|| backup::find_and_verify_generation(
                 &self.store,
                 tenant_id,
                 artifact_generation,
                 artifact_root,
-            ) {
+            )) {
                 Ok(Some(snapshot)) => {
                     if snapshot.get("databaseSha256").and_then(Value::as_str)
                         != Some(database_sha256)
@@ -334,6 +334,7 @@ impl DeviceSyncManager {
                     return Ok(snapshot);
                 }
                 Ok(None) => last_error = "onedrive_snapshot_pending".to_string(),
+                Err(error) if crate::onedrive_download::is_pending(&error) || error.starts_with("onedrive_download_failed:") => return Err(error),
                 Err(error) => last_error = error,
             }
         }
@@ -640,7 +641,11 @@ impl DeviceSyncManager {
             Err(error) => {
                 if !tenant_id.is_empty() {
                     backup::mark_sync_error(&self.store, &tenant_id, &error);
-                    let _ = backup::update_retry(&self.store, &tenant_id, true, now_ms());
+                    let _ = if crate::onedrive_download::is_pending(&error) {
+                        backup::defer_download_retry(&self.store, &tenant_id, now_ms())
+                    } else {
+                        backup::update_retry(&self.store, &tenant_id, true, now_ms())
+                    };
                 }
                 Err(error)
             }

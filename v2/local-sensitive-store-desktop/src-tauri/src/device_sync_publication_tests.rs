@@ -35,6 +35,63 @@ fn manager(store: &Arc<SqliteStore>, endpoint: &str) -> DeviceSyncManager {
 }
 
 #[test]
+fn onedrive_download_blocks_apply_and_ack_until_selected_artifacts_verify() {
+    use crate::onedrive_download::tests::with_fixture;
+    let (root, store, session) = fixture();
+    let older = backup::run_with_kind(&store, session.tenant_id.clone(), "auto_sync", Some(1)).unwrap();
+    let snapshot = backup::run_with_kind(&store, session.tenant_id.clone(), "auto_sync", Some(2)).unwrap();
+    let manifest = PathBuf::from(snapshot["manifestPath"].as_str().unwrap());
+    let database = manifest.parent().unwrap().join("db/local-sensitive.sqlite");
+    let old_database = PathBuf::from(older["manifestPath"].as_str().unwrap()).parent().unwrap().join("db/local-sensitive.sqlite");
+    let original = fs::read(&database).unwrap();
+    let checkpoint = json!({"generation":2,"sourceDeviceId":"other-device","status":"announced",
+        "artifactSetSha256":snapshot["artifactSetSha256"],"databaseSha256":snapshot["databaseSha256"]});
+    let server = Server::http("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}", server.server_addr());
+    let sync = manager(&store, &endpoint);
+    let before = backup::local_sync_state(&store, &session.tenant_id).unwrap();
+    let requested = database.clone();
+    let paths = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&paths);
+    with_fixture(move |path| {
+        seen.lock().unwrap().push(path.to_path_buf());
+        assert_ne!(path, old_database, "historical DB must not be downloaded");
+        if path == requested { Err("onedrive_download_pending".into()) } else { Ok(()) }
+    }, || {
+        assert_eq!(sync.apply_checkpoint(&session, "synthetic", &checkpoint).unwrap_err(), "onedrive_download_pending");
+    });
+    assert!(paths.lock().unwrap().contains(&manifest.parent().unwrap().join("meta/apply-index.json")),
+        "a pending DB must not stop requesting the remaining selected artifacts");
+    assert_eq!(backup::local_sync_state(&store, &session.tenant_id).unwrap().applied_generation, before.applied_generation);
+    assert!(server.recv_timeout(Duration::from_millis(20)).unwrap().is_none(), "no ACK before download");
+    for attempt in 0..8 {
+        let now = 1_000_000 + attempt * 30_000;
+        backup::defer_download_retry(&store, &session.tenant_id, now).unwrap();
+        assert!(!backup::retry_due(&store, &session.tenant_id, now + 29_999).unwrap());
+        assert!(backup::retry_due(&store, &session.tenant_id, now + 30_000).unwrap(), "downloads never escalate to five-minute waits");
+    }
+    fs::write(&database, b"corrupt downloaded file").unwrap();
+    with_fixture(|_| Ok(()), || {
+        assert_eq!(backup::find_and_verify_generation(&store, &session.tenant_id, 2,
+            checkpoint["artifactSetSha256"].as_str().unwrap()).unwrap_err(), "backup_artifact_digest_mismatch");
+    });
+    assert_eq!(backup::local_sync_state(&store, &session.tenant_id).unwrap().applied_generation, before.applied_generation);
+    assert!(server.recv_timeout(Duration::from_millis(20)).unwrap().is_none());
+    fs::write(&database, original).unwrap();
+    let requests = thread::spawn(move || {
+        let request = server.recv_timeout(Duration::from_secs(15)).unwrap().expect("verified ACK");
+        assert_eq!(request.url(), "/checkpoints/2/acks");
+        request.respond(Response::from_string(json!({"ok":true,"data":{"status":"verified"}}).to_string())).unwrap();
+    });
+    with_fixture(|_| Ok(()), || sync.apply_checkpoint(&session, "synthetic", &checkpoint)).unwrap();
+    requests.join().unwrap();
+    assert_eq!(backup::local_sync_state(&store, &session.tenant_id).unwrap().applied_generation, 2);
+    drop(sync);
+    drop(store);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn backup_pending_twenty_failures_and_restart_reuse_one_database_then_keep_new_edit_dirty() {
     let (root, store, session) = fixture();
     let server = Server::http("127.0.0.1:0").unwrap();

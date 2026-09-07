@@ -105,6 +105,15 @@ export function initBackupRestorePreview() {
   } else {
     renderSelection(selectedIndex);
   }
+  if (previewState === "onedrive-download-pending" || previewState === "onedrive-download-failed" || previewState === "onedrive-synced") {
+    renderDeviceSyncStatus({
+      ok: true, connected: true, credentialAvailable: true, oneDriveConfigured: true,
+      latestGeneration: 290, appliedGeneration: previewState === "onedrive-synced" ? 290 : 254,
+      latestStatus: "verified",
+      lastError: previewState === "onedrive-download-pending" ? "onedrive_download_pending:hydrating"
+        : previewState === "onedrive-download-failed" ? "onedrive_download_failed:0x8007017C" : undefined,
+    });
+  }
 
   document.addEventListener("click", (event) => {
     const target = event.target as HTMLElement | null;
