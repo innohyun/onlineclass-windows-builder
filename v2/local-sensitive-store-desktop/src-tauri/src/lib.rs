@@ -18,6 +18,7 @@ mod shared_archive_board;
 mod shared_archive_sync;
 mod student_private_photos;
 mod student_record_mcp;
+mod student_record_workspace;
 mod classaimate_mcp_materials_markdown;
 mod classaimate_mcp_write_jobs;
 mod work_note_attachments;
@@ -54,7 +55,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-09-07.1-onedrive-on-demand";
+pub(crate) const SERVICE_VERSION: &str = "2026-09-08.1-student-record-workspace";
 const WORK_MEETING_ROOT_PAGE_ID: &str = "classaimate:work-meeting-minutes";
 const WORK_MEETING_ROOT_TITLE: &str = "업무 회의록";
 const WORK_MEETING_ROOT_INTRO: &str = "모바일에서 확정한 업무 회의록이 자동으로 들어옵니다.";
@@ -166,7 +167,7 @@ const LOCAL_SENSITIVE_STORE_ROUTES: &[&str] = &[
     "/v1/password-vault/shared/decrypt",
     "/v1/password-vault/shared/recover",
 ];
-const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 18] = [
+const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 19] = [
     "non_lesson_observations",
     "teacher_local_records",
     "work_notes",
@@ -177,6 +178,7 @@ const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 18] = [
     "work_note_system_folders_v1",
     "lesson_plan_bindings_v1",
     "student_record_draft_batch_v1",
+    "student_record_workspace_v1",
     "student_record_mcp_v1",
     "classaimate_public_mcp_write_jobs_v1",
     "classaimate_public_mcp_operations_v1",
@@ -4556,6 +4558,9 @@ impl SqliteStore {
             set_obj(obj, "createdAtIso", created_at_iso);
             set_updated_payload_fields(obj, updated_at_ms);
         }
+        if student_record_workspace::is_workspace(&input) {
+            return student_record_workspace::save(self, input);
+        }
         let payload_json = payload_json(&input, "student_record_draft_set_encode_failed")?;
         let conn = self.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
         conn.execute(
@@ -5029,6 +5034,8 @@ fn json_response(status: u16, payload: Value, origin: &str) -> Response<std::io:
 
 fn request_error_status(error: &str) -> u16 {
     match error {
+        "student_record_workspace_revision_conflict" => 409,
+        "student_record_workspace_revision_required" | "student_record_workspace_invalid" => 400,
         "invalid_json" => 400,
         "browser_token_required" | "MCP_GRANT_REQUIRED" => 401,
         "tenant_scope_mismatch" => 403,
