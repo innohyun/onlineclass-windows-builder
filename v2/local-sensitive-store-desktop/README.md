@@ -2,6 +2,13 @@
 
 Windows installer for the loopback SQLite service used by tenant observation records in `local_sqlite` mode.
 
+## 0.2.75 source release notes
+
+- When the explicit Cloud Files hydration request is rejected with Win32 380, reads only that selected file to EOF in fixed-size chunks to request its content. No folder pinning, recursive download, or OneDrive account reset is performed.
+- Keeps a shared bounded deadline for hydration and fallback, safely cancels pending I/O, and prepares incoming files again at restore boundaries without enabling downloads for protective backups.
+- Distinguishes provider refusal, authentication, network, permissions and timeout from download pending. Shell guide v11 explains download, verification and preservation of current data on failure.
+- Native service revision: `2026-09-08.4-onedrive-380-read-fallback`. Windows native provider tests and installer publication are separate from verification on the user's actual OneDrive PC.
+
 ## 0.2.74 source release notes
 
 - MCP lesson observations use the existing local observation store, with up to 200 student records in one atomic write, revision checks and canonical readback.

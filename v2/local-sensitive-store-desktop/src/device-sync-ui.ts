@@ -69,13 +69,44 @@ function verificationLabel(status: DeviceSyncStatus) {
   return status.latestStatus || "확인 중";
 }
 
+function oneDriveDownloadFailureMessage(value: string) {
+  const legacy380 = value.startsWith("backup_hash_read_failed:") && value.includes("(os error 380)");
+  if (!legacy380 && !/^onedrive_download_failed(?::|$)/u.test(value)) return null;
+  const parsed = value.match(/^onedrive_download_failed(?::([a-z_]+))?(?::(\d{1,10}|0x[\da-f]{8}))?$/iu);
+  const phase = legacy380 ? "io" : parsed?.[1] || "";
+  const rawCode = legacy380 ? 380 : parsed?.[2] ? Number(parsed[2]) : undefined;
+  const code = rawCode === undefined || rawCode > 0xffffffff ? undefined
+    : rawCode >>> 16 === 0x8007 ? rawCode & 0xffff : rawCode;
+  const phaseLabels: Record<string, string> = {
+    open: "다운로드 파일 열기", io: "다운로드 요청 결과", event: "다운로드 준비",
+    hydrate_open: "다운로드 파일 열기", hydrate_event: "다운로드 준비",
+    hydrate_request: "다운로드 요청", hydrate_wait: "다운로드 응답 대기", hydrate_io: "다운로드 요청 결과",
+    read_open: "파일 읽기 재요청 준비", read_event: "파일 읽기 재요청 준비",
+    read_io: "파일 읽기 재요청", read_wait: "파일 읽기 응답 대기",
+    hydrate_timeout: "다운로드 시간 제한", read_timeout: "파일 읽기 시간 제한",
+    deadline_thread: "다운로드 시간 제한 준비", deadline_worker: "다운로드 시간 제한 준비",
+    provider_timeout: "다운로드 시간 제한", provider_wait: "다운로드 응답 대기",
+  };
+  let detail = "OneDrive에서 필요한 파일을 내려받지 못했습니다. OneDrive 앱의 동기화 상태를 확인한 뒤";
+  if (code === 380) detail = "OneDrive가 파일 다운로드 요청을 거절했습니다. OneDrive 동기화 상태를 확인한 뒤";
+  else if (code === 386) detail = "OneDrive 인증을 확인하지 못했습니다. OneDrive 계정 로그인 상태를 확인한 뒤";
+  else if (code === 388) detail = "OneDrive에 연결할 수 없습니다. 인터넷 연결과 OneDrive 동기화 상태를 확인한 뒤";
+  else if (code === 5 || code === 395) detail = "OneDrive 파일에 접근할 권한이 없습니다. 해당 파일의 접근 권한을 확인한 뒤";
+  else if (code === 362) detail = "OneDrive 파일 공급자가 응답할 수 없습니다. OneDrive 앱이 실행 중인지 확인한 뒤";
+  else if (code === 1460 || code === 426 || ["provider_timeout", "hydrate_timeout", "read_timeout"].includes(phase)) {
+    detail = "OneDrive 파일 다운로드가 제한 시간 안에 끝나지 않았습니다. OneDrive 동기화 상태를 확인한 뒤";
+  }
+  const fallback = !legacy380 && phase.startsWith("read_") && phaseLabels[phase]
+    ? "일반 파일 읽기를 통한 자동 재요청도 완료하지 못했습니다. " : "";
+  const diagnostic = [phaseLabels[phase], code === undefined ? undefined : `Windows ${code}`].filter(Boolean).join(" · ");
+  return `${fallback}${detail} 지금 동기화를 다시 눌러 주세요. 현재 로컬 자료는 유지됩니다.${diagnostic ? ` (${diagnostic})` : ""}`;
+}
+
 export function deviceSyncErrorMessage(error?: string) {
   const value = String(error || "");
   if (isOneDriveDownloadPending(value)) return ONE_DRIVE_DOWNLOAD_PENDING_MESSAGE;
-  if (/^onedrive_download_failed(?::|$)/u.test(value)
-      || (value.startsWith("backup_hash_read_failed:") && value.includes("(os error 380)"))) {
-    return "OneDrive에서 필요한 파일을 내려받지 못했습니다. OneDrive 연결·로그인 상태를 확인한 뒤 지금 동기화를 다시 눌러 주세요. 현재 로컬 자료는 유지됩니다.";
-  }
+  const downloadFailure = oneDriveDownloadFailureMessage(value);
+  if (downloadFailure) return downloadFailure;
   if (value.startsWith("restore_sync_merge_failed:work_note_attachments:")) {
     return "업무노트와 첨부파일의 연결 순서를 확인하지 못했습니다. 최신 앱에서 다시 동기화해 주세요. 복원 전 보호 백업과 현재 자료는 유지됩니다.";
   }
@@ -164,7 +195,8 @@ export async function runDeviceSyncNow(afterRun: () => Promise<unknown>) {
   if (syncRun) return syncRun;
   statusRevision += 1;
   updateActionState(true);
-  setText("deviceSyncStatus", "필요한 OneDrive 파일을 요청하고 최신 세대를 확인하고 있습니다. 다운로드가 준비되면 검증한 뒤 반영합니다.");
+  setBadge("확인·검증 중", "warning");
+  setText("deviceSyncStatus", "필요한 OneDrive 파일을 요청하고 최신 세대를 확인하고 있습니다. 다운로드 완료만으로 반영하지 않고 파일 검증을 마친 뒤 반영합니다.");
   syncRun = (async () => {
     try {
       const status = await invoke<DeviceSyncStatus>("run_device_sync_now");

@@ -142,18 +142,27 @@ fn stage_restore_media(
             manifest.get("version").and_then(Value::as_i64).unwrap_or(0),
             &backup_relative_path,
         )?;
+        if let Err(error) = crate::onedrive_download::prepare(&source_path) {
+            let _ = fs::remove_dir_all(&staging_root);
+            return Err(error);
+        }
         if !source_path.is_file() {
             media_missing += 1;
             continue;
         }
-        {
+        let hashes = {
             let conn = store.conn.lock().map_err(|_| "db_lock_failed")?;
             let mut stmt = conn.prepare("SELECT json_extract(p.value,'$.sha256') FROM observation_evidence_revisions r JOIN json_each(r.payload_json,'$.photos') p WHERE r.tenant_id=?1 AND json_extract(p.value,'$.mediaId')=?2 AND json_extract(p.value,'$.sha256') IS NOT NULL").map_err(|e|e.to_string())?;
             let hashes = stmt.query_map(params![tenant_id,media_id], |r| r.get::<_,String>(0)).map_err(|e|e.to_string())?.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())?;
-            if !hashes.is_empty() {
-                let (_, incoming_hash) = sha256_file(&source_path)?;
-                if hashes.iter().any(|hash|hash != &incoming_hash) { let _ = fs::remove_dir_all(&staging_root); return Err("observation_photo_immutable".into()); }
-            }
+            hashes
+        };
+        if !hashes.is_empty() {
+            // A cloud read must not hold the live SQLite mutex while awaiting the provider.
+            let incoming_hash = match sha256_file(&source_path) {
+                Ok((_, hash)) => hash,
+                Err(error) => { let _ = fs::remove_dir_all(&staging_root); return Err(error); }
+            };
+            if hashes.iter().any(|hash|hash != &incoming_hash) { let _ = fs::remove_dir_all(&staging_root); return Err("observation_photo_immutable".into()); }
         }
         let staged_path = staged_dir.join(format!("{index}-{}", safe_segment(&media_id, "media")));
         if let Some(parent) = staged_path.parent() {
@@ -164,7 +173,7 @@ fn stage_restore_media(
         }
         if let Err(error) = fs::copy(&source_path, &staged_path) {
             let _ = fs::remove_dir_all(&staging_root);
-            return Err(format!("restore_media_stage_failed:{error}"));
+            return Err(crate::onedrive_download::io_error(&source_path, "restore_media_stage_failed", &error));
         }
         plans.push(RestoreMediaPlan {
             record_id: media_id,
@@ -206,10 +215,17 @@ fn stage_restore_media(
             manifest.get("version").and_then(Value::as_i64).unwrap_or(0),
             &backup_relative_path,
         )?;
+        if let Err(error) = crate::onedrive_download::prepare(&source_path) {
+            let _ = fs::remove_dir_all(&staging_root);
+            return Err(error);
+        }
         if !source_path.is_file() { attachment_missing += 1; continue; }
         let staged_path = staged_dir.join(format!("attachment-{index}-{}", safe_segment(&attachment_id, "attachment")));
         if let Some(parent) = staged_path.parent() { fs::create_dir_all(parent).map_err(|e| format!("restore_work_note_attachment_stage_dir_failed:{e}"))?; }
-        fs::copy(&source_path, &staged_path).map_err(|e| format!("restore_work_note_attachment_stage_failed:{e}"))?;
+        if let Err(error) = fs::copy(&source_path, &staged_path) {
+            let _ = fs::remove_dir_all(&staging_root);
+            return Err(crate::onedrive_download::io_error(&source_path, "restore_work_note_attachment_stage_failed", &error));
+        }
         plans.push(RestoreMediaPlan {
             record_id: attachment_id,
             kind: "work_note_attachment",
@@ -702,7 +718,7 @@ pub(super) fn restore_generation(
     latest_status: &str,
     force_all: bool,
 ) -> Result<Value, String> {
-    let manifest = read_manifest(manifest_path)?;
+    let manifest = crate::onedrive_download::with_downloads(|| read_manifest(manifest_path))?;
     if !matches!(
         manifest.get("version").and_then(Value::as_i64),
         Some(3) | Some(4) | Some(5)
@@ -711,11 +727,12 @@ pub(super) fn restore_generation(
     {
         return Err("backup_sync_manifest_invalid".to_string());
     }
-    let authoritative = authoritative_restore_manifest(manifest_path, &manifest, tenant_id)?;
+    let authoritative = crate::onedrive_download::with_downloads(||
+        authoritative_restore_manifest(manifest_path, &manifest, tenant_id))?;
     seed_sync_records(store, tenant_id)?;
     let state = local_sync_state(store, tenant_id)?;
-    let archive_result =
-        crate::backup_v4::apply_archives(manifest_path, &authoritative, tenant_id)?;
+    let archive_result = crate::onedrive_download::with_downloads(||
+        crate::backup_v4::apply_archives(manifest_path, &authoritative, tenant_id))?;
     let local_archives = crate::shared_archive_sync::has_local_only_references(tenant_id, authoritative.get("archives"))?;
     if generation <= state.applied_generation {
         return Ok(json!({
@@ -768,7 +785,10 @@ pub(super) fn restore_generation(
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .join(db_relative);
-    let (staging_root, media_plans, media_missing, attachment_missing) = stage_restore_media(
+    // Only selected incoming files participate. In particular, the protective backup
+    // above must not enable hydration of historical snapshots or deduplicated objects.
+    crate::onedrive_download::with_downloads(|| crate::onedrive_download::prepare(&db_path))?;
+    let (staging_root, media_plans, media_missing, attachment_missing) = crate::onedrive_download::with_downloads(|| stage_restore_media(
         store,
         tenant_id,
         manifest_path,
@@ -776,7 +796,7 @@ pub(super) fn restore_generation(
         Some(&allowed_media),
         Some(&allowed_attachments),
         true,
-    )?;
+    ))?;
     if media_missing > 0 || attachment_missing > 0 {
         let _ = fs::remove_dir_all(&staging_root);
         return Err("backup_sync_artifact_missing".to_string());

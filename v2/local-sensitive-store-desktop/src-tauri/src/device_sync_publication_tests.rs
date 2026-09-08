@@ -92,6 +92,58 @@ fn onedrive_download_blocks_apply_and_ack_until_selected_artifacts_verify() {
 }
 
 #[test]
+fn onedrive_restore_rechecks_selected_reads_without_downloading_protective_backups() {
+    use crate::onedrive_download::tests::with_fixture;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let (root, store, session) = fixture();
+    let snapshot = backup::run_with_kind(&store, session.tenant_id.clone(), "auto_sync", Some(2)).unwrap();
+    let manifest = PathBuf::from(snapshot["manifestPath"].as_str().unwrap());
+    let selected_root = manifest.parent().unwrap().to_path_buf();
+    let database = selected_root.join("db/local-sensitive.sqlite");
+    let checkpoint = json!({"generation":2,"sourceDeviceId":"other-device","status":"announced",
+        "artifactSetSha256":snapshot["artifactSetSha256"],"databaseSha256":snapshot["databaseSha256"]});
+    let server = Server::http("127.0.0.1:0").unwrap();
+    let sync = manager(&store, &format!("http://{}", server.server_addr()));
+    let before = backup::local_sync_state(&store, &session.tenant_id).unwrap();
+    let initial_reads = Arc::new(AtomicUsize::new(0));
+    let reads = Arc::clone(&initial_reads);
+    let requested = database.clone();
+    with_fixture(move |path| {
+        if path == requested { reads.fetch_add(1, Ordering::SeqCst); }
+        Ok(())
+    }, || sync.verified_snapshot(&session.tenant_id, 2, checkpoint["artifactSetSha256"].as_str().unwrap(),
+        checkpoint["databaseSha256"].as_str().unwrap())).unwrap();
+    let verified_reads = initial_reads.load(Ordering::SeqCst);
+    assert!(verified_reads > 0);
+    // First fail during restore re-verification, then at the explicit DB read
+    // preparation after its prepare+hash re-verification and protective backup.
+    for extra_reads in [0, 2] {
+        let reads = AtomicUsize::new(0);
+        let requested = database.clone();
+        let incoming = selected_root.clone();
+        with_fixture(move |path| {
+            assert!(path.starts_with(&incoming), "protective backup must stay outside download scope");
+            if path == requested && reads.fetch_add(1, Ordering::SeqCst) >= verified_reads + extra_reads {
+                return Err("onedrive_download_pending:restore_read".into());
+            }
+            Ok(())
+        }, || {
+            assert_eq!(sync.apply_checkpoint(&session, "synthetic", &checkpoint).unwrap_err(),
+                "onedrive_download_pending:restore_read");
+        });
+        let after = backup::local_sync_state(&store, &session.tenant_id).unwrap();
+        assert_eq!(after.applied_generation, before.applied_generation);
+        assert_eq!(after.first_dirty_at_ms, before.first_dirty_at_ms);
+        assert_eq!(after.change_sequence, before.change_sequence);
+        assert_eq!(after.conflict_count, before.conflict_count);
+        assert!(server.recv_timeout(Duration::from_millis(20)).unwrap().is_none(), "pending restore must not ACK");
+    }
+    drop(sync);
+    drop(store);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn backup_pending_twenty_failures_and_restart_reuse_one_database_then_keep_new_edit_dirty() {
     let (root, store, session) = fixture();
     let server = Server::http("127.0.0.1:0").unwrap();

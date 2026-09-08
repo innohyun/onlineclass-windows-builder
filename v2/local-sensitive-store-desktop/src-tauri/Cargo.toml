@@ -1,6 +1,6 @@
 [package]
 name = "local-sensitive-store-desktop"
-version = "0.2.74"
+version = "0.2.75"
 default-run = "local-sensitive-store-desktop"
 description = "ClassAiMate 교사 데스크 로컬 데이터 저장소"
 authors = ["onlineclass"]
@@ -46,5 +46,5 @@ rmcp = { version = "=3.0.1", features = ["client", "server", "transport-io"] }
 keyring = { version = "3", features = ["apple-native"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_Memory", "Win32_UI_WindowsAndMessaging", "Win32_Storage_CloudFilters", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Threading"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_Memory", "Win32_UI_WindowsAndMessaging", "Win32_Storage_CloudFilters", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Threading", "Win32_System_CorrelationVector"] }
 winreg = "0.52"
