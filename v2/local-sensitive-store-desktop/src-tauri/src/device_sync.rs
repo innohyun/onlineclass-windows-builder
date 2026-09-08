@@ -616,6 +616,7 @@ impl DeviceSyncManager {
     }
 
     pub(crate) fn run_once(&self, force_publish: bool) -> Result<Value, String> {
+        let _ = self.flush_observation_receipts();
         let _guard = match self.sync_lock.try_lock() {
             Ok(guard) => guard,
             Err(std::sync::TryLockError::WouldBlock) => {
@@ -678,9 +679,43 @@ impl DeviceSyncManager {
         }
     }
 
+    pub(crate) fn flush_observation_receipts(&self) -> Result<(), String> {
+        let Some(session) = self.load_session()? else { return Ok(()); };
+        let entries = self.store.evidence_outbox(&session.tenant_id)?;
+        if entries["entries"].as_array().is_none_or(|a| a.is_empty()) { return Ok(()); }
+        let credential = self.credential(&session)?;
+        let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(15)).build();
+        for entry in entries["entries"].as_array().into_iter().flatten() {
+            let response: Value = agent.post("https://t.classaimate.com/api/v3/local-store-sync/observation-evidence-receipts")
+                .set("Authorization", &format!("Bearer {credential}"))
+                .set("x-local-store-device-id", &session.device_id).send_json(entry.clone())
+                .map_err(|_| "observation_receipt_request_failed")?.into_json().map_err(|_| "observation_receipt_response_invalid")?;
+            self.store.evidence_receipt(&session.tenant_id, &response["data"]["receipt"])?;
+        }
+        Ok(())
+    }
+
+    fn reconcile_observation_receipts(&self) -> Result<(), String> {
+        let Some(session) = self.load_session()? else { return Ok(()); };
+        let credential = self.credential(&session)?;
+        let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(15)).build();
+        let mut cursor = String::new();
+        loop {
+            let mut request = agent.get("https://t.classaimate.com/api/v3/local-store-sync/observation-evidence-receipts")
+                .set("Authorization", &format!("Bearer {credential}")).set("x-local-store-device-id", &session.device_id).query("limit", "200");
+            if !cursor.is_empty() { request = request.query("cursor", &cursor); }
+            let response: Value = request.call().map_err(|_|"observation_receipt_reconcile_failed")?.into_json().map_err(|_|"observation_receipt_response_invalid")?;
+            self.store.evidence_reconcile(&session.tenant_id, &response["data"]["receipts"])?;
+            cursor = response["data"]["nextCursor"].as_str().unwrap_or_default().to_string();
+            if cursor.is_empty() { break; }
+        }
+        Ok(())
+    }
+
     pub(crate) fn start_background(self: &Arc<Self>) {
         let manager = Arc::clone(self);
         thread::spawn(move || {
+            let _ = manager.reconcile_observation_receipts();
             let _ = manager.run_once(true);
             let mut last_tick = now_ms();
             loop {
@@ -689,6 +724,7 @@ impl DeviceSyncManager {
                 let resumed =
                     current.saturating_sub(last_tick) > (BACKGROUND_TICK_SECS as i64 + 45) * 1000;
                 last_tick = current;
+                let _ = manager.flush_observation_receipts();
                 let session = match manager.load_session() {
                     Ok(Some(session)) => session,
                     _ => continue,
@@ -710,6 +746,7 @@ impl DeviceSyncManager {
                         || current.saturating_sub(state.first_dirty_at_ms) >= MAX_DIRTY_MS);
                 let safety_due = state.last_checked_at_ms == 0
                     || current.saturating_sub(state.last_checked_at_ms) >= SAFETY_CHECK_MS;
+                if resumed || safety_due { let _ = manager.reconcile_observation_receipts(); }
                 if resumed || retry_pending || pending || local_commit_ahead || publish_due || safety_due {
                     let _ = manager.run_once(false);
                 }

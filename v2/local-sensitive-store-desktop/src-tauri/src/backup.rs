@@ -85,6 +85,12 @@ pub(crate) struct BackupTable {
     optional: bool,
 }
 const BACKUP_TABLES: &[BackupTable] = &[
+    BackupTable { name: "observation_evidence_reconciliation", columns: &["tenant_id","state_id","payload_json","created_at_ms"], key_columns: &["tenant_id","state_id"], timestamp_column: "created_at_ms", optional: true },
+    BackupTable { name: "observation_evidence_revisions", columns: &["tenant_id","revision_id","doc_id","payload_json","revision_hash","saved_at_ms"], key_columns: &["tenant_id","revision_id"], timestamp_column: "saved_at_ms", optional: true },
+    BackupTable { name: "observation_evidence_batches", columns: &["tenant_id","receipt_id","payload_json","commitment_sha256","created_at_ms"], key_columns: &["tenant_id","receipt_id"], timestamp_column: "created_at_ms", optional: true },
+    BackupTable { name: "observation_evidence_mutations", columns: &["tenant_id","mutation_id","request_hash","payload_json","created_at_ms"], key_columns: &["tenant_id","mutation_id"], timestamp_column: "created_at_ms", optional: true },
+    BackupTable { name: "observation_evidence_receipts", columns: &["tenant_id","receipt_id","payload_json","created_at_ms"], key_columns: &["tenant_id","receipt_id"], timestamp_column: "created_at_ms", optional: true },
+    BackupTable { name: "observation_evidence_exports", columns: &["tenant_id","export_id","payload_json","created_at_ms"], key_columns: &["tenant_id","export_id"], timestamp_column: "created_at_ms", optional: true },
     BackupTable {
         name: "lesson_observations",
         columns: &["tenant_id", "doc_id", "date_key", "period", "student_code", "payload_json", "updated_at_ms"],
@@ -338,8 +344,10 @@ fn now_ms() -> i64 {
 }
 
 fn backup_schema_sql(prefix: &str) -> String {
+    let evidence_schema = crate::observation_evidence::schema(prefix);
     format!(
         r#"
+        {evidence_schema}
         CREATE TABLE IF NOT EXISTS {prefix}lesson_observations (
           tenant_id TEXT NOT NULL,
           doc_id TEXT NOT NULL,

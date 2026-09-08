@@ -30,6 +30,8 @@ mod local_workspaces;
 mod password_vault;
 mod password_vault_crypto;
 mod quick_observation;
+mod observation_evidence;
+mod observation_evidence_receipts;
 mod machine_identity;
 pub(crate) use machine_identity::local_pc_name;
 use rand::{distributions::Alphanumeric, Rng};
@@ -55,7 +57,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-09-08.1-student-record-workspace";
+pub(crate) const SERVICE_VERSION: &str = "2026-09-08.2-observation-evidence";
 const WORK_MEETING_ROOT_PAGE_ID: &str = "classaimate:work-meeting-minutes";
 const WORK_MEETING_ROOT_TITLE: &str = "업무 회의록";
 const WORK_MEETING_ROOT_INTRO: &str = "모바일에서 확정한 업무 회의록이 자동으로 들어옵니다.";
@@ -87,6 +89,14 @@ const LOCAL_SENSITIVE_STORE_ROUTES: &[&str] = &[
     "/v1/observations",
     "/v1/stats",
     "/v1/observations/import",
+    "/v1/observation-evidence",
+    "/v1/observation-evidence/export",
+    "/v1/observation-evidence/outbox",
+    "/v1/observation-evidence/receipts",
+    "/v1/observation-evidence/exports",
+    "/v1/observation-evidence/inventory",
+    "/v1/observation-evidence/reconcile",
+    "/v1/observation-evidence/resolve",
     "/v1/quick-observation/roster",
     "/v1/teacher-counseling-sessions",
     "/v1/student-private-details",
@@ -167,7 +177,8 @@ const LOCAL_SENSITIVE_STORE_ROUTES: &[&str] = &[
     "/v1/password-vault/shared/decrypt",
     "/v1/password-vault/shared/recover",
 ];
-const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 19] = [
+const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 20] = [
+    "observation_evidence_v1",
     "non_lesson_observations",
     "teacher_local_records",
     "work_notes",
@@ -289,16 +300,6 @@ pub(crate) struct SqliteStore {
     conn: Mutex<Connection>,
     db_path: PathBuf,
     data_dir: PathBuf,
-}
-
-struct NormalizedObservation {
-    tenant_id: String,
-    doc_id: String,
-    date_key: String,
-    period: i64,
-    student_code: String,
-    payload: Value,
-    updated_at_ms: i64,
 }
 
 struct NormalizedTeacherCounselingSession {
@@ -1003,7 +1004,7 @@ fn compare_prepared_counseling_snapshot(
     }))
 }
 
-fn normalize_observation(input: Value) -> Result<NormalizedObservation, String> {
+fn normalize_observation(input: Value) -> Result<Value, String> {
     let mut obj = input
         .as_object()
         .cloned()
@@ -1113,7 +1114,7 @@ fn normalize_observation(input: Value) -> Result<NormalizedObservation, String> 
         set_obj(&mut obj, "contextType", safe_context_type);
         set_obj(&mut obj, "contextLabel", safe_context_label);
         set_obj(&mut obj, "periodLabel", period_label);
-        set_obj(&mut obj, "eventAtMs", if event_at_ms > 0 { event_at_ms } else { updated_at_ms });
+        set_obj(&mut obj, "eventAtMs", if event_at_ms > 0 { json!(event_at_ms) } else { Value::Null });
         set_obj(&mut obj, "eventTimeLabel", event_time_label);
     }
     set_obj(&mut obj, "studentCode", student_code.clone());
@@ -1128,15 +1129,7 @@ fn normalize_observation(input: Value) -> Result<NormalizedObservation, String> 
     set_obj(&mut obj, "updatedAtMs", updated_at_ms);
     set_obj(&mut obj, "updatedAtIso", updated_at_iso);
 
-    Ok(NormalizedObservation {
-        tenant_id,
-        doc_id,
-        date_key,
-        period: safe_period,
-        student_code,
-        payload: Value::Object(obj),
-        updated_at_ms,
-    })
+    Ok(Value::Object(obj))
 }
 
 fn normalize_teacher_counseling_session(input: Value) -> Result<NormalizedTeacherCounselingSession, String> {
@@ -2011,6 +2004,7 @@ impl SqliteStore {
         )
         .map_err(|e| format!("db_schema_failed:{e}"))?;
         quick_observation::ensure_schema(&conn)?;
+        observation_evidence::ensure_schema(&conn, db_path.parent().unwrap_or_else(|| Path::new(".")))?;
         work_note_attachments::ensure_schema(&conn)?;
         work_note_localization::ensure_schema(&conn)?;
         lesson_plan_bindings::ensure_schema(&conn)?;
@@ -2334,34 +2328,9 @@ impl SqliteStore {
     }
 
     pub(crate) fn upsert_observation(&self, input: Value) -> Result<Value, String> {
-        let record = normalize_observation(input)?;
-        let payload_json =
-            serde_json::to_string(&record.payload).map_err(|e| format!("payload_encode_failed:{e}"))?;
-        let conn = self.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
-        conn.execute(
-            r#"
-            INSERT INTO lesson_observations (
-              tenant_id, doc_id, date_key, period, student_code, payload_json, updated_at_ms
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-            ON CONFLICT(tenant_id, doc_id) DO UPDATE SET
-              date_key = excluded.date_key,
-              period = excluded.period,
-              student_code = excluded.student_code,
-              payload_json = excluded.payload_json,
-              updated_at_ms = excluded.updated_at_ms
-            "#,
-            params![
-                record.tenant_id,
-                record.doc_id,
-                record.date_key,
-                record.period,
-                record.student_code,
-                payload_json,
-                record.updated_at_ms
-            ],
-        )
-        .map_err(|e| format!("db_upsert_failed:{e}"))?;
-        Ok(record.payload)
+        let tenant = normalize_tenant_id(input.get("tenantId"));
+        let mutation = normalize_json_text(input.get("mutationId"), 160);
+        self.evidence_save(&tenant, vec![input], &mutation)?.pop().ok_or_else(|| "invalid_record".into())
     }
 
     fn upsert_teacher_counseling_session(&self, input: Value) -> Result<Value, String> {
@@ -2618,37 +2587,6 @@ impl SqliteStore {
             out.push(row.map_err(|e| format!("db_student_private_row_failed:{e}"))?);
         }
         Ok(out)
-    }
-
-    fn import_observations(&self, tenant_id: String, records: Vec<Value>) -> Result<Vec<Value>, String> {
-        let safe_tenant = normalize_tenant_id(Some(&Value::String(tenant_id)));
-        if safe_tenant.is_empty() {
-            return Err("tenant_id_required".to_string());
-        }
-        let mut normalized = Vec::new();
-        for mut record in records {
-            if let Value::Object(ref mut obj) = record {
-                obj.insert("tenantId".to_string(), Value::String(safe_tenant.clone()));
-            }
-            normalized.push(normalize_observation(record)?);
-        }
-        let mut conn = self.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
-        let tx = conn.transaction().map_err(|e| format!("db_observation_import_begin_failed:{e}"))?;
-        for record in &normalized {
-            let raw = payload_json(&record.payload, "observation_import_payload_encode_failed")?;
-            tx.execute(
-                r#"INSERT INTO lesson_observations (
-                  tenant_id, doc_id, date_key, period, student_code, payload_json, updated_at_ms
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-                ON CONFLICT(tenant_id, doc_id) DO UPDATE SET
-                  date_key = excluded.date_key, period = excluded.period,
-                  student_code = excluded.student_code, payload_json = excluded.payload_json,
-                  updated_at_ms = excluded.updated_at_ms"#,
-                params![record.tenant_id, record.doc_id, record.date_key, record.period, record.student_code, raw, record.updated_at_ms],
-            ).map_err(|e| format!("db_observation_import_failed:{e}"))?;
-        }
-        tx.commit().map_err(|e| format!("db_observation_import_commit_failed:{e}"))?;
-        Ok(normalized.into_iter().map(|record| record.payload).collect())
     }
 
     fn list_observations(
@@ -3757,6 +3695,10 @@ impl SqliteStore {
         // Capture observes the old file metadata with the old DB row, or the
         // new pair. File copying/hashing in backup does not hold this mutex.
         let conn = self.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
+        if board_id == "student-observations" || conn.query_row("SELECT EXISTS(SELECT 1 FROM observation_evidence_revisions WHERE tenant_id=?1 AND EXISTS(SELECT 1 FROM json_each(payload_json,'$.photos') WHERE json_extract(value,'$.mediaId')=?2))", params![tenant_id,media_id], |r| r.get::<_,bool>(0)).map_err(|e|e.to_string())? {
+            let existing: Option<(String,String,String)> = conn.query_row("SELECT local_path,content_type,board_id FROM board_media_files WHERE tenant_id=?1 AND media_id=?2", params![tenant_id,media_id], |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(|e|e.to_string())?;
+            if let Some((relative, mime, board)) = existing { if fs::read(self.data_dir.join(relative)).ok().as_deref() != Some(bytes.as_slice()) || mime != content_type || board != board_id { return Err("observation_photo_immutable".into()); } }
+        }
         if let Some(parent) = absolute_path.parent() {
             fs::create_dir_all(parent).map_err(|e| format!("media_dir_create_failed:{e}"))?;
         }
@@ -5034,6 +4976,9 @@ fn json_response(status: u16, payload: Value, origin: &str) -> Response<std::io:
 
 fn request_error_status(error: &str) -> u16 {
     match error {
+        "observation_revision_conflict" | "observation_mutation_conflict" | "observation_evidence_integrity_mismatch" | "observation_photo_immutable" => 409,
+        "observation_correction_reason_required" | "observation_event_precision_invalid" | "observation_event_time_required" | "observation_event_date_mismatch" | "observation_event_time_invalid" | "observation_evidence_unsafe_number" | "observation_duplicate_record" => 400,
+        "observation_not_found" => 404,
         "student_record_workspace_revision_conflict" => 409,
         "student_record_workspace_revision_required" | "student_record_workspace_invalid" => 400,
         "invalid_json" => 400,
@@ -5446,6 +5391,27 @@ fn handle_request(
             return Ok((200, json!({ "ok": true, "records": records })));
         }
 
+        if path.starts_with("/v1/observation-evidence") {
+            let tenant = browser_tenant.clone().ok_or("browser_token_required")?;
+            if request.method() == &Method::Get {
+                if query(&url, "tenantId") != tenant { return Err("tenant_scope_mismatch".into()); }
+                let result = match path.as_str() {
+                    "/v1/observation-evidence" => store.evidence_detail(&tenant, &query(&url,"docId"), false)?,
+                    "/v1/observation-evidence/export" => store.evidence_detail(&tenant, &query(&url,"docId"), true)?,
+                    "/v1/observation-evidence/outbox" => store.evidence_outbox(&tenant)?,
+                    "/v1/observation-evidence/inventory" => store.evidence_inventory(&tenant)?,
+                    _ => return Ok((404,json!({"ok":false,"error":"not_found"}))),
+                };
+                return Ok((200,result));
+            }
+            let body = scope_body_to_tenant(read_body(&mut request)?, Some(&tenant))?;
+            if request.method() == &Method::Post && path == "/v1/observation-evidence/receipts" { return Ok((200,store.evidence_receipt(&tenant,&body["receipt"])?)); }
+            if request.method() == &Method::Post && path == "/v1/observation-evidence/exports" { return Ok((200,store.evidence_export_audit(&tenant,&body)?)); }
+            if request.method() == &Method::Post && path == "/v1/observation-evidence/reconcile" { return Ok((200,store.evidence_reconcile(&tenant,&body["receipts"])?)); }
+            if request.method() == &Method::Post && path == "/v1/observation-evidence/resolve" { return Ok((200,store.evidence_resolve(&tenant,&body)?)); }
+            return Ok((405,json!({"ok":false,"error":"method_not_allowed"})));
+        }
+
         if request.method() == &Method::Get && path == "/v1/stats" {
             let stats = store.stats(query(&url, "tenantId"))?;
             return Ok((200, json!({ "ok": true, "stats": stats })));
@@ -5712,7 +5678,7 @@ fn handle_request(
                 .and_then(|value| value.as_array())
                 .cloned()
                 .unwrap_or_default();
-            let saved = store.import_observations(tenant_id, records)?;
+            let saved = store.evidence_save(&tenant_id, records, body["mutationId"].as_str().unwrap_or_default())?;
             return Ok((
                 200,
                 json!({ "ok": true, "imported": saved.len(), "records": saved }),
@@ -6567,8 +6533,14 @@ fn save_quick_observation_batch(state: tauri::State<'_, AppState>, input: Value)
     if !explicit.is_empty() && explicit != link.tenant_id {
         return json!({ "ok": false, "error": "tenant_scope_mismatch" });
     }
-    quick_observation::save_batch(&store, &link.tenant_id, input)
-        .unwrap_or_else(|error| json!({ "ok": false, "error": error }))
+    let result = quick_observation::save_batch(&store, &link.tenant_id, input)
+        .unwrap_or_else(|error| json!({ "ok": false, "error": error }));
+    if result["ok"] == true {
+        if let Some(manager) = state.device_sync_manager.lock().ok().and_then(|m| m.clone()) {
+            thread::spawn(move || { let _ = manager.flush_observation_receipts(); });
+        }
+    }
+    result
 }
 
 #[tauri::command]

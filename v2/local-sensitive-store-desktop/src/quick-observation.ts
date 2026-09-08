@@ -1,6 +1,6 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 
-const TUTORIAL_KEY = "localQuickObservationTutorial:v1";
+const TUTORIAL_KEY = "localQuickObservationTutorial:v2";
 const DESIGN_PREVIEW = new URLSearchParams(window.location.search).get("designPreview") === "quick-observation";
 
 type RosterStudent = { id: string; displayName: string; classNo?: number | null; status: string };
@@ -12,6 +12,7 @@ type QuickContext = {
   tenantName?: string;
   roster?: RosterSnapshot | null;
   recent?: Record<string, unknown>[];
+  pendingReceiptCount?: number;
   error?: string;
 };
 
@@ -27,7 +28,7 @@ function todayKst() {
 
 function formatDateTime(value: number) {
   if (!value) return "-";
-  return new Intl.DateTimeFormat("ko-KR", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
+  return new Intl.DateTimeFormat("ko-KR", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Seoul" }).format(new Date(value));
 }
 
 function fixtureContext(): QuickContext {
@@ -55,6 +56,8 @@ export function initQuickObservation(options: { onConnect?: () => void } = {}) {
   const statusGroup = required<HTMLElement>("quickObservationStatus");
   const details = required<HTMLDetailsElement>("quickObservationDetails");
   const date = required<HTMLInputElement>("quickObservationDate");
+  const precision = required<HTMLSelectElement>("quickObservationTimePrecision");
+  const eventTime = required<HTMLInputElement>("quickObservationTime");
   const period = required<HTMLInputElement>("quickObservationPeriod");
   const subject = required<HTMLInputElement>("quickObservationSubject");
   const domain = required<HTMLSelectElement>("quickObservationDomain");
@@ -67,6 +70,7 @@ export function initQuickObservation(options: { onConnect?: () => void } = {}) {
   let status = "none";
   let busy = false;
   let tutorialIndex = 0;
+  let mutationId = crypto.randomUUID();
 
   date.value = todayKst();
 
@@ -105,6 +109,7 @@ export function initQuickObservation(options: { onConnect?: () => void } = {}) {
       input.type = "checkbox";
       input.checked = selected.has(student.id);
       input.addEventListener("change", () => {
+        mutationId = crypto.randomUUID();
         input.checked ? selected.add(student.id) : selected.delete(student.id);
         renderRoster();
       });
@@ -142,7 +147,7 @@ export function initQuickObservation(options: { onConnect?: () => void } = {}) {
       const summary = document.createElement("span");
       summary.textContent = String(record.note || "");
       const time = document.createElement("time");
-      time.textContent = formatDateTime(Number(record.updatedAtMs || 0));
+      time.textContent = `발생 ${record.date || "날짜 미확인"} ${record.eventTimePrecision === "unknown" || !record.eventAtMs ? "시각 모름" : `${record.eventTimePrecision === "approximate" ? "대략 " : ""}${formatDateTime(Number(record.eventAtMs))}`} · 저장 ${formatDateTime(Number(record.createdAtMs || record.updatedAtMs || 0))}`;
       item.append(heading, summary, time);
       container.append(item);
     }
@@ -178,6 +183,8 @@ export function initQuickObservation(options: { onConnect?: () => void } = {}) {
     contextGroup.querySelectorAll<HTMLButtonElement>("button[data-value]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.value === contextType)));
     statusGroup.querySelectorAll<HTMLButtonElement>("button[data-value]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.value === status)));
     document.querySelectorAll<HTMLElement>(".quick-lesson-field").forEach((field) => { field.hidden = contextType !== "lesson"; });
+    required("quickObservationTimeFields").hidden = contextType === "lesson";
+    eventTime.disabled = precision.value === "unknown";
     if (contextType === "lesson" && !details.open) details.open = true;
     required("quickObservationCreativeField").hidden = domain.value !== "creative";
     renderSelection();
@@ -185,7 +192,7 @@ export function initQuickObservation(options: { onConnect?: () => void } = {}) {
 
   function render() {
     required("quickObservationTenant").textContent = state.tenantName || state.tenantId || "연결된 학급 없음";
-    required("quickObservationRosterTime").textContent = state.roster ? `명단 갱신 ${formatDateTime(state.roster.syncedAtMs)}` : "명단 연결 필요";
+    required("quickObservationRosterTime").textContent = state.roster ? `명단 갱신 ${formatDateTime(state.roster.syncedAtMs)}${state.pendingReceiptCount ? ` · 서버 접수 대기 ${state.pendingReceiptCount}건` : ""}` : "명단 연결 필요";
     renderAlert();
     renderRoster();
     renderRecent();
@@ -214,18 +221,46 @@ export function initQuickObservation(options: { onConnect?: () => void } = {}) {
   const tutorialSteps = [
     { target: "roster", title: "학생 선택", body: "학생 타일을 눌러 한 명 또는 여러 명을 선택합니다. 선택한 학생마다 독립 기록이 만들어집니다." },
     { target: "context", title: "상황과 상태", body: "관찰한 상황과 상태를 선택합니다. 수업을 고르면 날짜·교시·과목을 확인한 뒤 저장합니다." },
+    { target: "occurrence", title: "실제 발생 일시", body: "실제 있었던 날짜를 확인합니다. 일상 관찰은 정확한 시각·대략적인 시각·시각 모름 중 선택하며, 지금 버튼은 현재 한국 시각을 입력합니다. 작성 시각은 별도로 자동 기록됩니다." },
     { target: "memo", title: "관찰 메모", body: "관찰한 행동을 짧게 적습니다. 입력 내용은 저장 전까지 이 화면의 메모리에만 있습니다." },
-    { target: "save", title: "로컬 DB 저장", body: "저장 버튼은 기존 관찰기록 DB에 학생별 기록을 저장하고 다시 읽어 확인합니다. 이 안내는 저장을 대신 실행하지 않습니다." },
+    { target: "save", title: "원본과 저장 이력", body: "저장할 때 원본과 검증값을 함께 보존합니다. 이후 정정은 사유와 새 버전으로 남습니다. 서버 접수는 온라인 연결 시 자동 요청되며, 외부 시점확인은 아직 활성화되지 않았습니다. 이 안내는 저장을 실행하지 않습니다." },
   ];
 
   function renderTutorial() {
     const step = tutorialSteps[tutorialIndex];
-    document.querySelectorAll<HTMLElement>("[data-quick-observation-tutorial]").forEach((element) => element.classList.toggle("quick-tutorial-target", element.dataset.quickObservationTutorial === step.target));
+    const selectors: Record<string, string> = { roster: ".quick-student-tile", context: "#quickObservationContext", occurrence: ".quick-occurrence-fields", memo: "#quickObservationNote", save: "#quickObservationSave" };
+    document.querySelectorAll<HTMLElement>(".quick-tutorial-target").forEach((element) => element.classList.remove("quick-tutorial-target"));
+    const target = document.querySelector<HTMLElement>(selectors[step.target]);
+    target?.classList.add("quick-tutorial-target");
     required("quickObservationTutorialStep").textContent = `${tutorialIndex + 1} / ${tutorialSteps.length}`;
     required("quickObservationTutorialTitle").textContent = step.title;
     required("quickObservationTutorialBody").textContent = step.body;
     required<HTMLButtonElement>("quickObservationTutorialPrevious").disabled = tutorialIndex === 0;
     required<HTMLButtonElement>("quickObservationTutorialNext").textContent = tutorialIndex === tutorialSteps.length - 1 ? "안내 완료" : "다음";
+    if (!target) return;
+    tutorial.style.width = window.innerWidth <= 760 ? "calc(100vw - 32px)" : "360px";
+    tutorial.style.left = "auto";
+    tutorial.style.right = "16px";
+    tutorial.style.top = "auto";
+    tutorial.style.bottom = "16px";
+    target.scrollIntoView({ block: "center", behavior: "instant" });
+    let rect = target.getBoundingClientRect();
+    const panel = tutorial.getBoundingClientRect();
+    if (rect.left >= panel.width + 32) {
+      tutorial.style.left = "16px";
+      tutorial.style.right = "auto";
+    } else if (rect.right + panel.width + 32 > window.innerWidth) {
+      const topInset = 56;
+      let scroller = target.parentElement;
+      while (scroller && !(scroller.scrollHeight > scroller.clientHeight && /auto|scroll/.test(getComputedStyle(scroller).overflowY))) scroller = scroller.parentElement;
+      if (scroller) scroller.scrollTo({ top: scroller.scrollTop + rect.top - topInset, behavior: "instant" });
+      else window.scrollBy({ top: rect.top - topInset, behavior: "instant" });
+      rect = target.getBoundingClientRect();
+      if (rect.bottom + panel.height + 28 > window.innerHeight && rect.top >= panel.height + topInset + 12) {
+        tutorial.style.top = `${topInset}px`;
+        tutorial.style.bottom = "auto";
+      }
+    }
   }
 
   function openTutorial() {
@@ -236,7 +271,7 @@ export function initQuickObservation(options: { onConnect?: () => void } = {}) {
 
   function closeTutorial() {
     tutorial.hidden = true;
-    document.querySelectorAll<HTMLElement>("[data-quick-observation-tutorial]").forEach((element) => element.classList.remove("quick-tutorial-target"));
+    document.querySelectorAll<HTMLElement>(".quick-tutorial-target").forEach((element) => element.classList.remove("quick-tutorial-target"));
     localStorage.setItem(TUTORIAL_KEY, "complete");
   }
 
@@ -247,6 +282,8 @@ export function initQuickObservation(options: { onConnect?: () => void } = {}) {
   }
 
   search.addEventListener("input", renderRoster);
+  form.addEventListener("input", () => { if (!busy) mutationId = crypto.randomUUID(); });
+  form.addEventListener("change", () => { if (!busy) mutationId = crypto.randomUUID(); });
   note.addEventListener("input", () => {
     required("quickObservationNoteCount").textContent = `${note.value.length} / 1000`;
     renderSelection();
@@ -255,6 +292,7 @@ export function initQuickObservation(options: { onConnect?: () => void } = {}) {
     const button = (event.target as HTMLElement | null)?.closest<HTMLButtonElement>("button[data-value]");
     if (!button) return;
     contextType = button.dataset.value || "";
+    mutationId = crypto.randomUUID();
     domain.value = contextType === "lesson" ? "subjects" : "behavior";
     renderContext();
   });
@@ -262,9 +300,17 @@ export function initQuickObservation(options: { onConnect?: () => void } = {}) {
     const button = (event.target as HTMLElement | null)?.closest<HTMLButtonElement>("button[data-value]");
     if (!button) return;
     status = button.dataset.value || "none";
+    mutationId = crypto.randomUUID();
     renderContext();
   });
   domain.addEventListener("change", renderContext);
+  precision.addEventListener("change", () => { if (precision.value === "unknown") eventTime.value = ""; renderContext(); });
+  required("quickObservationNow").addEventListener("click", () => {
+    date.value = todayKst();
+    eventTime.value = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Seoul", hourCycle: "h23" }).format(new Date());
+    precision.value = "exact";
+    renderContext();
+  });
   required("quickObservationSelectAll").addEventListener("click", () => { selected = new Set(activeStudents().map((student) => student.id)); renderRoster(); });
   required("quickObservationClear").addEventListener("click", () => { selected.clear(); renderRoster(); });
   required("quickObservationRefresh").addEventListener("click", () => void load());
@@ -279,6 +325,8 @@ export function initQuickObservation(options: { onConnect?: () => void } = {}) {
     if (!selected.size) return setFormStatus("기록할 학생을 한 명 이상 선택하세요.", "bad");
     if (!contextType) return setFormStatus("관찰 상황을 선택하세요.", "bad");
     if (!note.value.trim()) return setFormStatus("관찰 메모를 입력하세요.", "bad");
+    if (!date.value) return setFormStatus("실제 발생 날짜를 입력하세요.", "bad");
+    if (contextType !== "lesson" && precision.value !== "unknown" && !eventTime.value) return setFormStatus("발생 시각을 입력하거나 시각 모름을 선택하세요.", "bad");
     if (contextType === "lesson" && (!Number(period.value) || !subject.value.trim())) { details.open = true; return setFormStatus("수업 관찰은 교시와 과목을 입력하세요.", "bad"); }
     if (domain.value === "creative" && !creative.value.trim()) { details.open = true; return setFormStatus("창체 영역을 입력하세요.", "bad"); }
     busy = true;
@@ -288,11 +336,15 @@ export function initQuickObservation(options: { onConnect?: () => void } = {}) {
       if (DESIGN_PREVIEW) throw new Error("design_preview_read_only");
       const result = await invoke<{ ok?: boolean; savedCount?: number; error?: string }>("save_quick_observation_batch", { input: {
         tenantId: state.tenantId,
+        mutationId,
         studentIds: [...selected],
         contextType,
         status,
         note: note.value.trim(),
         date: date.value,
+        eventTimePrecision: contextType === "lesson" ? "unknown" : precision.value,
+        eventTimeZone: "Asia/Seoul",
+        eventAtMs: contextType === "lesson" || precision.value === "unknown" ? null : new Date(`${date.value}T${eventTime.value}:00+09:00`).getTime(),
         period: Number(period.value || 0),
         subject: subject.value.trim(),
         recordDomain: domain.value,
@@ -302,6 +354,7 @@ export function initQuickObservation(options: { onConnect?: () => void } = {}) {
       if (result?.ok === false) throw new Error(result.error || "quick_observation_save_failed");
       const savedCount = Number(result.savedCount || selected.size);
       selected.clear();
+      mutationId = crypto.randomUUID();
       note.value = "";
       required("quickObservationNoteCount").textContent = "0 / 1000";
       await load();
@@ -320,6 +373,7 @@ export function initQuickObservation(options: { onConnect?: () => void } = {}) {
     if ((event.ctrlKey || event.metaKey) && event.key === "Enter" && !save.disabled && !required<HTMLElement>("quickObservationTutorial").hidden) return;
     if ((event.ctrlKey || event.metaKey) && event.key === "Enter" && !save.disabled) { event.preventDefault(); form.requestSubmit(); }
   });
+  window.addEventListener("resize", () => { if (!tutorial.hidden) renderTutorial(); });
 
   renderContext();
   return { open };

@@ -146,6 +146,15 @@ fn stage_restore_media(
             media_missing += 1;
             continue;
         }
+        {
+            let conn = store.conn.lock().map_err(|_| "db_lock_failed")?;
+            let mut stmt = conn.prepare("SELECT json_extract(p.value,'$.sha256') FROM observation_evidence_revisions r JOIN json_each(r.payload_json,'$.photos') p WHERE r.tenant_id=?1 AND json_extract(p.value,'$.mediaId')=?2 AND json_extract(p.value,'$.sha256') IS NOT NULL").map_err(|e|e.to_string())?;
+            let hashes = stmt.query_map(params![tenant_id,media_id], |r| r.get::<_,String>(0)).map_err(|e|e.to_string())?.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())?;
+            if !hashes.is_empty() {
+                let (_, incoming_hash) = sha256_file(&source_path)?;
+                if hashes.iter().any(|hash|hash != &incoming_hash) { let _ = fs::remove_dir_all(&staging_root); return Err("observation_photo_immutable".into()); }
+            }
+        }
         let staged_path = staged_dir.join(format!("{index}-{}", safe_segment(&media_id, "media")));
         if let Some(parent) = staged_path.parent() {
             if let Err(error) = fs::create_dir_all(parent) {
@@ -273,6 +282,7 @@ where
     }
     let result = (|| -> Result<i64, String> {
         let transaction = conn.transaction().map_err(|e| format!("restore_transaction_begin_failed:{e}"))?;
+        crate::observation_evidence::check_restore(&transaction, &tenant_id)?;
         if manual_restore_has_lesson_binding_conflict(&transaction, &tenant_id)? {
             return Err("lesson_plan_binding_revision_conflict".to_string());
         }
@@ -551,6 +561,8 @@ fn lesson_binding_merge(current: &str, incoming: &str) -> Option<LessonBindingMe
 }
 
 fn restore_merge_guard(table: &BackupTable) -> String {
+    if table.name.starts_with("observation_evidence_") { return "0".to_string(); }
+    if table.name == "lesson_observations" { return crate::observation_evidence::observation_merge_guard(); }
     if table.name != "lesson_plan_bindings" {
         return format!(
             "excluded.{timestamp} >= main.{name}.{timestamp}",
@@ -857,7 +869,20 @@ pub(super) fn restore_generation(
             }
             let values = record_params(tenant_id, record);
             let where_clause = record_where(table);
+            if table.name == "observation_evidence_reconciliation" && current.is_some() { continue; }
+            if table.name.starts_with("observation_evidence_") && (record.tombstone || current.is_some()) {
+                if !record.tombstone && current != incoming { return Err("observation_evidence_restore_conflict".into()); }
+                continue;
+            }
+            if table.name == "lesson_observations" {
+                crate::observation_evidence::check_restore(&transaction, tenant_id)?;
+                if record.tombstone && current.as_deref().is_some_and(|raw| raw.contains("revisionId")) { return Err("observation_evidence_restore_rewind".into()); }
+            }
             if record.tombstone {
+                if table.name == "board_media_files" {
+                    let protected: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM observation_evidence_revisions r JOIN json_each(r.payload_json,'$.photos') p WHERE r.tenant_id=?1 AND json_extract(p.value,'$.mediaId')=json_extract(?2,'$[0]'))",params![tenant_id,record.record_key], |r|r.get(0)).map_err(|e|e.to_string())?;
+                    if protected { return Err("observation_photo_immutable".into()); }
+                }
                 if matches!(table.name, "board_media_files" | "work_note_attachments") {
                     let path_sql = format!(
                         "SELECT local_path FROM main.{name} WHERE tenant_id = ?1 AND {where_clause}",
@@ -891,7 +916,9 @@ pub(super) fn restore_generation(
                     .map(|column| format!("{column} = excluded.{column}"))
                     .collect::<Vec<_>>()
                     .join(", ");
-                let merge_guard = if table.name == "lesson_plan_bindings" {
+                let merge_guard = if table.name == "lesson_observations" {
+                    format!(" WHERE json_extract(main.lesson_observations.payload_json,'$.revisionId') IS NULL OR {}", restore_merge_guard(table))
+                } else if table.name == "lesson_plan_bindings" {
                     format!(" WHERE {}", restore_merge_guard(table))
                 } else {
                     String::new()
@@ -1006,10 +1033,10 @@ mod tests {
     }
 
     fn observation(store: &SqliteStore, doc_id: &str, note: &str, updated_at_ms: i64) {
-        store.upsert_observation(json!({
-            "tenantId": "tenant-a", "docId": doc_id, "dateKey": "2026-08-04", "period": 1,
-            "studentCode": "1", "observation": note, "updatedAtMs": updated_at_ms
-        })).expect("upsert observation");
+        // These restore tests exercise legacy snapshots and their timestamp/tombstone policy.
+        // Provenance-aware observation restore has separate revision-graph regression tests.
+        let record = json!({"tenantId":"tenant-a","docId":doc_id,"date":"2026-08-04","period":1,"studentCode":"1","observation":note,"updatedAtMs":updated_at_ms});
+        store.conn.lock().unwrap().execute("INSERT INTO lesson_observations VALUES('tenant-a',?1,'2026-08-04',1,'1',?2,?3) ON CONFLICT(tenant_id,doc_id) DO UPDATE SET payload_json=excluded.payload_json,updated_at_ms=excluded.updated_at_ms",params![doc_id,record.to_string(),updated_at_ms]).expect("seed legacy observation");
     }
 
     fn observation_row(store: &SqliteStore, doc_id: &str) -> Option<(String, i64)> {

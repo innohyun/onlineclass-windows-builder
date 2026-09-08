@@ -77,7 +77,7 @@ impl StudentRecordMcpManager {
                 } else {
                     "observation"
                 };
-                evidence.push(json!({"sourceType":source,"dateKey":source_date(&value),"subject":source_subject(&value),"text":normalized,"_key":format!("observation:{id}")}));
+                evidence.push(json!({"sourceType":source,"dateKey":source_date(&value),"subject":source_subject(&value),"text":normalized,"revisionId":value["revisionId"],"revisionHash":value["revisionHash"],"_key":format!("observation:{id}")}));
             } else if kind == "evaluation" {
                 if scope.get("recordType").and_then(Value::as_str) != Some("subjects") {
                     return Err("LOCAL_SELECTION_REQUIRED".to_string());

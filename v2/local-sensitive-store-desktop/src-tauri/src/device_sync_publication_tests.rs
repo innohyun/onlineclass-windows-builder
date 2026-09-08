@@ -130,8 +130,9 @@ fn backup_pending_twenty_failures_and_restart_reuse_one_database_then_keep_new_e
             .unwrap();
         if attempt == 0 {
             first_snapshot = pending["snapshot"].clone();
+            let revision = store.conn.lock().unwrap().query_row("SELECT json_extract(payload_json,'$.revisionId') FROM lesson_observations WHERE tenant_id='qa-pending' AND doc_id='record'", [], |r| r.get::<_,String>(0)).unwrap();
             store.upsert_observation(json!({"tenantId":"qa-pending","docId":"record","dateKey":"2026-09-05",
-                "period":1,"studentCode":"1","observation":"new edit after capture","updatedAtMs":2})).unwrap();
+                "period":1,"studentCode":"1","observation":"new edit after capture","updatedAtMs":2,"expectedRevisionId":revision,"correctionReason":"new edit after capture"})).unwrap();
         } else {
             assert_eq!(pending["snapshot"], first_snapshot);
         }

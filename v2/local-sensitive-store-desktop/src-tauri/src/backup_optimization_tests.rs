@@ -17,10 +17,11 @@ fn fixture() -> (PathBuf, SqliteStore) {
 }
 
 fn edit(store: &SqliteStore, text: &str, timestamp: i64) {
+    let previous = store.conn.lock().unwrap().query_row("SELECT json_extract(payload_json,'$.revisionId') FROM lesson_observations WHERE tenant_id='qa-sync' AND doc_id='record'", [], |row| row.get::<_,String>(0)).ok();
     store
         .upsert_observation(
             json!({"tenantId":"qa-sync","docId":"record","dateKey":"2026-09-05",
-        "period":1,"studentCode":"1","observation":text,"updatedAtMs":timestamp}),
+        "period":1,"studentCode":"1","observation":text,"updatedAtMs":timestamp,"expectedRevisionId":previous,"correctionReason":"backup fixture correction"}),
         )
         .unwrap();
 }

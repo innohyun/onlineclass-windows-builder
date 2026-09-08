@@ -166,13 +166,15 @@ pub(crate) fn context(store: &SqliteStore, link: Option<BrowserLinkToken>) -> Re
     };
     let roster = store.quick_roster_snapshot(&link.tenant_id)?;
     let recent = store.recent_quick_observations(&link.tenant_id, 4)?;
+    let pending = store.evidence_outbox(&link.tenant_id)?;
     Ok(json!({
         "ok": true,
         "connected": true,
         "tenantId": link.tenant_id,
         "tenantName": link.tenant_name,
         "roster": roster,
-        "recent": recent
+        "recent": recent,
+        "pendingReceiptCount": pending["entries"].as_array().map(|rows| rows.len()).unwrap_or(0)
     }))
 }
 
@@ -269,10 +271,11 @@ pub(crate) fn save_batch(store: &SqliteStore, tenant_id: &str, input: Value) -> 
     }
     let tags = string_list(input.get("tags"));
     let timestamp = now_ms();
-    let batch_id = format!("observation-batch-{timestamp}-{}", random_url_token());
+    let mutation_id = normalize_json_text(input.get("mutationId"), 160);
+    let batch_id = if mutation_id.is_empty() { format!("observation-batch-{timestamp}-{}", random_url_token()) } else { mutation_id.clone() };
     let mut records = Vec::with_capacity(selected.len());
     for student in selected {
-        let doc_id = format!("teacher-observation-{date_key}-{}-{}", student.id, random_url_token());
+        let doc_id = format!("teacher-observation-{date_key}-{}-{batch_id}", student.id);
         let mut record = json!({
             "tenantId": tenant_id,
             "docId": doc_id,
@@ -293,20 +296,20 @@ pub(crate) fn save_batch(store: &SqliteStore, tenant_id: &str, input: Value) -> 
             "status": status,
             "tags": tags,
             "note": note,
-            "createdAtMs": timestamp,
-            "updatedAtMs": timestamp
+            "eventTimePrecision": input.get("eventTimePrecision").cloned().unwrap_or(json!("unknown")),
+            "eventTimeZone": "Asia/Seoul",
+            "eventAtMs": input.get("eventAtMs").cloned().unwrap_or(Value::Null)
         });
         if context_type != "lesson" {
             let object = record.as_object_mut().expect("quick observation object");
             object.insert("observationKind".to_string(), Value::String("non_lesson".to_string()));
             object.insert("contextType".to_string(), Value::String(context_type.clone()));
             object.insert("contextLabel".to_string(), Value::String(context_label.to_string()));
-            object.insert("eventAtMs".to_string(), Value::Number(timestamp.into()));
         }
         records.push(record);
     }
 
-    let saved = store.import_observations(tenant_id.clone(), records.clone())?;
+    let saved = store.evidence_save(&tenant_id, records.clone(), &mutation_id)?;
     let conn = store.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
     for expected in &saved {
         let doc_id = expected.get("docId").and_then(Value::as_str).unwrap_or_default();

@@ -2,6 +2,14 @@
 
 Windows installer for the loopback SQLite service used by tenant observation records in `local_sqlite` mode.
 
+## 0.2.73 source release notes
+
+- Separates actual occurrence date/time (exact, approximate, unknown; Asia/Seoul) from helper-generated save time, including quick observation and its version 2 guide.
+- Preserves immutable observation revisions, correction reasons, photo content hashes, atomic batch commitments, idempotent requests, and local export evidence. Hashes do not establish whether the described event happened.
+- Automatically requests signed server receipts using the existing active device session and verifies ES256 against the fixed HTTPS public-key registry. Failed/offline requests remain pending; external timestamping is inactive.
+- Includes provenance tables in backup/device sync, rejects history replacement and silent rewinds, and preserves divergent heads for explicit reasoned resolution. Older snapshots cannot erase known revisions or photos.
+- Native service revision: `2026-09-08.2-observation-evidence`; capability `observation_evidence_v1`. Windows publication requires the public builder gate. Public macOS `0.2.22` remains unsupported for this capability.
+
 ## 0.2.72 source release notes
 
 - Adds durable student-record workspace metadata to the existing tenant SQLite draft-set table, including selected evidence, review fingerprints, supplements, prompt snapshots, and draft links.
