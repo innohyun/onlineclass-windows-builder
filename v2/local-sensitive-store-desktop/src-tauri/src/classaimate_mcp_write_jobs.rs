@@ -3,9 +3,17 @@ use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
-const OPERATIONS: [&str; 8] = [
+#[path = "classaimate_mcp_material_assets.rs"]
+mod material_assets;
+#[path = "classaimate_mcp_transaction_store.rs"]
+mod transaction_store;
+use transaction_store::TransactionStore;
+#[path = "classaimate_mcp_receipt_verification.rs"]
+mod receipt_verification;
+
+const OPERATIONS: [&str; 9] = [
     "student_record_save_drafts",
     "counseling_record_save_draft",
     "counseling_record_prepare_create",
@@ -14,6 +22,7 @@ const OPERATIONS: [&str; 8] = [
     "materials_update_draft",
     "materials_restructure_page",
     "lesson_observations_manage",
+    "materials_apply_images",
 ];
 const LOCAL_RECEIPT_TTL_MS: i64 = 24 * 60 * 60 * 1000;
 const STUDENT_MATERIAL_ROOT_ID: &str = "student-learning-materials-root";
@@ -119,15 +128,12 @@ fn draft_matches_scope(payload: &Value, scope: &Value) -> bool {
     }
 }
 fn latest_draft(
-    store: &SqliteStore,
+    store: &TransactionStore<'_>,
     tenant: &str,
     student: &str,
     scope: &Value,
 ) -> Result<String, String> {
-    let conn = store
-        .conn
-        .lock()
-        .map_err(|_| "db_lock_failed".to_string())?;
+    let conn = store.conn;
     let mut stmt = conn.prepare("SELECT draft_id,payload_json,updated_at_ms FROM student_record_drafts WHERE tenant_id=?1 AND student_code=?2 ORDER BY updated_at_ms DESC,draft_id DESC")
         .map_err(|e| format!("db_classaimate_mcp_draft_query_failed:{e}"))?;
     let rows = stmt
@@ -152,16 +158,13 @@ fn latest_draft(
     Ok(digest(r#"{"draftId":"","text":"","updatedAtMs":0}"#))
 }
 
-fn exact_student_batch(store: &SqliteStore, tenant: &str, data: &Value) -> Result<bool, String> {
+fn exact_student_batch(store: &TransactionStore<'_>, tenant: &str, data: &Value) -> Result<bool, String> {
     let draft_set_id = data.get("draftSetId").and_then(Value::as_str).unwrap_or("");
     let expected = data
         .get("rows")
         .and_then(Value::as_array)
         .ok_or_else(|| "classaimate_mcp_write_job_invalid".to_string())?;
-    let conn = store
-        .conn
-        .lock()
-        .map_err(|_| "db_lock_failed".to_string())?;
+    let conn = store.conn;
     let exists: Option<i64> = conn
         .query_row(
             "SELECT 1 FROM student_record_draft_sets WHERE tenant_id=?1 AND draft_set_id=?2",
@@ -210,7 +213,7 @@ fn exact_student_batch(store: &SqliteStore, tenant: &str, data: &Value) -> Resul
     Ok(true)
 }
 
-fn save_student(store: &SqliteStore, tenant: &str, data: &Value) -> Result<Value, String> {
+fn save_student(store: &TransactionStore<'_>, tenant: &str, data: &Value) -> Result<Value, String> {
     let draft_set_id = required_id(data.get("draftSetId"))?;
     let scope = data
         .get("scope")
@@ -279,7 +282,7 @@ fn save_student(store: &SqliteStore, tenant: &str, data: &Value) -> Result<Value
     Ok(json!({"result":data,"localRef":format!("student-record-draft-set:{draft_set_id}")}))
 }
 
-fn save_counseling(store: &SqliteStore, tenant: &str, data: &Value) -> Result<Value, String> {
+fn save_counseling(store: &TransactionStore<'_>, tenant: &str, data: &Value) -> Result<Value, String> {
     let draft_id = required_id(data.get("draftId"))?;
     let counseling_ref = required_id(data.get("counselingRef"))?;
     let session = store
@@ -306,10 +309,7 @@ fn save_counseling(store: &SqliteStore, tenant: &str, data: &Value) -> Result<Va
         "followUpNote":follow_up,"status":"pending","sourceType":"classAimatePublicMcp","sourceLabel":"내 ChatGPT","teacherReviewRequired":true});
     let raw = serde_json::to_string(&payload)
         .map_err(|_| "classaimate_mcp_local_payload_invalid".to_string())?;
-    let conn = store
-        .conn
-        .lock()
-        .map_err(|_| "db_lock_failed".to_string())?;
+    let conn = store.conn;
     let existing: Option<String> = conn.query_row("SELECT payload_json FROM teacher_counseling_mcp_drafts WHERE tenant_id=?1 AND draft_id=?2",params![tenant,draft_id],|row|row.get(0)).optional()
         .map_err(|e|format!("db_classaimate_mcp_counseling_query_failed:{e}"))?;
     if let Some(value) = existing {
@@ -322,7 +322,7 @@ fn save_counseling(store: &SqliteStore, tenant: &str, data: &Value) -> Result<Va
     Ok(json!({"result":data,"localRef":format!("teacher-counseling-mcp-draft:{draft_id}")}))
 }
 
-fn create_counseling(store: &SqliteStore, tenant: &str, data: &Value) -> Result<Value, String> {
+fn create_counseling(store: &TransactionStore<'_>, tenant: &str, data: &Value) -> Result<Value, String> {
     let counseling_id = required_id(data.get("counselingId"))?;
     let student_code = required_id(data.get("studentCode"))?;
     let student_name = data.get("studentName").and_then(Value::as_str).unwrap_or("").trim();
@@ -373,7 +373,7 @@ fn create_counseling(store: &SqliteStore, tenant: &str, data: &Value) -> Result<
     Ok(json!({"result":data,"localRef":format!("teacher-counseling-session:{counseling_id}")}))
 }
 
-fn save_work_note(store: &SqliteStore, tenant: &str, data: &Value) -> Result<Value, String> {
+fn save_work_note(store: &TransactionStore<'_>, tenant: &str, data: &Value) -> Result<Value, String> {
     let page_id = required_id(data.get("pageId"))?;
     let workspace = data.get("workspace").and_then(Value::as_str).unwrap_or("work_materials");
     if !matches!(workspace, "work_materials" | "lesson_materials" | "student_learning_materials") {
@@ -427,7 +427,7 @@ fn save_work_note(store: &SqliteStore, tenant: &str, data: &Value) -> Result<Val
         _ => None,
     };
     let linked = if let Some(page_ref) = linked_page_ref.as_deref() {
-        let conn = store.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
+        let conn = store.conn;
         conn.query_row("SELECT plan_id,page_id,COALESCE(subject,'') FROM lesson_plan_bindings
              WHERE tenant_id=?1 AND page_id=?2 LIMIT 1", params![tenant,page_ref], |row| {
             Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?))
@@ -469,7 +469,7 @@ fn save_work_note(store: &SqliteStore, tenant: &str, data: &Value) -> Result<Val
     Ok(json!({"result":data,"localRef":format!("work-note-page:{page_id}")}))
 }
 
-fn update_work_note(store: &SqliteStore, tenant: &str, data: &Value) -> Result<Value, String> {
+fn update_work_note(store: &TransactionStore<'_>, tenant: &str, data: &Value) -> Result<Value, String> {
     let page_ref = required_id(data.get("pageRef"))?;
     let existing = store.get_work_note(tenant.to_string(), page_ref.clone())?
         .ok_or_else(|| "DRAFT_CONFLICT".to_string())?;
@@ -507,7 +507,7 @@ fn update_work_note(store: &SqliteStore, tenant: &str, data: &Value) -> Result<V
         properties.insert("studentLearningMaterial".to_string(), Value::Object(next_marker));
         updated.insert("properties".to_string(), Value::Object(properties));
     }
-    updated.insert("updatedAtMs".to_string(), json!(now_ms()));
+    updated.insert("updatedAtMs".to_string(), json!(now_ms().max(expected_revision + 1)));
     store.upsert_work_note(Value::Object(updated))?;
     let readback = store.get_work_note(tenant.to_string(), page_ref.clone())?
         .ok_or_else(|| "LOCAL_STORE_WRITE_FAILED".to_string())?;
@@ -581,7 +581,7 @@ fn collect_document_references(value: &Value, references: &mut BTreeSet<String>)
     }
 }
 
-fn restructure_work_note(store: &SqliteStore, tenant: &str, data: &Value) -> Result<Value, String> {
+fn restructure_work_note(store: &TransactionStore<'_>, tenant: &str, data: &Value) -> Result<Value, String> {
     let page_ref = required_id(data.get("pageRef"))?;
     let existing = store
         .get_work_note(tenant.to_string(), page_ref.clone())?
@@ -648,7 +648,7 @@ fn restructure_work_note(store: &SqliteStore, tenant: &str, data: &Value) -> Res
             updated.insert("properties".to_string(), Value::Object(properties));
         }
     }
-    updated.insert("updatedAtMs".to_string(), json!(now_ms()));
+    updated.insert("updatedAtMs".to_string(), json!(now_ms().max(expected_revision + 1)));
     store.upsert_work_note(Value::Object(updated))?;
     let readback = store
         .get_work_note(tenant.to_string(), page_ref.clone())?
@@ -662,6 +662,34 @@ fn restructure_work_note(store: &SqliteStore, tenant: &str, data: &Value) -> Res
         "result":{"pageRef":page_ref,"appliedFromRevision":expected_revision},
         "localRef":format!("work-note-page:{page_ref}")
     }))
+}
+
+fn verify_nonimage_readback(store: &TransactionStore<'_>, tenant: &str, operation: &str, data: &Value) -> Result<(), String> {
+    match operation {
+        "student_record_save_drafts" => {
+            if !exact_student_batch(store, tenant, data)? { return Err("LOCAL_STORE_WRITE_FAILED".into()); }
+        }
+        "counseling_record_save_draft" => {
+            let raw: Option<String> = store.conn.query_row("SELECT payload_json FROM teacher_counseling_mcp_drafts WHERE tenant_id=?1 AND draft_id=?2",
+                params![tenant,data["draftId"].as_str()],|row|row.get(0)).optional().map_err(|error|format!("db_mcp_receipt_readback_failed:{error}"))?;
+            let row = decode(raw.ok_or("LOCAL_STORE_WRITE_FAILED")?)?;
+            if row["counselingRef"] != data["counselingRef"] || row["summary"] != data["summary"]
+                || row["followUpNote"].as_str().unwrap_or("") != data["followUpNote"].as_str().unwrap_or("") || row["status"] != "pending" {
+                return Err("LOCAL_STORE_WRITE_FAILED".into());
+            }
+        }
+        "counseling_record_prepare_create" => {
+            let row = store.get_teacher_counseling_session(tenant.into(),required_id(data.get("counselingId"))?)?.ok_or("LOCAL_STORE_WRITE_FAILED")?;
+            if ["studentCode","counselingAtMs","participantType","channel","status","summary","topics"].iter().any(|key|row[key]!=data[key])
+                || row["followUpNote"].as_str().unwrap_or("") != data["followUpNote"].as_str().unwrap_or("") { return Err("LOCAL_STORE_WRITE_FAILED".into()); }
+        }
+        _ => {
+            let row = store.get_work_note(tenant.into(),required_id(data.get("pageRef").or_else(||data.get("pageId")))?)?.ok_or("LOCAL_STORE_WRITE_FAILED")?;
+            if data.get("title").is_some_and(|title|row["title"]!=*title) || row["markdown"].as_str().unwrap_or("") != data["markdown"].as_str().unwrap_or("")
+                || row["blocks"] != data["blocks"] || data.get("parentPageRef").is_some_and(|parent|row["parentId"]!=*parent) { return Err("LOCAL_STORE_WRITE_FAILED".into()); }
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn ensure_schema(conn: &Connection) -> Result<(), String> {
@@ -684,7 +712,7 @@ pub(crate) fn ensure_schema(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn apply(store: &SqliteStore, input: &Value) -> Result<Value, String> {
+pub(crate) fn verified_replay(store: &SqliteStore, input: &Value) -> Result<Option<Value>, String> {
     required_object(Some(input))?;
     let tenant = required_id(input.get("tenantId"))?;
     let receipt = required_id(input.get("receiptId"))?;
@@ -714,12 +742,50 @@ pub(crate) fn apply(store: &SqliteStore, input: &Value) -> Result<Value, String>
             if saved_operation != operation || saved_sha != request_sha {
                 return Err("IDEMPOTENCY_CONFLICT".to_string());
             }
+            let decoded = decode(result.clone())?;
+            if decoded["kind"] == receipt_verification::ENVELOPE {
+                if operation == "materials_apply_images" { material_assets::verify_files(&conn, &store.data_dir, &tenant, &decoded["result"])?; }
+                let verified = receipt_verification::verify(&conn, &tenant, &decoded)?;
+                return Ok(Some(json!({"replayed":true,"result":verified,"localRef":local_ref})));
+            }
             if operation == "lesson_observations_manage" {
                 crate::classaimate_mcp_observations::verify_replay(&conn, &tenant, &decode(result.clone())?)?;
             }
-            return Ok(json!({"replayed":true,"result":decode(result)?,"localRef":local_ref}));
+            if operation == "materials_apply_images" {
+                material_assets::verify(&conn, &store.data_dir, &tenant, &decode(result.clone())?)?;
+            }
+            if !["materials_apply_images", "lesson_observations_manage"].contains(&operation) {
+                verify_nonimage_readback(&TransactionStore { conn: &conn }, &tenant, operation, &input["data"])?;
+            }
+            return Ok(Some(json!({"replayed":true,"result":decode(result)?,"localRef":local_ref})));
         }
     }
+    Ok(None)
+}
+
+pub(crate) fn committed_receipt_exists(store: &SqliteStore, input: &Value) -> Result<bool, String> {
+    let tenant = required_id(input.get("tenantId"))?;
+    let receipt = required_id(input.get("receiptId"))?;
+    let conn = store.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
+    let existing: Option<(String,String)> = conn.query_row("SELECT operation,request_sha256 FROM classaimate_mcp_local_write_receipts WHERE tenant_id=?1 AND receipt_id=?2",
+        params![tenant,receipt],|row|Ok((row.get(0)?,row.get(1)?))).optional().map_err(|error|format!("db_classaimate_mcp_receipt_query_failed:{error}"))?;
+    match existing {
+        Some((operation,sha)) if input["operation"]==operation && input["requestSha256"]==sha => Ok(true),
+        Some(_) => Err("IDEMPOTENCY_CONFLICT".into()),
+        None => Ok(false),
+    }
+}
+
+pub(crate) fn apply(store: &SqliteStore, input: &Value) -> Result<Value, String> {
+    apply_with_assets(store, input, &HashMap::new())
+}
+
+pub(crate) fn apply_with_assets(store: &SqliteStore, input: &Value, assets: &HashMap<String, Vec<u8>>) -> Result<Value, String> {
+    if let Some(result) = verified_replay(store, input)? { return Ok(result); }
+    let tenant = required_id(input.get("tenantId"))?;
+    let receipt = required_id(input.get("receiptId"))?;
+    let operation = input.get("operation").and_then(Value::as_str).unwrap_or("");
+    let request_sha = input.get("requestSha256").and_then(Value::as_str).unwrap_or("");
     let data = input
         .get("data")
         .filter(|value| value.is_object())
@@ -727,21 +793,31 @@ pub(crate) fn apply(store: &SqliteStore, input: &Value) -> Result<Value, String>
     if operation == "lesson_observations_manage" {
         return crate::classaimate_mcp_observations::apply(store, input);
     }
+    if operation == "materials_apply_images" {
+        return material_assets::apply(store, input, assets);
+    }
+    let mut conn = store.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
+    let transaction = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|error|format!("db_mcp_write_transaction_failed:{error}"))?;
+    let scoped = TransactionStore { conn: &transaction };
     let saved = match operation {
-        "student_record_save_drafts" => save_student(store, &tenant, data)?,
-        "counseling_record_save_draft" => save_counseling(store, &tenant, data)?,
-        "counseling_record_prepare_create" => create_counseling(store, &tenant, data)?,
-        "materials_update_draft" => update_work_note(store, &tenant, data)?,
-        "materials_restructure_page" => restructure_work_note(store, &tenant, data)?,
-        _ => save_work_note(store, &tenant, data)?,
+        "student_record_save_drafts" => save_student(&scoped, &tenant, data)?,
+        "counseling_record_save_draft" => save_counseling(&scoped, &tenant, data)?,
+        "counseling_record_prepare_create" => create_counseling(&scoped, &tenant, data)?,
+        "materials_update_draft" => update_work_note(&scoped, &tenant, data)?,
+        "materials_restructure_page" => restructure_work_note(&scoped, &tenant, data)?,
+        _ => save_work_note(&scoped, &tenant, data)?,
     };
+    verify_nonimage_readback(&scoped, &tenant, operation, data)?;
     let result = saved.get("result").cloned().unwrap_or(Value::Null);
     let local_ref = saved.get("localRef").and_then(Value::as_str).unwrap_or("");
-    let conn = store
-        .conn
-        .lock()
-        .map_err(|_| "db_lock_failed".to_string())?;
-    conn.execute("INSERT INTO classaimate_mcp_local_write_receipts(tenant_id,receipt_id,operation,request_sha256,result_json,local_ref,created_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![tenant,receipt,operation,request_sha,serde_json::to_string(&result).map_err(|_|"classaimate_mcp_local_payload_invalid".to_string())?,local_ref,now_ms()]).map_err(|e|format!("db_classaimate_mcp_receipt_save_failed:{e}"))?;
+    let locator = receipt_verification::locator(operation,data);
+    let envelope = json!({"kind":receipt_verification::ENVELOPE,"result":result,
+        "verification":{"sha256":receipt_verification::digest(&transaction,&tenant,&locator)?,"locator":locator}});
+    transaction.execute("INSERT INTO classaimate_mcp_local_write_receipts(tenant_id,receipt_id,operation,request_sha256,result_json,local_ref,created_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![tenant,receipt,operation,request_sha,serde_json::to_string(&envelope).map_err(|_|"classaimate_mcp_local_payload_invalid".to_string())?,local_ref,now_ms()]).map_err(|e|format!("db_classaimate_mcp_receipt_save_failed:{e}"))?;
+    receipt_verification::verify(&transaction,&tenant,&envelope)?;
+    transaction.commit().map_err(|error|format!("db_mcp_write_commit_failed:{error}"))?;
+    receipt_verification::verify_after_commit(&conn,&tenant,&envelope)?;
     Ok(json!({"replayed":false,"result":result,"localRef":local_ref}))
 }
 
@@ -798,122 +874,8 @@ pub(crate) fn list_counseling_drafts(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fs;
-
-    fn request(receipt_id: &str, data: Value) -> Value {
-        json!({
-            "tenantId":"tenant-a",
-            "receiptId":receipt_id,
-            "operation":"materials_restructure_page",
-            "requestSha256":"a".repeat(64),
-            "data":data
-        })
-    }
-
-    #[test]
-    fn restructure_page_requires_exact_revision_and_preserves_document_references() {
-        let directory = std::env::temp_dir().join(format!(
-            "classaimate-mcp-restructure-{}",
-            crate::random_url_token()
-        ));
-        fs::create_dir_all(&directory).expect("create test directory");
-        let store = SqliteStore::open(directory.join("store.sqlite3")).expect("open test store");
-        let original_blocks = json!([
-            {"id":"source","type":"text","content":[{"type":"text","text":"출처","marks":[{"type":"link","attrs":{"href":"https://example.com/source"}}]}]},
-            {"id":"file","type":"attachment","localAttachmentId":"attachment-a","fileName":"원본.pdf"}
-        ]);
-        store
-            .upsert_work_note(json!({
-                "tenantId":"tenant-a","pageId":"page-a","parentId":null,"title":"원본 제목",
-                "emoji":"📄","position":0,"properties":{"source":"teacher"},
-                "blocks":original_blocks,"markdown":"원문","createdAtMs":10,"updatedAtMs":10
-            }))
-            .expect("seed work note");
-        let reorganized = json!([
-            {"id":"summary","type":"heading","attrs":{"level":1},"content":[{"type":"text","text":"[AI 정리본]"}]},
-            {"id":"original","type":"toggle","attrs":{"summary":"원본 보기"},"content":original_blocks}
-        ]);
-        let data = json!({
-            "workspace":"work_materials","pageRef":"page-a","expectedRevision":10,
-            "blocks":reorganized,"markdown":"# [AI 정리본]\n\n<details>원본 보기</details>"
-        });
-        let applied =
-            apply(&store, &request("receipt-a", data.clone())).expect("apply restructure");
-        assert_eq!(applied["result"]["appliedFromRevision"], 10);
-        let readback = store
-            .get_work_note("tenant-a".to_string(), "page-a".to_string())
-            .expect("read work note")
-            .expect("work note exists");
-        assert_eq!(readback["title"], "원본 제목");
-        assert_eq!(readback["properties"]["source"], "teacher");
-        assert_eq!(readback["blocks"], reorganized);
-        assert_eq!(
-            apply(&store, &request("receipt-b", data)).expect_err("reject stale revision"),
-            "MATERIAL_REVISION_CONFLICT"
-        );
-        let current_revision = readback["updatedAtMs"].as_i64().expect("current revision");
-        let missing_references = json!({
-            "workspace":"work_materials","pageRef":"page-a","expectedRevision":current_revision,
-            "blocks":[{"id":"summary","type":"text","text":"reference 제거"}],"markdown":"reference 제거"
-        });
-        assert_eq!(
-            apply(&store, &request("receipt-c", missing_references))
-                .expect_err("reject removed references"),
-            "MATERIAL_REFERENCE_CONFLICT"
-        );
-        drop(store);
-        fs::remove_dir_all(directory).expect("remove test directory");
-    }
-
-    #[test]
-    fn student_material_save_creates_protected_root_and_update_resets_workflow() {
-        let directory = std::env::temp_dir().join(format!("classaimate-mcp-student-material-{}", crate::random_url_token()));
-        fs::create_dir_all(&directory).expect("create test directory");
-        let store = SqliteStore::open(directory.join("store.sqlite3")).expect("open test store");
-        let page_id = "mcp_student_activity";
-        save_work_note(&store,"tenant-a",&json!({
-            "workspace":"student_learning_materials","pageId":page_id,"parentPageRef":STUDENT_MATERIAL_ROOT_ID,
-            "documentRef":"document-student-a","title":"태양계 조사 활동지","markdown":"# 태양계 조사 활동지",
-            "blocks":[{"type":"paragraph","content":[{"type":"text","text":"행성을 조사합니다."}]}],
-            "materialKind":"activity_sheet","workflowStatus":"draft","grade":"5학년","subject":"과학",
-            "unit":"2단원","lessonTopic":"태양계의 구성","authorUserId":"teacher-a"
-        })).expect("save student material");
-        let root = store.get_work_note("tenant-a".to_string(),STUDENT_MATERIAL_ROOT_ID.to_string()).expect("read student root").expect("student root exists");
-        assert_eq!(root["properties"]["systemKind"],"student_learning_materials_folder");
-        let mut material = store.get_work_note("tenant-a".to_string(),page_id.to_string()).expect("read student material").expect("student material exists");
-        assert_eq!(material["parentId"],STUDENT_MATERIAL_ROOT_ID);
-        assert_eq!(material["properties"]["studentLearningMaterial"]["version"],2);
-        material["properties"]["studentLearningMaterial"]["workflowStatus"]=json!("ready");
-        material["updatedAtMs"]=json!(100);
-        store.upsert_work_note(material).expect("mark material ready");
-        update_work_note(&store,"tenant-a",&json!({
-            "workspace":"student_learning_materials","pageRef":page_id,"expectedRevision":100,
-            "title":"태양계 조사 활동지 수정","markdown":"# 수정한 활동지",
-            "blocks":[{"type":"paragraph","content":[{"type":"text","text":"수정했습니다."}]}]
-        })).expect("update student material");
-        let updated = store.get_work_note("tenant-a".to_string(),page_id.to_string()).expect("read updated student material").expect("updated student material exists");
-        assert_eq!(updated["title"],"태양계 조사 활동지 수정");
-        assert_eq!(updated["properties"]["studentLearningMaterial"]["workflowStatus"],"draft");
-        let mut ready = updated;
-        ready["properties"]["studentLearningMaterial"]["workflowStatus"]=json!("ready");
-        ready["updatedAtMs"]=json!(200);
-        store.upsert_work_note(ready).expect("mark updated material ready");
-        restructure_work_note(&store,"tenant-a",&json!({
-            "workspace":"student_learning_materials","pageRef":page_id,"expectedRevision":200,
-            "blocks":[{"type":"heading","attrs":{"level":1},"content":[{"type":"text","text":"AI 정리본"}]}],
-            "markdown":"# AI 정리본"
-        })).expect("restructure student material");
-        let restructured = store.get_work_note("tenant-a".to_string(),page_id.to_string()).expect("read restructured material").expect("restructured material exists");
-        assert_eq!(restructured["properties"]["studentLearningMaterial"]["workflowStatus"],"draft");
-        assert_eq!(restructure_work_note(&store,"tenant-a",&json!({
-            "workspace":"student_learning_materials","pageRef":STUDENT_MATERIAL_ROOT_ID,"expectedRevision":root["updatedAtMs"],
-            "blocks":[{"type":"heading","attrs":{"level":1},"content":[{"type":"text","text":"바뀐 root"}]}],
-            "markdown":"# 바뀐 root"
-        })).expect_err("protected root cannot be restructured"),"MATERIAL_REVISION_CONFLICT");
-        assert_eq!(store.delete_work_note("tenant-a".to_string(),STUDENT_MATERIAL_ROOT_ID.to_string()).expect_err("student root is protected"),"work_note_system_folder_protected");
-        drop(store);
-        fs::remove_dir_all(directory).expect("remove test directory");
-    }
-}
+#[path = "classaimate_mcp_write_jobs_tests.rs"]
+mod tests;
+#[cfg(test)]
+#[path = "classaimate_mcp_atomic_writes_tests.rs"]
+mod atomic_tests;

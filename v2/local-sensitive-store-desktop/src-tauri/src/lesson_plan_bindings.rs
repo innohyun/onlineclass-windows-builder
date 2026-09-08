@@ -214,14 +214,10 @@ pub(crate) fn upsert(store: &SqliteStore, body: Value) -> Result<Vec<Value>, Str
 }
 
 pub(crate) fn stored_page_structure(
-    store: &SqliteStore,
+    conn: &Connection,
     tenant_id: &str,
     page_id: &str,
 ) -> Result<Option<(Option<String>, String, i64)>, String> {
-    let conn = store
-        .conn
-        .lock()
-        .map_err(|_| "db_lock_failed".to_string())?;
     let bound: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM lesson_plan_bindings WHERE tenant_id=?1 AND page_id=?2",

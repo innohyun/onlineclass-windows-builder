@@ -201,6 +201,17 @@ impl DeviceSyncManager {
         }))
     }
 
+    pub(crate) fn mcp_worker_authority(&self) -> Result<crate::classaimate_mcp_worker::WorkerAuthority, String> {
+        let session = self.load_session()?.ok_or_else(|| "device_sync_session_required".to_string())?;
+        let credential = self.credential(&session)?;
+        let origin = Url::parse(&self.api_root()).map_err(|_| "device_sync_origin_invalid".to_string())?
+            .origin().ascii_serialization();
+        Ok(crate::classaimate_mcp_worker::WorkerAuthority {
+            tenant_id: session.tenant_id, actor_id: session.uid, device_id: session.device_id,
+            credential: zeroize::Zeroizing::new(credential), origin,
+        })
+    }
+
     pub(crate) fn authorize_student_record_mcp_tool(
         &self,
         grant_id: &str,
@@ -594,6 +605,7 @@ impl DeviceSyncManager {
             "appVersion": session.app_version,
             "credentialStorage": session.credential_storage,
             "credentialAvailable": self.credential(&session).is_ok(),
+            "mcpWorker": crate::classaimate_mcp_worker::status(),
             "connectedAtMs": session.connected_at_ms,
             "oneDriveConfigured": backup_status.as_ref().ok().and_then(|value| value.get("configured")).and_then(Value::as_bool).unwrap_or(false),
             "backupError": backup_status.err(),

@@ -1,6 +1,6 @@
 [package]
 name = "local-sensitive-store-desktop"
-version = "0.2.75"
+version = "0.2.76"
 default-run = "local-sensitive-store-desktop"
 description = "ClassAiMate 교사 데스크 로컬 데이터 저장소"
 authors = ["onlineclass"]
@@ -38,6 +38,7 @@ regex = "1"
 fs2 = "0.4"
 rmcp = { version = "=3.0.1", features = ["server", "transport-io"] }
 tokio = { version = "1", features = ["io-std", "macros", "rt-multi-thread"] }
+tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
 
 [dev-dependencies]
 rmcp = { version = "=3.0.1", features = ["client", "server", "transport-io"] }
