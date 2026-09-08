@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
-const OPERATIONS: [&str; 7] = [
+const OPERATIONS: [&str; 8] = [
     "student_record_save_drafts",
     "counseling_record_save_draft",
     "counseling_record_prepare_create",
@@ -13,6 +13,7 @@ const OPERATIONS: [&str; 7] = [
     "materials_save_draft",
     "materials_update_draft",
     "materials_restructure_page",
+    "lesson_observations_manage",
 ];
 const LOCAL_RECEIPT_TTL_MS: i64 = 24 * 60 * 60 * 1000;
 const STUDENT_MATERIAL_ROOT_ID: &str = "student-learning-materials-root";
@@ -713,6 +714,9 @@ pub(crate) fn apply(store: &SqliteStore, input: &Value) -> Result<Value, String>
             if saved_operation != operation || saved_sha != request_sha {
                 return Err("IDEMPOTENCY_CONFLICT".to_string());
             }
+            if operation == "lesson_observations_manage" {
+                crate::classaimate_mcp_observations::verify_replay(&conn, &tenant, &decode(result.clone())?)?;
+            }
             return Ok(json!({"replayed":true,"result":decode(result)?,"localRef":local_ref}));
         }
     }
@@ -720,6 +724,9 @@ pub(crate) fn apply(store: &SqliteStore, input: &Value) -> Result<Value, String>
         .get("data")
         .filter(|value| value.is_object())
         .ok_or_else(|| "classaimate_mcp_write_job_invalid".to_string())?;
+    if operation == "lesson_observations_manage" {
+        return crate::classaimate_mcp_observations::apply(store, input);
+    }
     let saved = match operation {
         "student_record_save_drafts" => save_student(store, &tenant, data)?,
         "counseling_record_save_draft" => save_counseling(store, &tenant, data)?,

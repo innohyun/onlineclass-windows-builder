@@ -2,6 +2,12 @@
 
 Windows installer for the loopback SQLite service used by tenant observation records in `local_sqlite` mode.
 
+## 0.2.74 source release notes
+
+- MCP lesson observations use the existing local observation store, with up to 200 student records in one atomic write, revision checks and canonical readback.
+- Capability `lesson_observations_mcp_v1` adds tenant-bound paginated reads. The previous `observation_evidence_v1` capability and immutable correction history remain required.
+- Native service revision: `2026-09-08.3-mcp-lesson-observations`. Public Windows publication requires the builder and installer checks; this source version alone does not change download URLs.
+
 ## 0.2.73 source release notes
 
 - Separates actual occurrence date/time (exact, approximate, unknown; Asia/Seoul) from helper-generated save time, including quick observation and its version 2 guide.

@@ -21,6 +21,7 @@ mod student_record_mcp;
 mod student_record_workspace;
 mod classaimate_mcp_materials_markdown;
 mod classaimate_mcp_write_jobs;
+mod classaimate_mcp_observations;
 mod work_note_attachments;
 mod work_note_localization;
 mod work_note_reader;
@@ -57,7 +58,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-09-08.2-observation-evidence";
+pub(crate) const SERVICE_VERSION: &str = "2026-09-08.3-mcp-lesson-observations";
 const WORK_MEETING_ROOT_PAGE_ID: &str = "classaimate:work-meeting-minutes";
 const WORK_MEETING_ROOT_TITLE: &str = "업무 회의록";
 const WORK_MEETING_ROOT_INTRO: &str = "모바일에서 확정한 업무 회의록이 자동으로 들어옵니다.";
@@ -137,6 +138,7 @@ const LOCAL_SENSITIVE_STORE_ROUTES: &[&str] = &[
     "/v1/student-record-mcp/selections",
     "/v1/classaimate-mcp/write-jobs/apply",
     "/v1/classaimate-mcp/counseling-drafts",
+    "/v1/classaimate-mcp/observations/list",
     "/v1/classaimate-mcp/materials/search",
     "/v1/classaimate-mcp/materials/page",
     "/v1/import-runs",
@@ -177,7 +179,7 @@ const LOCAL_SENSITIVE_STORE_ROUTES: &[&str] = &[
     "/v1/password-vault/shared/decrypt",
     "/v1/password-vault/shared/recover",
 ];
-const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 20] = [
+const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 21] = [
     "observation_evidence_v1",
     "non_lesson_observations",
     "teacher_local_records",
@@ -193,6 +195,7 @@ const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 20] = [
     "student_record_mcp_v1",
     "classaimate_public_mcp_write_jobs_v1",
     "classaimate_public_mcp_operations_v1",
+    "lesson_observations_mcp_v1",
     "classaimate_public_mcp_local_read_v1",
     "teacher_counseling_mcp_drafts_v1",
     "password_vault_personal_v1",
@@ -5202,6 +5205,10 @@ fn handle_request(
                         )?
                     }),
                 ));
+            }
+            if request.method() == &Method::Post && path == "/v1/classaimate-mcp/observations/list" {
+                let body = scope_body_to_tenant(read_body(&mut request)?, Some(&tenant))?;
+                return Ok((200, classaimate_mcp_observations::list(&store, &body)?));
             }
             if request.method() == &Method::Post
                 && path == "/v1/classaimate-mcp/write-jobs/apply"

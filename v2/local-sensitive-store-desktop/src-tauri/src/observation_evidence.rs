@@ -224,6 +224,16 @@ impl SqliteStore {
         records: Vec<Value>,
         mutation_id: &str,
     ) -> Result<Vec<Value>, String> {
+        let mut conn = self.conn.lock().map_err(|_| "db_lock_failed")?;
+        let tx = conn.transaction().map_err(db)?;
+        let result = self.evidence_save_in_transaction(&tx, tenant, records, mutation_id, None)?;
+        tx.commit().map_err(db)?;
+        Ok(result)
+    }
+    pub(crate) fn evidence_save_in_transaction(
+        &self, tx: &rusqlite::Connection, tenant: &str, records: Vec<Value>,
+        mutation_id: &str, request_identity: Option<&Value>,
+    ) -> Result<Vec<Value>, String> {
         if tenant.is_empty() {
             return Err("tenant_id_required".into());
         }
@@ -231,9 +241,7 @@ impl SqliteStore {
             return Err("observation_evidence_unsafe_number".into());
         }
         let request_hash =
-            hash(&json!({"tenantId":tenant,"records":records,"mutationId":mutation_id}));
-        let mut conn = self.conn.lock().map_err(|_| "db_lock_failed")?;
-        let tx = conn.transaction().map_err(db)?;
+            hash(&json!({"tenantId":tenant,"records":request_identity.cloned().unwrap_or(json!(records)),"mutationId":mutation_id}));
         if !mutation_id.is_empty() {
             let prior=tx.query_row("SELECT request_hash,payload_json FROM observation_evidence_mutations WHERE tenant_id=?1 AND mutation_id=?2",params![tenant,mutation_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional().map_err(db)?;
             if let Some((h, p)) = prior {
@@ -382,7 +390,6 @@ impl SqliteStore {
             )
             .map_err(db)?;
         }
-        tx.commit().map_err(db)?;
         Ok(result)
     }
     pub(crate) fn evidence_detail(
