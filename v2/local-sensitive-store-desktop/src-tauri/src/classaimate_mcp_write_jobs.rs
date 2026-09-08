@@ -6,14 +6,16 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap};
 
 #[path = "classaimate_mcp_material_assets.rs"]
-mod material_assets;
+pub(crate) mod material_assets;
+#[path = "classaimate_mcp_lesson_snapshot.rs"]
+mod lesson_snapshot;
 #[path = "classaimate_mcp_transaction_store.rs"]
 mod transaction_store;
 use transaction_store::TransactionStore;
 #[path = "classaimate_mcp_receipt_verification.rs"]
-mod receipt_verification;
+pub(crate) mod receipt_verification;
 
-const OPERATIONS: [&str; 9] = [
+const OPERATIONS: [&str; 10] = [
     "student_record_save_drafts",
     "counseling_record_save_draft",
     "counseling_record_prepare_create",
@@ -23,6 +25,7 @@ const OPERATIONS: [&str; 9] = [
     "materials_restructure_page",
     "lesson_observations_manage",
     "materials_apply_images",
+    "lesson_material_apply_snapshot",
 ];
 const LOCAL_RECEIPT_TTL_MS: i64 = 24 * 60 * 60 * 1000;
 const STUDENT_MATERIAL_ROOT_ID: &str = "student-learning-materials-root";
@@ -745,6 +748,9 @@ pub(crate) fn verified_replay(store: &SqliteStore, input: &Value) -> Result<Opti
             let decoded = decode(result.clone())?;
             if decoded["kind"] == receipt_verification::ENVELOPE {
                 if operation == "materials_apply_images" { material_assets::verify_files(&conn, &store.data_dir, &tenant, &decoded["result"])?; }
+                if operation == "lesson_material_apply_snapshot" && decoded.get("lessonAssets").is_some() {
+                    material_assets::verify_file_references(&conn, &store.data_dir, &tenant, &decoded["lessonAssets"])?;
+                }
                 let verified = receipt_verification::verify(&conn, &tenant, &decoded)?;
                 return Ok(Some(json!({"replayed":true,"result":verified,"localRef":local_ref})));
             }
@@ -795,6 +801,9 @@ pub(crate) fn apply_with_assets(store: &SqliteStore, input: &Value, assets: &Has
     }
     if operation == "materials_apply_images" {
         return material_assets::apply(store, input, assets);
+    }
+    if operation == "lesson_material_apply_snapshot" {
+        return lesson_snapshot::apply(store, input, assets);
     }
     let mut conn = store.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
     let transaction = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)

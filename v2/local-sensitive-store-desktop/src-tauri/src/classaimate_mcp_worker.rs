@@ -29,6 +29,8 @@ const CAPABILITIES: &[&str] = &[
     "observation_evidence_v1",
     "classaimate_mcp_native_worker_v1",
     "classaimate_mcp_material_assets_v1",
+    "classaimate_mcp_lesson_snapshot_v1",
+    "classaimate_mcp_receipt_readback_v1",
 ];
 static STARTED: AtomicBool = AtomicBool::new(false);
 static STATE: Mutex<(&str, &str, i64)> = Mutex::new(("waiting_connection", "", 0));
@@ -253,6 +255,20 @@ fn read_local(store: &SqliteStore, tenant: &str, frame: &Value) -> Result<Value,
         .ok_or_else(|| "INVALID_LOCAL_READ_REQUEST".to_string())?;
     let workspace = frame["workspace"].as_str().unwrap_or("");
     let operation = frame["operation"].as_str().unwrap_or("");
+    if operation == "write_receipt_get" {
+        let allowed = match input.get("operation").and_then(Value::as_str).unwrap_or("") {
+            "student_record_save_drafts" => workspace == "student_record",
+            "counseling_record_save_draft" | "counseling_record_prepare_create" => workspace == "counseling_record",
+            "lesson_observations_manage" => workspace == "lesson_observations",
+            "lesson_material_apply_snapshot" => workspace == "lesson_materials",
+            "work_notes_save_draft" | "materials_save_draft" | "materials_update_draft"
+            | "materials_restructure_page" | "materials_apply_images" =>
+                ["work_materials", "lesson_materials", "student_learning_materials"].contains(&workspace),
+            _ => false,
+        };
+        if !allowed { return Err("INVALID_LOCAL_READ_REQUEST".into()); }
+        return classaimate_mcp_write_jobs::receipt_verification::read_only(store, tenant, &frame["input"]);
+    }
     let allowed: &[&str] = match (workspace, operation) {
         ("lesson_observations", "observations_list") => &[
             "date",
@@ -316,8 +332,12 @@ fn read_frame(store: &SqliteStore, tenant: &str, frame: &Value, now: i64) -> Opt
         }
         Err(error) => {
             let not_found = error == "local_workspace_page_not_found";
+            let code = if not_found { "local_workspace_page_not_found" }
+                else if ["MCP_LOCAL_RECEIPT_CONFLICT", "MCP_LOCAL_RECEIPT_UNSUPPORTED", "MCP_LOCAL_RECEIPT_READ_FAILED", "INVALID_LOCAL_READ_REQUEST"].contains(&error.as_str()) {
+                    error.as_str()
+                } else { "LOCAL_READ_FAILED" };
             json!({"type":"local_read_result","requestId":request_id,"status":if not_found {"not_found"} else {"error"},
-                "errorCode":if not_found {"local_workspace_page_not_found"} else {"LOCAL_READ_FAILED"}})
+                "errorCode":code})
         }
     };
     if response.to_string().len() <= MAX_FRAME {

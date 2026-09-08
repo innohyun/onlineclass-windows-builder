@@ -1,0 +1,910 @@
+{
+  "version": 1,
+  "synthetic": true,
+  "cases": {
+    "append-text": {
+      "page": {
+        "tenantId": "tenant-a",
+        "pageId": "lesson-page",
+        "parentId": null,
+        "title": "수학 자료",
+        "emoji": "📝",
+        "position": 0,
+        "properties": {
+          "privateMetadata": {
+            "preserved": true
+          }
+        },
+        "blocks": [
+          {
+            "id": "text-a",
+            "type": "text",
+            "text": "기존 본문"
+          },
+          {
+            "id": "old-asset-block",
+            "type": "attachment",
+            "attachmentId": "old-pdf",
+            "kind": "pdf",
+            "fileName": "원문.pdf",
+            "contentType": "application/pdf",
+            "size": 12,
+            "displayMode": "file"
+          }
+        ],
+        "markdown": "기존 본문\n\n[원문.pdf](local-attachment://old-pdf)",
+        "createdAtMs": 10,
+        "updatedAtMs": 10
+      },
+      "binding": {
+        "tenantId": "tenant-a",
+        "planId": "lesson-native-plan-a",
+        "pageId": "lesson-page",
+        "planKind": "lesson",
+        "dateKey": "2026-09-08",
+        "startPeriod": 1,
+        "endPeriod": 1,
+        "subject": "수학",
+        "bindingRevision": 1,
+        "updatedAtMs": 10
+      },
+      "input": {
+        "tenantId": "tenant-a",
+        "receiptId": "receipt-append-false",
+        "operation": "lesson_material_apply_snapshot",
+        "requestSha256": "b57709200770a83cfd2d170ad3c72ce08f942a2f7df1ad251ce1d55919be35e1",
+        "data": {
+          "v": 1,
+          "pageRef": "lesson-page",
+          "materialAuthority": {
+            "v": 1,
+            "tenantId": "tenant-a",
+            "actorId": "owner-a",
+            "planId": "lesson-native-plan-a",
+            "planKind": "lesson",
+            "bindingRevision": 1,
+            "storageKind": "local",
+            "cloudDocumentId": "cloud-doc",
+            "cloudPageId": "cloud-page",
+            "localPageId": "lesson-page",
+            "dateKey": "2026-09-08",
+            "startPeriod": 1,
+            "endPeriod": 1,
+            "revision": 1,
+            "contentSha256": "3f1f95ece0bbdb55be4f7d64a46f1110bdf493b9b9bbcecb38e37ae9b21ab122",
+            "cloudDocumentRevision": null
+          },
+          "baseSnapshot": {
+            "documentTitle": "수학 자료",
+            "documentBlocks": [
+              {
+                "id": "text-a",
+                "text": "기존 본문",
+                "type": "text"
+              },
+              {
+                "attachmentType": "pdf",
+                "id": "old-asset-block",
+                "localAttachmentId": "old-pdf",
+                "type": "attachment"
+              }
+            ],
+            "markdown": "기존 본문\n\n[첨부]"
+          },
+          "targetSnapshot": {
+            "documentTitle": "수학 자료",
+            "documentBlocks": [
+              {
+                "id": "text-a",
+                "text": "기존 본문",
+                "type": "text"
+              },
+              {
+                "attachmentType": "pdf",
+                "id": "old-asset-block",
+                "localAttachmentId": "old-pdf",
+                "type": "attachment"
+              },
+              {
+                "id": "mcp_aaaaaaaaaaaaaaaaaaaaaaaa_text_0",
+                "text": "새 문장",
+                "type": "text"
+              }
+            ],
+            "markdown": "기존 본문\n\n[첨부]\n\n새 문장"
+          },
+          "snapshotRevision": 2,
+          "contentSha256": "a6da9ddb0f8d25723447b40e87667082c78bfa68f85deb77b2a9119dee15db89",
+          "transform": {},
+          "appendBlocks": [
+            {
+              "id": "mcp_aaaaaaaaaaaaaaaaaaaaaaaa_text_0",
+              "text": "새 문장",
+              "type": "text"
+            }
+          ],
+          "markdownDelta": "새 문장",
+          "attachments": []
+        }
+      },
+      "png": [
+        137,
+        80,
+        78,
+        71,
+        13,
+        10,
+        26,
+        10,
+        0,
+        0,
+        0,
+        13,
+        73,
+        72,
+        68,
+        82,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        1,
+        8,
+        4,
+        0,
+        0,
+        0,
+        181,
+        28,
+        12,
+        2,
+        0,
+        0,
+        0,
+        11,
+        73,
+        68,
+        65,
+        84,
+        120,
+        218,
+        99,
+        252,
+        255,
+        31,
+        0,
+        3,
+        3,
+        2,
+        0,
+        239,
+        154,
+        58,
+        234,
+        0,
+        0,
+        0,
+        0,
+        73,
+        69,
+        78,
+        68,
+        174,
+        66,
+        96,
+        130
+      ]
+    },
+    "organize-text": {
+      "page": {
+        "tenantId": "tenant-a",
+        "pageId": "lesson-page",
+        "parentId": null,
+        "title": "수학 자료",
+        "emoji": "📝",
+        "position": 0,
+        "properties": {
+          "privateMetadata": {
+            "preserved": true
+          }
+        },
+        "blocks": [
+          {
+            "id": "text-a",
+            "type": "text",
+            "text": "기존 본문"
+          },
+          {
+            "id": "old-asset-block",
+            "type": "attachment",
+            "attachmentId": "old-pdf",
+            "kind": "pdf",
+            "fileName": "원문.pdf",
+            "contentType": "application/pdf",
+            "size": 12,
+            "displayMode": "file"
+          }
+        ],
+        "markdown": "기존 본문\n\n[원문.pdf](local-attachment://old-pdf)",
+        "createdAtMs": 10,
+        "updatedAtMs": 10
+      },
+      "binding": {
+        "tenantId": "tenant-a",
+        "planId": "lesson-native-plan-a",
+        "pageId": "lesson-page",
+        "planKind": "lesson",
+        "dateKey": "2026-09-08",
+        "startPeriod": 1,
+        "endPeriod": 1,
+        "subject": "수학",
+        "bindingRevision": 1,
+        "updatedAtMs": 10
+      },
+      "input": {
+        "tenantId": "tenant-a",
+        "receiptId": "receipt-organize-false",
+        "operation": "lesson_material_apply_snapshot",
+        "requestSha256": "ed7ca7dc52c727f89be44bd710cdbd0faa8cb19d6b2d94eb017fe67be7286457",
+        "data": {
+          "v": 1,
+          "pageRef": "lesson-page",
+          "materialAuthority": {
+            "v": 1,
+            "tenantId": "tenant-a",
+            "actorId": "owner-a",
+            "planId": "lesson-native-plan-a",
+            "planKind": "lesson",
+            "bindingRevision": 1,
+            "storageKind": "local",
+            "cloudDocumentId": "cloud-doc",
+            "cloudPageId": "cloud-page",
+            "localPageId": "lesson-page",
+            "dateKey": "2026-09-08",
+            "startPeriod": 1,
+            "endPeriod": 1,
+            "revision": 1,
+            "contentSha256": "3f1f95ece0bbdb55be4f7d64a46f1110bdf493b9b9bbcecb38e37ae9b21ab122",
+            "cloudDocumentRevision": null
+          },
+          "baseSnapshot": {
+            "documentTitle": "수학 자료",
+            "documentBlocks": [
+              {
+                "id": "text-a",
+                "text": "기존 본문",
+                "type": "text"
+              },
+              {
+                "attachmentType": "pdf",
+                "id": "old-asset-block",
+                "localAttachmentId": "old-pdf",
+                "type": "attachment"
+              }
+            ],
+            "markdown": "기존 본문\n\n[첨부]"
+          },
+          "targetSnapshot": {
+            "documentTitle": "수학 자료",
+            "documentBlocks": [
+              {
+                "content": {
+                  "attrs": {
+                    "blockId": "mcp_aaaaaaaaaaaaaaaaaaaaaaaa_0",
+                    "indent": 0,
+                    "level": 1
+                  },
+                  "content": [
+                    {
+                      "text": "[AI 정리본]",
+                      "type": "text"
+                    }
+                  ],
+                  "type": "heading"
+                },
+                "id": "mcp_aaaaaaaaaaaaaaaaaaaaaaaa_0",
+                "text": "[AI 정리본]",
+                "type": "h1"
+              },
+              {
+                "content": {
+                  "attrs": {
+                    "blockId": "mcp_aaaaaaaaaaaaaaaaaaaaaaaa_1",
+                    "indent": 0
+                  },
+                  "content": [
+                    {
+                      "text": "정리 결과",
+                      "type": "text"
+                    }
+                  ],
+                  "type": "paragraph"
+                },
+                "id": "mcp_aaaaaaaaaaaaaaaaaaaaaaaa_1",
+                "text": "정리 결과",
+                "type": "text"
+              },
+              {
+                "content": {
+                  "attrs": {
+                    "blockId": "mcp_aaaaaaaaaaaaaaaaaaaaaaaa_2",
+                    "indent": 0,
+                    "open": true
+                  },
+                  "content": [
+                    {
+                      "content": [
+                        {
+                          "text": "원본 보기",
+                          "type": "text"
+                        }
+                      ],
+                      "type": "detailsSummary"
+                    },
+                    {
+                      "content": [
+                        {
+                          "attrs": {
+                            "blockId": "text-a",
+                            "indent": 0
+                          },
+                          "content": [
+                            {
+                              "text": "기존 본문",
+                              "type": "text"
+                            }
+                          ],
+                          "type": "paragraph"
+                        },
+                        {
+                          "attrs": {
+                            "attachmentId": "old-pdf",
+                            "blockId": "old-asset-block",
+                            "kind": "pdf"
+                          },
+                          "type": "attachmentBlock"
+                        }
+                      ],
+                      "type": "detailsContent"
+                    }
+                  ],
+                  "type": "details"
+                },
+                "id": "mcp_aaaaaaaaaaaaaaaaaaaaaaaa_2",
+                "text": "원본 보기",
+                "type": "toggle"
+              }
+            ],
+            "markdown": "# [AI 정리본]\n\n정리 결과\n\n<details>\n<summary>원본 보기</summary>\n\n기존 본문\n\n[첨부]\n</details>"
+          },
+          "snapshotRevision": 2,
+          "contentSha256": "37a0bed7ed2a89f67a9e94e709a84ff6f8ddd5d9a52e141dcdcefaf2375a56b2",
+          "transform": {
+            "strategy": "organize",
+            "summaryBlocks": [
+              {
+                "type": "text",
+                "text": "정리 결과"
+              }
+            ],
+            "idSeed": "aaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "appendBlocks": [],
+          "markdownDelta": "",
+          "attachments": []
+        }
+      },
+      "png": [
+        137,
+        80,
+        78,
+        71,
+        13,
+        10,
+        26,
+        10,
+        0,
+        0,
+        0,
+        13,
+        73,
+        72,
+        68,
+        82,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        1,
+        8,
+        4,
+        0,
+        0,
+        0,
+        181,
+        28,
+        12,
+        2,
+        0,
+        0,
+        0,
+        11,
+        73,
+        68,
+        65,
+        84,
+        120,
+        218,
+        99,
+        252,
+        255,
+        31,
+        0,
+        3,
+        3,
+        2,
+        0,
+        239,
+        154,
+        58,
+        234,
+        0,
+        0,
+        0,
+        0,
+        73,
+        69,
+        78,
+        68,
+        174,
+        66,
+        96,
+        130
+      ]
+    },
+    "operations-text": {
+      "page": {
+        "tenantId": "tenant-a",
+        "pageId": "lesson-page",
+        "parentId": null,
+        "title": "수학 자료",
+        "emoji": "📝",
+        "position": 0,
+        "properties": {
+          "privateMetadata": {
+            "preserved": true
+          }
+        },
+        "blocks": [
+          {
+            "id": "text-a",
+            "type": "text",
+            "text": "기존 본문"
+          },
+          {
+            "id": "old-asset-block",
+            "type": "attachment",
+            "attachmentId": "old-pdf",
+            "kind": "pdf",
+            "fileName": "원문.pdf",
+            "contentType": "application/pdf",
+            "size": 12,
+            "displayMode": "file"
+          }
+        ],
+        "markdown": "기존 본문\n\n[원문.pdf](local-attachment://old-pdf)",
+        "createdAtMs": 10,
+        "updatedAtMs": 10
+      },
+      "binding": {
+        "tenantId": "tenant-a",
+        "planId": "lesson-native-plan-a",
+        "pageId": "lesson-page",
+        "planKind": "lesson",
+        "dateKey": "2026-09-08",
+        "startPeriod": 1,
+        "endPeriod": 1,
+        "subject": "수학",
+        "bindingRevision": 1,
+        "updatedAtMs": 10
+      },
+      "input": {
+        "tenantId": "tenant-a",
+        "receiptId": "receipt-operations-false",
+        "operation": "lesson_material_apply_snapshot",
+        "requestSha256": "fb9d7cef411bfdad2c8c9e99a6126c74400dbf03a36e5fabe5908eade47e358e",
+        "data": {
+          "v": 1,
+          "pageRef": "lesson-page",
+          "materialAuthority": {
+            "v": 1,
+            "tenantId": "tenant-a",
+            "actorId": "owner-a",
+            "planId": "lesson-native-plan-a",
+            "planKind": "lesson",
+            "bindingRevision": 1,
+            "storageKind": "local",
+            "cloudDocumentId": "cloud-doc",
+            "cloudPageId": "cloud-page",
+            "localPageId": "lesson-page",
+            "dateKey": "2026-09-08",
+            "startPeriod": 1,
+            "endPeriod": 1,
+            "revision": 1,
+            "contentSha256": "3f1f95ece0bbdb55be4f7d64a46f1110bdf493b9b9bbcecb38e37ae9b21ab122",
+            "cloudDocumentRevision": null
+          },
+          "baseSnapshot": {
+            "documentTitle": "수학 자료",
+            "documentBlocks": [
+              {
+                "id": "text-a",
+                "text": "기존 본문",
+                "type": "text"
+              },
+              {
+                "attachmentType": "pdf",
+                "id": "old-asset-block",
+                "localAttachmentId": "old-pdf",
+                "type": "attachment"
+              }
+            ],
+            "markdown": "기존 본문\n\n[첨부]"
+          },
+          "targetSnapshot": {
+            "documentTitle": "수학 자료",
+            "documentBlocks": [
+              {
+                "id": "text-a",
+                "text": "기존 본문",
+                "type": "text"
+              },
+              {
+                "attachmentType": "pdf",
+                "id": "old-asset-block",
+                "localAttachmentId": "old-pdf",
+                "type": "attachment"
+              },
+              {
+                "content": {
+                  "attrs": {
+                    "blockId": "mcp_aaaaaaaaaaaaaaaaaaaaaaaa_0",
+                    "indent": 0
+                  },
+                  "content": [
+                    {
+                      "text": "추가 결과",
+                      "type": "text"
+                    }
+                  ],
+                  "type": "paragraph"
+                },
+                "id": "mcp_aaaaaaaaaaaaaaaaaaaaaaaa_0",
+                "text": "추가 결과",
+                "type": "text"
+              }
+            ],
+            "markdown": "기존 본문\n\n[첨부]\n\n추가 결과"
+          },
+          "snapshotRevision": 2,
+          "contentSha256": "ec7899321b23f0c87d15134902e347f0addbb72a8e4b0c219bfafe4cc4c7fc9c",
+          "transform": {
+            "strategy": "operations",
+            "operations": [
+              {
+                "op": "append",
+                "blocks": [
+                  {
+                    "type": "text",
+                    "text": "추가 결과"
+                  }
+                ]
+              }
+            ],
+            "idSeed": "aaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "appendBlocks": [],
+          "markdownDelta": "",
+          "attachments": []
+        }
+      },
+      "png": [
+        137,
+        80,
+        78,
+        71,
+        13,
+        10,
+        26,
+        10,
+        0,
+        0,
+        0,
+        13,
+        73,
+        72,
+        68,
+        82,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        1,
+        8,
+        4,
+        0,
+        0,
+        0,
+        181,
+        28,
+        12,
+        2,
+        0,
+        0,
+        0,
+        11,
+        73,
+        68,
+        65,
+        84,
+        120,
+        218,
+        99,
+        252,
+        255,
+        31,
+        0,
+        3,
+        3,
+        2,
+        0,
+        239,
+        154,
+        58,
+        234,
+        0,
+        0,
+        0,
+        0,
+        73,
+        69,
+        78,
+        68,
+        174,
+        66,
+        96,
+        130
+      ]
+    },
+    "append-images": {
+      "page": {
+        "tenantId": "tenant-a",
+        "pageId": "lesson-page",
+        "parentId": null,
+        "title": "수학 자료",
+        "emoji": "📝",
+        "position": 0,
+        "properties": {
+          "privateMetadata": {
+            "preserved": true
+          }
+        },
+        "blocks": [
+          {
+            "id": "text-a",
+            "type": "text",
+            "text": "기존 본문"
+          },
+          {
+            "id": "old-asset-block",
+            "type": "attachment",
+            "attachmentId": "old-pdf",
+            "kind": "pdf",
+            "fileName": "원문.pdf",
+            "contentType": "application/pdf",
+            "size": 12,
+            "displayMode": "file"
+          }
+        ],
+        "markdown": "기존 본문\n\n[원문.pdf](local-attachment://old-pdf)",
+        "createdAtMs": 10,
+        "updatedAtMs": 10
+      },
+      "binding": {
+        "tenantId": "tenant-a",
+        "planId": "lesson-native-plan-a",
+        "pageId": "lesson-page",
+        "planKind": "lesson",
+        "dateKey": "2026-09-08",
+        "startPeriod": 1,
+        "endPeriod": 1,
+        "subject": "수학",
+        "bindingRevision": 1,
+        "updatedAtMs": 10
+      },
+      "input": {
+        "tenantId": "tenant-a",
+        "receiptId": "receipt-append-true",
+        "operation": "lesson_material_apply_snapshot",
+        "requestSha256": "140a67a96293d7619d84afbc001c8e75ddebf5c765add9593d76f9ab2c627f2d",
+        "data": {
+          "v": 1,
+          "pageRef": "lesson-page",
+          "materialAuthority": {
+            "v": 1,
+            "tenantId": "tenant-a",
+            "actorId": "owner-a",
+            "planId": "lesson-native-plan-a",
+            "planKind": "lesson",
+            "bindingRevision": 1,
+            "storageKind": "local",
+            "cloudDocumentId": "cloud-doc",
+            "cloudPageId": "cloud-page",
+            "localPageId": "lesson-page",
+            "dateKey": "2026-09-08",
+            "startPeriod": 1,
+            "endPeriod": 1,
+            "revision": 1,
+            "contentSha256": "3f1f95ece0bbdb55be4f7d64a46f1110bdf493b9b9bbcecb38e37ae9b21ab122",
+            "cloudDocumentRevision": null
+          },
+          "baseSnapshot": {
+            "documentTitle": "수학 자료",
+            "documentBlocks": [
+              {
+                "id": "text-a",
+                "text": "기존 본문",
+                "type": "text"
+              },
+              {
+                "attachmentType": "pdf",
+                "id": "old-asset-block",
+                "localAttachmentId": "old-pdf",
+                "type": "attachment"
+              }
+            ],
+            "markdown": "기존 본문\n\n[첨부]"
+          },
+          "targetSnapshot": {
+            "documentTitle": "수학 자료",
+            "documentBlocks": [
+              {
+                "alt": "수학 그림",
+                "assetId": "lesson-material-asset-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "id": "lesson-material-image-bbbbbbbbbbbbbbbbbbbbbbbb",
+                "type": "image"
+              },
+              {
+                "id": "text-a",
+                "text": "기존 본문",
+                "type": "text"
+              },
+              {
+                "attachmentType": "pdf",
+                "id": "old-asset-block",
+                "localAttachmentId": "old-pdf",
+                "type": "attachment"
+              },
+              {
+                "id": "mcp_aaaaaaaaaaaaaaaaaaaaaaaa_text_0",
+                "text": "새 문장",
+                "type": "text"
+              }
+            ],
+            "markdown": "기존 본문\n\n[첨부]\n\n새 문장\n\n[첨부]"
+          },
+          "snapshotRevision": 2,
+          "contentSha256": "72fdc6d0e608d6b9f493d93a300ef34709cceb118871706f259badaea69b81cb",
+          "transform": {},
+          "appendBlocks": [
+            {
+              "id": "mcp_aaaaaaaaaaaaaaaaaaaaaaaa_text_0",
+              "text": "새 문장",
+              "type": "text"
+            }
+          ],
+          "markdownDelta": "새 문장\n\n[첨부]",
+          "attachments": [
+            {
+              "assetId": "lesson-material-asset-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "blockId": "lesson-material-image-bbbbbbbbbbbbbbbbbbbbbbbb",
+              "fileName": "수학 그림",
+              "alt": "수학 그림",
+              "sha256": "558311b71c7004eece8877ff716c92dea08e2f06fdaf137d470b82a843b98de1",
+              "size": 68,
+              "contentType": "image/png",
+              "objectKey": "private/lesson/asset",
+              "stage": {
+                "v": 1,
+                "changeId": "change-a",
+                "feature": "lesson_materials",
+                "expiresAt": 99999
+              },
+              "sourceKind": "conversation_file",
+              "createdAt": 10
+            }
+          ]
+        }
+      },
+      "png": [
+        137,
+        80,
+        78,
+        71,
+        13,
+        10,
+        26,
+        10,
+        0,
+        0,
+        0,
+        13,
+        73,
+        72,
+        68,
+        82,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        1,
+        8,
+        4,
+        0,
+        0,
+        0,
+        181,
+        28,
+        12,
+        2,
+        0,
+        0,
+        0,
+        11,
+        73,
+        68,
+        65,
+        84,
+        120,
+        218,
+        99,
+        252,
+        255,
+        31,
+        0,
+        3,
+        3,
+        2,
+        0,
+        239,
+        154,
+        58,
+        234,
+        0,
+        0,
+        0,
+        0,
+        73,
+        69,
+        78,
+        68,
+        174,
+        66,
+        96,
+        130
+      ]
+    }
+  }
+}

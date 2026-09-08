@@ -60,7 +60,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-09-08.5-mcp-native-jobs";
+pub(crate) const SERVICE_VERSION: &str = "2026-09-08.6-mcp-native-recovery";
 const WORK_MEETING_ROOT_PAGE_ID: &str = "classaimate:work-meeting-minutes";
 const WORK_MEETING_ROOT_TITLE: &str = "업무 회의록";
 const WORK_MEETING_ROOT_INTRO: &str = "모바일에서 확정한 업무 회의록이 자동으로 들어옵니다.";
@@ -139,6 +139,7 @@ const LOCAL_SENSITIVE_STORE_ROUTES: &[&str] = &[
     "/v1/student-record-mcp/connection/disconnect",
     "/v1/student-record-mcp/selections",
     "/v1/classaimate-mcp/write-jobs/apply",
+    "/v1/classaimate-mcp/write-jobs/receipt",
     "/v1/classaimate-mcp/counseling-drafts",
     "/v1/classaimate-mcp/observations/list",
     "/v1/classaimate-mcp/materials/search",
@@ -181,7 +182,7 @@ const LOCAL_SENSITIVE_STORE_ROUTES: &[&str] = &[
     "/v1/password-vault/shared/decrypt",
     "/v1/password-vault/shared/recover",
 ];
-const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 23] = [
+const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 25] = [
     "observation_evidence_v1",
     "non_lesson_observations",
     "teacher_local_records",
@@ -199,6 +200,8 @@ const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 23] = [
     "classaimate_public_mcp_operations_v1",
     "classaimate_mcp_native_worker_v1",
     "classaimate_mcp_material_assets_v1",
+    "classaimate_mcp_receipt_readback_v1",
+    "classaimate_mcp_lesson_snapshot_v1",
     "lesson_observations_mcp_v1",
     "classaimate_public_mcp_local_read_v1",
     "teacher_counseling_mcp_drafts_v1",
@@ -4778,6 +4781,9 @@ fn json_response(status: u16, payload: Value, origin: &str) -> Response<std::io:
 
 fn request_error_status(error: &str) -> u16 {
     match error {
+        "INVALID_LOCAL_READ_REQUEST" => 400,
+        "MCP_LOCAL_RECEIPT_CONFLICT" | "MCP_LOCAL_RECEIPT_UNSUPPORTED" => 409,
+        "MCP_LOCAL_RECEIPT_READ_FAILED" => 503,
         "observation_revision_conflict" | "observation_mutation_conflict" | "observation_evidence_integrity_mismatch" | "observation_photo_immutable" => 409,
         "observation_correction_reason_required" | "observation_event_precision_invalid" | "observation_event_time_required" | "observation_event_date_mismatch" | "observation_event_time_invalid" | "observation_evidence_unsafe_number" | "observation_duplicate_record" => 400,
         "observation_not_found" => 404,
@@ -5008,6 +5014,14 @@ fn handle_request(
             if request.method() == &Method::Post && path == "/v1/classaimate-mcp/observations/list" {
                 let body = scope_body_to_tenant(read_body(&mut request)?, Some(&tenant))?;
                 return Ok((200, classaimate_mcp_observations::list(&store, &body)?));
+            }
+            if request.method() == &Method::Post && path == "/v1/classaimate-mcp/write-jobs/receipt" {
+                let mut body = scope_body_to_tenant(read_body(&mut request)?, Some(&tenant))?;
+                body.as_object_mut().ok_or("INVALID_LOCAL_READ_REQUEST")?.remove("tenantId");
+                let receipt = classaimate_mcp_write_jobs::receipt_verification::read_only(&store, &tenant, &body)?;
+                let mut payload = receipt.as_object().cloned().unwrap_or_default();
+                payload.insert("ok".to_string(), Value::Bool(true));
+                return Ok((200, Value::Object(payload)));
             }
             if request.method() == &Method::Post
                 && path == "/v1/classaimate-mcp/write-jobs/apply"

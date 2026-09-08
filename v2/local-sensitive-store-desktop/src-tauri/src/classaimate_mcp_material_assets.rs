@@ -64,7 +64,7 @@ fn nodes<'a>(value: &'a Value, output: &mut Vec<&'a Value>) {
     }
 }
 
-fn validate(data: &Value) -> Result<(), String> {
+pub(super) fn validate(data: &Value) -> Result<(), String> {
     let mode = text(data, "mode");
     let title = text(data, "title");
     let revision = data["expectedRevision"].as_i64().unwrap_or(0);
@@ -221,13 +221,13 @@ fn check_file(path: &Path, asset: &Value) -> Result<(), String> {
 fn attachment_exists(conn: &Connection, tenant: &str, asset: &str) -> Result<bool, String> {
     conn.query_row("SELECT EXISTS(SELECT 1 FROM work_note_attachments WHERE tenant_id=?1 AND attachment_id=?2)", params![tenant, asset], |row| row.get(0)).map_err(db)
 }
-struct PreparedFile {
-    asset: Value,
+pub(super) struct PreparedFile {
+    pub(super) asset: Value,
     path: PathBuf,
-    relative_path: String,
+    pub(super) relative_path: String,
     created: bool,
 }
-fn cleanup(conn: &Connection, tenant: &str, prepared: &[PreparedFile]) {
+pub(super) fn cleanup(conn: &Connection, tenant: &str, prepared: &[PreparedFile]) {
     for file in prepared {
         if file.created
             && matches!(
@@ -239,7 +239,7 @@ fn cleanup(conn: &Connection, tenant: &str, prepared: &[PreparedFile]) {
         }
     }
 }
-fn prepare(
+pub(super) fn prepare(
     store: &SqliteStore,
     tenant: &str,
     data: &Value,
@@ -360,7 +360,15 @@ pub(super) fn verify_files(
     data: &Value,
 ) -> Result<(), String> {
     validate(data)?;
+    verify_file_references(conn, data_dir, tenant, data)
+}
+
+pub(crate) fn verify_file_references(conn: &Connection, data_dir: &Path, tenant: &str, data: &Value) -> Result<(), String> {
+    if !id(text(data, "pageRef"), true) || data["attachments"].as_array().is_none_or(|rows| rows.len() > 12) {
+        return Err(invalid());
+    }
     for asset in data["attachments"].as_array().ok_or_else(invalid)? {
+        if !id(text(asset, "assetId"), false) || extension(text(asset, "contentType")).is_none() { return Err(invalid()); }
         let row: Option<(String, String, String, String, u64, String, String)> = conn.query_row(
             "SELECT page_id,block_id,file_name,content_type,byte_size,sha256,local_path FROM work_note_attachments WHERE tenant_id=?1 AND attachment_id=?2",
             params![tenant, text(asset, "assetId")], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?)),

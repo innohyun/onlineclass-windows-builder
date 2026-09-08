@@ -1,4 +1,4 @@
-use rusqlite::{params, types::ValueRef, Connection};
+use rusqlite::{params, types::ValueRef, Connection, OptionalExtension};
 use serde_json::{json, Map, Number, Value};
 
 pub(super) const ENVELOPE: &str = "classaimate_mcp_local_receipt_v2";
@@ -40,6 +40,12 @@ pub(super) fn digest(conn: &Connection, tenant: &str, locator: &Value) -> Result
         "counseling_record_prepare_create" => {
             &[("teacher_counseling_sessions", "session_id", "session_id")]
         }
+        "lesson_material_apply_snapshot" => &[
+            ("work_note_pages", "page_id", "page_id"),
+            ("work_note_pages_fts", "page_id", "page_id"),
+            ("lesson_plan_bindings", "page_id", "plan_id"),
+            ("work_note_attachments", "page_id", "attachment_id"),
+        ],
         "materials_apply_images" => &[
             ("work_note_pages", "page_id", "page_id"),
             ("work_note_pages_fts", "page_id", "page_id"),
@@ -96,7 +102,10 @@ pub(super) fn digest(conn: &Connection, tenant: &str, locator: &Value) -> Result
             }
             values.push(Value::Object(object));
         }
-        if values.is_empty() {
+        if values.is_empty()
+            && !(locator["operation"] == "lesson_material_apply_snapshot"
+                && *table == "work_note_attachments")
+        {
             return Err("LOCAL_STORE_WRITE_FAILED".into());
         }
         state.insert(table.to_string(), Value::Array(values));
@@ -113,3 +122,138 @@ pub(super) fn verify(conn: &Connection, tenant: &str, envelope: &Value) -> Resul
     }
     Ok(envelope["result"].clone())
 }
+
+fn read_id(value: &str, maximum: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= maximum
+        && value.as_bytes()[0].is_ascii_alphanumeric()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte))
+}
+
+fn verify_observation_receipt(conn: &Connection, tenant: &str, data: &Value) -> Result<(), String> {
+    let conflict = || "MCP_LOCAL_RECEIPT_CONFLICT".to_string();
+    let mutation = data["mutationId"].as_str().ok_or_else(conflict)?;
+    let row: Option<(String, String)> = conn.query_row(
+        "SELECT request_hash,payload_json FROM observation_evidence_mutations WHERE tenant_id=?1 AND mutation_id=?2",
+        params![tenant, mutation], |row| Ok((row.get(0)?, row.get(1)?)),
+    ).optional().map_err(|_| conflict())?;
+    let (hash, payload) = row.ok_or_else(conflict)?;
+    if hash
+        != crate::observation_evidence::hash(
+            &json!({"tenantId":tenant,"records":data,"mutationId":mutation}),
+        )
+    {
+        return Err(conflict());
+    }
+    let records: Vec<Value> = serde_json::from_str(&payload).map_err(|_| conflict())?;
+    let items = data["items"].as_array().ok_or_else(conflict)?;
+    let mut ids = std::collections::HashSet::new();
+    if items.is_empty() || records.len() != items.len() {
+        return Err(conflict());
+    }
+    for record in &records {
+        let id = record["docId"].as_str().ok_or_else(conflict)?;
+        if !ids.insert(id)
+            || !items.iter().any(|item| {
+                item["docId"] == record["docId"] && item["studentCode"] == record["studentCode"]
+            })
+        {
+            return Err(conflict());
+        }
+    }
+    crate::classaimate_mcp_observations::verify_replay(conn, tenant, data).map_err(|_| conflict())
+}
+
+// Tenant comes from the authenticated device connection, never a relay input.
+// No apply/replay helper: even their receipt TTL cleanup would be a write.
+pub(crate) fn read_only(
+    store: &crate::SqliteStore,
+    tenant: &str,
+    input: &Value,
+) -> Result<Value, String> {
+    let invalid = || "INVALID_LOCAL_READ_REQUEST".to_string();
+    let conflict = || "MCP_LOCAL_RECEIPT_CONFLICT".to_string();
+    let fields = input.as_object().ok_or_else(invalid)?;
+    let receipt = input["receiptId"].as_str().ok_or_else(invalid)?;
+    let operation = input["operation"].as_str().ok_or_else(invalid)?;
+    let request_sha = input["requestSha256"].as_str().ok_or_else(invalid)?;
+    if fields.len() != 3
+        || fields
+            .keys()
+            .any(|key| !["receiptId", "operation", "requestSha256"].contains(&key.as_str()))
+        || !read_id(tenant, 160)
+        || !read_id(receipt, 160)
+        || !super::OPERATIONS.contains(&operation)
+        || request_sha.len() != 64
+        || !request_sha
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(invalid());
+    }
+    let conn = store
+        .conn
+        .lock()
+        .map_err(|_| "MCP_LOCAL_RECEIPT_READ_FAILED")?;
+    let row: Option<(String, String, String, String)> = conn.query_row(
+        "SELECT operation,request_sha256,result_json,local_ref FROM classaimate_mcp_local_write_receipts WHERE tenant_id=?1 AND receipt_id=?2",
+        params![tenant, receipt], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    ).optional().map_err(|_| "MCP_LOCAL_RECEIPT_READ_FAILED")?;
+    let Some((saved_operation, saved_sha, payload, local_ref)) = row else {
+        return Ok(json!({"status":"missing"}));
+    };
+    if saved_operation != operation || saved_sha != request_sha {
+        return Err(conflict());
+    }
+    let envelope: Value = serde_json::from_str(&payload).map_err(|_| conflict())?;
+    let result = if envelope["kind"] == ENVELOPE {
+        if envelope["verification"]["locator"]["operation"] != operation {
+            return Err(conflict());
+        }
+        let result = verify(&conn, tenant, &envelope).map_err(|_| conflict())?;
+        if operation == "materials_apply_images" {
+            super::material_assets::verify_files(&conn, &store.data_dir, tenant, &result)
+                .map_err(|_| conflict())?;
+        }
+        if operation == "lesson_material_apply_snapshot" {
+            super::material_assets::verify_file_references(
+                &conn,
+                &store.data_dir,
+                tenant,
+                &envelope["lessonAssets"],
+            )
+            .map_err(|_| conflict())?;
+        }
+        result
+    } else if operation == "lesson_observations_manage" {
+        verify_observation_receipt(&conn, tenant, &envelope)?;
+        envelope.clone()
+    } else {
+        return Err("MCP_LOCAL_RECEIPT_UNSUPPORTED".into());
+    };
+    let record = if operation == "lesson_observations_manage" {
+        &result["mutationId"]
+    } else {
+        &envelope["verification"]["locator"]["recordId"]
+    };
+    let prefix = match operation {
+        "student_record_save_drafts" => "student-record-draft-set",
+        "counseling_record_save_draft" => "teacher-counseling-mcp-draft",
+        "counseling_record_prepare_create" => "teacher-counseling-session",
+        "lesson_observations_manage" => "lesson-observations",
+        _ => "work-note-page",
+    };
+    if !read_id(&local_ref, 350)
+        || local_ref != format!("{prefix}:{}", record.as_str().ok_or_else(conflict)?)
+    {
+        return Err(conflict());
+    }
+    Ok(json!({"status":"saved","requestSha256":saved_sha,
+        "resultSha256":crate::sha256_json(&result).map_err(|_| conflict())?,"localRef":local_ref}))
+}
+
+#[cfg(test)]
+#[path = "classaimate_mcp_receipt_verification_tests.rs"]
+mod tests;
