@@ -2,6 +2,13 @@
 
 Windows installer for the loopback SQLite service used by tenant observation records in `local_sqlite` mode.
 
+## 0.2.78 source release notes
+
+- New v4 backup attachments use short opaque paths while preserving original names in the sealed manifest. Existing v4 paths and v5 content-addressed objects remain readable.
+- Windows download failures retain the exact file, read offset, request size and Win32 phase/code in the bounded local-only `onedrive-download-diagnostics.log`. File contents, credentials and absolute paths remain absent from remote status and MCP payloads.
+- The actual OneDrive 380 incident was reproduced outside the app and resolved by shortening the selected snapshot directory without changing its manifest or file bytes. All 12 artifact hashes matched before the installed app applied generation 320 and published generation 321.
+- Native service revision: `2026-09-09.1-onedrive-path-diagnostics`. Public installer delivery is tracked separately from this source version.
+
 ## 0.2.75 source release notes
 
 - When the explicit Cloud Files hydration request is rejected with Win32 380, reads only that selected file to EOF in fixed-size chunks to request its content. No folder pinning, recursive download, or OneDrive account reset is performed.

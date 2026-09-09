@@ -60,7 +60,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-09-08.6-mcp-native-recovery";
+pub(crate) const SERVICE_VERSION: &str = "2026-09-09.1-onedrive-path-diagnostics";
 const WORK_MEETING_ROOT_PAGE_ID: &str = "classaimate:work-meeting-minutes";
 const WORK_MEETING_ROOT_TITLE: &str = "업무 회의록";
 const WORK_MEETING_ROOT_INTRO: &str = "모바일에서 확정한 업무 회의록이 자동으로 들어옵니다.";
@@ -6030,6 +6030,7 @@ fn start_service() -> Result<(
 ), String> {
     let paths = resolve_paths();
     fs::create_dir_all(&paths.data_dir).map_err(|e| format!("data_dir_create_failed:{e}"))?;
+    onedrive_download::configure_diagnostics(&paths.data_dir);
     let pairing_key = ensure_pairing_key(&paths.key_path)?;
     let store = Arc::new(SqliteStore::open(paths.db_path.clone())?);
     let sync_manager = Arc::new(cloud_sync::CloudSyncManager::new(paths.data_dir.clone(), Arc::clone(&store)));

@@ -3,6 +3,48 @@ use std::cell::Cell;
 use std::io;
 use std::path::Path;
 
+static DIAGNOSTIC_PATH: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+pub(crate) fn configure_diagnostics(data_dir: &Path) {
+    // Local app data only: never the OneDrive snapshot, relay, or returned error.
+    let _ = DIAGNOSTIC_PATH.set(data_dir.join("onedrive-download-diagnostics.log"));
+}
+
+#[cfg(any(windows, test))]
+const DIAGNOSTIC_LIMIT_BYTES: u64 = 256 * 1024;
+
+#[cfg(any(windows, test))]
+fn append_diagnostic(log_path: &Path, entry: &serde_json::Value) {
+    use std::io::Write;
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let Ok(_guard) = LOCK.lock() else { return; };
+    let Ok(mut bytes) = serde_json::to_vec(entry) else { return; };
+    bytes.push(b'\n');
+    if bytes.len() as u64 > DIAGNOSTIC_LIMIT_BYTES { return; }
+    let current_size = log_path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+    let truncate = current_size.saturating_add(bytes.len() as u64) > DIAGNOSTIC_LIMIT_BYTES;
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).write(true)
+        .append(!truncate).truncate(truncate).open(log_path) {
+        let _ = file.write_all(&bytes);
+    }
+}
+
+#[cfg(windows)]
+fn record_failure(path: &Path, phase: &str, code: u32, read: Option<(u64, u32)>, observed_length: Option<u64>) {
+    use std::os::windows::ffi::OsStrExt;
+    let Some(log_path) = DIAGNOSTIC_PATH.get() else { return; };
+    append_diagnostic(log_path, &serde_json::json!({
+        "atMs": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis(),
+        "path": path.to_string_lossy(),
+        "pathUtf16Length": path.as_os_str().encode_wide().count(),
+        "phase": phase,
+        "win32": code,
+        "readOffset": read.map(|value| value.0),
+        "requestedBytes": read.map(|value| value.1),
+        "observedLength": observed_length,
+    }));
+}
+
 thread_local! { static ENABLED: Cell<bool> = const { Cell::new(false) }; }
 
 pub(crate) fn with_downloads<T>(read: impl FnOnce() -> T) -> T {

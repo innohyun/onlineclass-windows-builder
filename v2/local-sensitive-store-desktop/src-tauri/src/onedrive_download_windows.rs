@@ -13,10 +13,17 @@ use windows_sys::Win32::System::Threading::{CreateEventW, GetCurrentThreadId, Op
     ResetEvent, WaitForSingleObject, THREAD_TERMINATE};
 
 #[derive(Debug)]
-struct DownloadError { phase: &'static str, code: u32 }
+struct DownloadError {
+    phase: &'static str,
+    code: u32,
+    read: Option<(u64, u32)>,
+    observed_length: Option<u64>,
+}
 
 impl DownloadError {
-    fn new(phase: &'static str, code: u32) -> Self { Self { phase, code } }
+    fn new(phase: &'static str, code: u32) -> Self {
+        Self { phase, code, read: None, observed_length: None }
+    }
     fn last(phase: &'static str) -> Self { Self::new(phase, unsafe { GetLastError() }) }
     fn permits_read(&self) -> bool {
         self.code == ERROR_CLOUD_FILE_INVALID_REQUEST
@@ -29,7 +36,13 @@ fn hresult_code(result: i32) -> u32 {
     if value & 0xffff0000 == 0x80070000 { value & 0xffff } else { value }
 }
 
-struct DeadlineState { finished: bool, file: Option<usize>, phase: &'static str }
+struct DeadlineState {
+    finished: bool,
+    file: Option<usize>,
+    phase: &'static str,
+    read: Option<(u64, u32)>,
+    observed_length: Option<u64>,
+}
 struct Deadline { expires: Instant, state: Mutex<DeadlineState>, changed: Condvar }
 
 impl Deadline {
@@ -82,7 +95,7 @@ impl Drop for FinishWatch<'_> {
 
 fn with_deadline(duration: Duration, operation: impl FnOnce(&Deadline) -> Result<(), DownloadError>) -> Result<(), DownloadError> {
     let deadline = Deadline { expires: Instant::now() + duration,
-        state: Mutex::new(DeadlineState { finished: false, file: None, phase: "hydrate" }), changed: Condvar::new() };
+        state: Mutex::new(DeadlineState { finished: false, file: None, phase: "hydrate", read: None, observed_length: None }), changed: Condvar::new() };
     let thread = unsafe { OpenThread(THREAD_TERMINATE, 0, GetCurrentThreadId()) };
     if thread.is_null() { return Err(DownloadError::last("deadline_thread")); }
     let thread = unsafe { OwnedHandle::from_raw_handle(thread) };
@@ -95,8 +108,12 @@ fn with_deadline(duration: Duration, operation: impl FnOnce(&Deadline) -> Result
         let result = operation(&deadline);
         drop(finish);
         watcher.join().expect("onedrive deadline watcher panicked");
-        deadline.check()?;
-        result
+        deadline.check().and(result).map_err(|mut error| {
+            let state = deadline.state.lock().unwrap();
+            error.read = state.read;
+            error.observed_length = state.observed_length;
+            error
+        })
     })
 }
 
@@ -133,6 +150,8 @@ fn hydrate_placeholder(path: &Path, deadline: &Deadline) -> Result<(), DownloadE
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_OVERLAPPED).open(path)
         .map_err(|error| DownloadError::new("hydrate_open", error.raw_os_error().unwrap_or(0) as u32))?;
     let _active = deadline.register(&file);
+    let observed_length = file.metadata().ok().map(|metadata| metadata.len());
+    deadline.state.lock().unwrap().observed_length = observed_length;
     deadline.check()?;
     let event = event("hydrate_event")?;
     let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
@@ -146,13 +165,19 @@ fn hydrate_placeholder(path: &Path, deadline: &Deadline) -> Result<(), DownloadE
 
 fn read_to_eof(path: &Path, deadline: &Deadline) -> Result<(), DownloadError> {
     deadline.check()?;
-    deadline.state.lock().unwrap().phase = "read";
+    {
+        let mut state = deadline.state.lock().unwrap();
+        state.phase = "read";
+        state.read = Some((0, 0));
+    }
     // An ordinary read-only open lets the cloud filter handle this request. Never
     // OPEN_REPARSE_POINT, pin, write, or assume that requesting bytes verifies them.
     let file = OpenOptions::new().read(true)
         .custom_flags(FILE_FLAG_OVERLAPPED | FILE_FLAG_SEQUENTIAL_SCAN).open(path)
         .map_err(|error| DownloadError::new("read_open", error.raw_os_error().unwrap_or(0) as u32))?;
     let _active = deadline.register(&file);
+    let observed_length = file.metadata().ok().map(|metadata| metadata.len());
+    deadline.state.lock().unwrap().observed_length = observed_length;
     let event = event("read_event")?;
     let mut buffer = [0u8; 64 * 1024];
     let mut offset = 0u64;
@@ -163,6 +188,7 @@ fn read_to_eof(path: &Path, deadline: &Deadline) -> Result<(), DownloadError> {
         overlapped.hEvent = event.as_raw_handle();
         overlapped.Anonymous.Anonymous.Offset = offset as u32;
         overlapped.Anonymous.Anonymous.OffsetHigh = (offset >> 32) as u32;
+        deadline.state.lock().unwrap().read = Some((offset, buffer.len() as u32));
         let started = unsafe { ReadFile(file.as_raw_handle(), buffer.as_mut_ptr(), buffer.len() as u32,
             std::ptr::null_mut(), &mut overlapped) };
         let result = if started == 0 {
@@ -190,7 +216,10 @@ pub(super) fn hydrate(path: &Path) -> Result<(), String> {
             Err(error) if error.permits_read() => read_to_eof(path, deadline),
             result => result,
         }
-    }).map_err(|error| format!("onedrive_download_failed:{}:{}", error.phase, error.code))
+    }).map_err(|error| {
+        super::record_failure(path, error.phase, error.code, error.read, error.observed_length);
+        format!("onedrive_download_failed:{}:{}", error.phase, error.code)
+    })
 }
 
 #[cfg(test)]

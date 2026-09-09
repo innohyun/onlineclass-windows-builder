@@ -2,6 +2,26 @@ use super::*;
 use std::cell::RefCell;
 use std::sync::{atomic::{AtomicUsize, Ordering}, mpsc, Arc};
 
+#[test]
+fn onedrive_local_diagnostic_preserves_exact_path_and_stays_bounded() {
+    let root = std::env::temp_dir().join(format!("ca-onedrive-diagnostic-{}", crate::random_url_token()));
+    std::fs::create_dir_all(&root).unwrap();
+    let log = root.join("onedrive-download-diagnostics.log");
+    let exact_path = "C:\\Users\\교사\\OneDrive - 학교\\첨부 이름\\수학 관찰기록.docx";
+    let entry = serde_json::json!({"path":exact_path,"phase":"read_io","win32":380,
+        "readOffset":65536,"requestedBytes":65536,"observedLength":90000});
+    append_diagnostic(&log, &entry);
+    let readback: serde_json::Value = serde_json::from_slice(&std::fs::read(&log).unwrap()).unwrap();
+    assert_eq!(readback, entry);
+    // The next failure remains available even after repeated provider errors fill the log.
+    std::fs::write(&log, vec![b'x'; DIAGNOSTIC_LIMIT_BYTES as usize]).unwrap();
+    append_diagnostic(&log, &entry);
+    assert!(log.metadata().unwrap().len() <= DIAGNOSTIC_LIMIT_BYTES);
+    let readback: serde_json::Value = serde_json::from_slice(&std::fs::read(&log).unwrap()).unwrap();
+    assert_eq!(readback, entry);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 type Reader = Box<dyn Fn(&Path) -> Result<(), String>>;
 thread_local! { static FIXTURE: RefCell<Option<Reader>> = RefCell::new(None); }
 

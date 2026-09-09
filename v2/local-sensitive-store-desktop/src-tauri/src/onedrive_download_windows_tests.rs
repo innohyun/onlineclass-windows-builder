@@ -318,6 +318,40 @@ fn onedrive_cloud_files_380_read_refusal_is_failure_not_retry_or_success() {
 }
 
 #[test]
+fn onedrive_native_read_failure_retains_offset_request_size_and_observed_length() {
+    let mut fixture = CloudFixture::new(Response::Reject(STATUS_CLOUD_FILE_INVALID_REQUEST));
+    let error = super::with_deadline(Duration::from_secs(120), |deadline| {
+        super::read_to_eof(&fixture.root.join("selected.bin"), deadline)
+    }).unwrap_err();
+    fixture.disconnect();
+    assert_eq!(error.phase, "read_io");
+    assert_eq!(error.code, 380);
+    assert_eq!(error.read, Some((0, 65_536)));
+    assert_eq!(error.observed_length, Some(fixture.provider.as_ref().unwrap().bytes.len() as u64));
+    assert_eq!(fixture.info("selected.bin").OnDiskDataSize, 0);
+}
+
+#[test]
+fn onedrive_native_failure_retains_nonzero_offset_and_timeout_context() {
+    for expires in [false, true] {
+        let error = super::with_deadline(Duration::from_secs(1), |deadline| {
+            {
+                let mut state = deadline.state.lock().unwrap();
+                state.phase = "read";
+                state.read = Some((65_536, 65_536));
+                state.observed_length = Some(90_000);
+            }
+            if expires { std::thread::sleep(Duration::from_millis(1100)); }
+            Err(super::DownloadError::new("read_io", 380))
+        }).unwrap_err();
+        assert_eq!(error.phase, if expires { "read_timeout" } else { "read_io" });
+        assert_eq!(error.code, if expires { ERROR_TIMEOUT } else { 380 });
+        assert_eq!(error.read, Some((65_536, 65_536)));
+        assert_eq!(error.observed_length, Some(90_000));
+    }
+}
+
+#[test]
 fn onedrive_native_hresult_and_async_380_share_only_primary_fallback_eligibility() {
     let immediate = super::hresult_code(0x8007017cu32 as i32);
     assert_eq!(immediate, 380);

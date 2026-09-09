@@ -86,12 +86,12 @@ pub(crate) fn run_with_kind_version(
     let mut missing = 0i64;
     let mut failed = 0i64;
     let mut bytes = 0i64;
-    for row in media_rows {
+    for (index, row) in media_rows.into_iter().enumerate() {
         let ext = media_extension(&row);
+        // The sealed manifest maps each file to its original identity/name. Keep
+        // physical v4 paths short for Windows cloud providers with MAX_PATH limits.
         let legacy_relative_path = PathBuf::from("board-media")
-            .join(&backup_id)
-            .join(safe_segment(&row.board_id, "board"))
-            .join(format!("{}.{}", safe_segment(&row.media_id, "media"), ext));
+            .join(format!("{index:x}.{ext}"));
         let source_path = store.data_dir.join(&row.local_path);
         let captured_stamp = captured.media_stamps.get(&row.media_id);
         let mut status = "copied";
@@ -186,11 +186,9 @@ pub(crate) fn run_with_kind_version(
     let mut attachments_missing = 0i64;
     let mut attachments_failed = 0i64;
     let mut attachment_bytes = 0i64;
-    for row in attachment_rows {
+    for (index, row) in attachment_rows.into_iter().enumerate() {
         let legacy_relative_path = PathBuf::from("work-note-attachments")
-            .join(&backup_id)
-            .join(safe_segment(&row.attachment_id, "attachment"))
-            .join(safe_segment(&row.file_name, "attachment.bin"));
+            .join(format!("{index:x}.bin"));
         let source_path = store.data_dir.join(&row.local_path);
         let mut status = "copied";
         let mut artifact = None;
@@ -465,3 +463,7 @@ pub(crate) fn run_with_kind_version(
 pub(crate) fn run_now(store: &SqliteStore, tenant_id: String) -> Result<Value, String> {
     run_with_kind(store, tenant_id, "manual", None)
 }
+
+#[cfg(test)]
+#[path = "backup_snapshot_path_tests.rs"]
+mod path_tests;
