@@ -2,6 +2,13 @@
 
 Windows installer for the loopback SQLite service used by tenant observation records in `local_sqlite` mode.
 
+## 0.2.79 source release notes
+
+- Reads student-record evidence and current semester drafts from the pinned device for the shared web/chat preparation flow. A prepared snapshot is never reported as the current local draft.
+- Matches legacy draft records consistently with the web writer, verifies committed rows before ACK, and rechecks exact receipts without duplicate writes after reconnect or lost ACK.
+- Reports deterministic draft conflicts separately from unknown outcomes. Bounded local job diagnostics expose only fixed processing stages, safe outcome codes, counts, timestamps and opaque receipts.
+- Native service revision: `2026-09-09.2-student-record-recovery`. Public installer and actual two-student verification are tracked in the matching change record.
+
 ## 0.2.78 source release notes
 
 - New v4 backup attachments use short opaque paths while preserving original names in the sealed manifest. Existing v4 paths and v5 content-addressed objects remain readable.

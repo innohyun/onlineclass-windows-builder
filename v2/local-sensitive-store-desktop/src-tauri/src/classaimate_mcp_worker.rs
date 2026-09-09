@@ -16,6 +16,9 @@ use std::time::{Duration, Instant};
 use tungstenite::{client::IntoClientRequest, stream::MaybeTlsStream, Message, WebSocket};
 use zeroize::Zeroizing;
 
+#[path = "classaimate_mcp_student_selection.rs"]
+mod student_selection;
+
 const API_PATH: &str = "/api/v3/classaimate-mcp/device";
 const MAX_FRAME: usize = 768 * 1024;
 const MAX_ASSET: usize = 20 * 1024 * 1024;
@@ -31,9 +34,12 @@ const CAPABILITIES: &[&str] = &[
     "classaimate_mcp_material_assets_v1",
     "classaimate_mcp_lesson_snapshot_v1",
     "classaimate_mcp_receipt_readback_v1",
+    "classaimate_mcp_student_drafts_read_v1",
+    "classaimate_mcp_student_selection_v1",
 ];
 static STARTED: AtomicBool = AtomicBool::new(false);
 static STATE: Mutex<(&str, &str, i64)> = Mutex::new(("waiting_connection", "", 0));
+static JOB_DIAGNOSTICS: Mutex<Vec<Value>> = Mutex::new(Vec::new());
 
 pub(crate) fn status() -> Value {
     let (state, error, updated_at) =
@@ -41,8 +47,53 @@ pub(crate) fn status() -> Value {
             .lock()
             .map(|value| *value)
             .unwrap_or(("unavailable", "MCP_WORKER_UNAVAILABLE", 0));
+    let jobs = JOB_DIAGNOSTICS.lock().map(|value| value.clone()).unwrap_or_default();
     json!({"state":state,"errorCode":if error.is_empty(){Value::Null}else{json!(error)},
-        "updatedAt":updated_at,"protocolVersion":1,"capabilities":CAPABILITIES})
+        "updatedAt":updated_at,"protocolVersion":1,"capabilities":CAPABILITIES,"recentJobs":jobs})
+}
+
+fn uncertain_failure_code(error: &str) -> Option<&str> {
+    match error {
+        "MCP_STUDENT_DRAFT_SET_WRITE_FAILED" | "MCP_STUDENT_DRAFT_WRITE_FAILED"
+        | "MCP_LOCAL_RECEIPT_WRITE_FAILED" | "MCP_LOCAL_TRANSACTION_FAILED"
+        | "MCP_LOCAL_COMMIT_FAILED" | "MCP_STUDENT_DRAFT_READ_FAILED"
+        | "MCP_LOCAL_REPLAY_READ_FAILED" | "MCP_LOCAL_APPLY_READBACK_FAILED"
+        | "MCP_LOCAL_DATABASE_FAILED" | "MCP_LOCAL_ACK_UNCONFIRMED" => Some(error),
+        _ => None,
+    }
+}
+
+fn diagnostic_code(error: &str) -> &str {
+    if let Some(code) = uncertain_failure_code(error) { return code; }
+    match error {
+        "DRAFT_CONFLICT" => "DRAFT_CONFLICT",
+        "classaimate_mcp_write_job_invalid" => "MCP_WRITE_JOB_INVALID",
+        "LOCAL_STORE_WRITE_FAILED" => "LOCAL_STORE_WRITE_FAILED",
+        "IDEMPOTENCY_CONFLICT" => "IDEMPOTENCY_CONFLICT",
+        "MCP_WORKER_NETWORK_UNAVAILABLE" => "MCP_WORKER_NETWORK_UNAVAILABLE",
+        "MCP_WORKER_CONFLICT" => "MCP_WORKER_CONFLICT",
+        "MCP_WORKER_JOB_UNAVAILABLE" => "MCP_WORKER_JOB_UNAVAILABLE",
+        "MCP_WORKER_AUTHORITY_REVOKED" => "MCP_WORKER_AUTHORITY_REVOKED",
+        "MCP_WORKER_AUTHORITY_CHANGED" => "MCP_WORKER_AUTHORITY_CHANGED",
+        "MCP_WRITE_RESULT_CONFLICT" => "MCP_WRITE_RESULT_CONFLICT",
+        _ if error.starts_with("db_student_record_draft_set_upsert_failed:") => "MCP_STUDENT_DRAFT_SET_WRITE_FAILED",
+        _ if error.starts_with("db_student_record_draft_upsert_failed:") => "MCP_STUDENT_DRAFT_WRITE_FAILED",
+        _ if error.starts_with("db_classaimate_mcp_receipt_save_failed:") => "MCP_LOCAL_RECEIPT_WRITE_FAILED",
+        _ if error.starts_with("db_mcp_write_transaction_failed:") => "MCP_LOCAL_TRANSACTION_FAILED",
+        _ if error.starts_with("db_mcp_write_commit_failed:") => "MCP_LOCAL_COMMIT_FAILED",
+        _ if error.starts_with("db_mcp_receipt_readback_failed:") => "MCP_LOCAL_RECEIPT_READ_FAILED",
+        _ if error.starts_with("db_classaimate_mcp_draft_") => "MCP_STUDENT_DRAFT_READ_FAILED",
+        _ if error.starts_with("db_") => "MCP_LOCAL_DATABASE_FAILED",
+        _ => "MCP_LOCAL_APPLY_UNKNOWN",
+    }
+}
+
+fn job_diagnostic(receipt: &str, stage: &str, code: &str, claim: &Value, count: usize) {
+    if let Ok(mut jobs) = JOB_DIAGNOSTICS.lock() {
+        if jobs.len() >= 24 { jobs.remove(0); }
+        jobs.push(json!({"receiptId":receipt,"stage":stage,"code":code,"claimRevision":claim.as_u64(),
+            "itemCount":count,"updatedAt":chrono::Utc::now().timestamp_millis()}));
+    }
 }
 
 fn set_state(state: &'static str, error: &'static str) {
@@ -255,6 +306,12 @@ fn read_local(store: &SqliteStore, tenant: &str, frame: &Value) -> Result<Value,
         .ok_or_else(|| "INVALID_LOCAL_READ_REQUEST".to_string())?;
     let workspace = frame["workspace"].as_str().unwrap_or("");
     let operation = frame["operation"].as_str().unwrap_or("");
+    if workspace == "student_record" && operation == "student_drafts_get" {
+        return classaimate_mcp_write_jobs::student_drafts::read_current(store, tenant, &frame["input"]);
+    }
+    if workspace == "student_record" && operation == "student_record_selection_get" {
+        return student_selection::read_only(store, tenant, &frame["input"]);
+    }
     if operation == "write_receipt_get" {
         let allowed = match input.get("operation").and_then(Value::as_str).unwrap_or("") {
             "student_record_save_drafts" => workspace == "student_record",
@@ -333,7 +390,9 @@ fn read_frame(store: &SqliteStore, tenant: &str, frame: &Value, now: i64) -> Opt
         Err(error) => {
             let not_found = error == "local_workspace_page_not_found";
             let code = if not_found { "local_workspace_page_not_found" }
-                else if ["MCP_LOCAL_RECEIPT_CONFLICT", "MCP_LOCAL_RECEIPT_UNSUPPORTED", "MCP_LOCAL_RECEIPT_READ_FAILED", "INVALID_LOCAL_READ_REQUEST"].contains(&error.as_str()) {
+                else if ["MCP_LOCAL_RECEIPT_CONFLICT", "MCP_LOCAL_RECEIPT_UNSUPPORTED", "MCP_LOCAL_RECEIPT_READ_FAILED", "MCP_STUDENT_DRAFT_READ_FAILED", "INVALID_LOCAL_READ_REQUEST",
+                    "MCP_STUDENT_SELECTION_INVALID", "MCP_STUDENT_SELECTION_READ_FAILED", "MCP_STUDENT_SELECTION_TOO_LARGE",
+                    "MCP_STUDENT_WORKSPACE_NOT_FOUND", "MCP_STUDENT_WORKSPACE_SCOPE_MISMATCH"].contains(&error.as_str()) {
                     error.as_str()
                 } else { "LOCAL_READ_FAILED" };
             json!({"type":"local_read_result","requestId":request_id,"status":if not_found {"not_found"} else {"error"},
@@ -421,6 +480,7 @@ fn ensure_current(manager: &DeviceSyncManager, authority: &WorkerAuthority) -> R
 }
 
 fn failure_code(error: &str) -> &str {
+    if let Some(code) = uncertain_failure_code(error) { return code; }
     match error {
         "observation_revision_conflict" => "OBSERVATION_REVISION_CONFLICT",
         "local_workspace_page_revision_conflict"
@@ -433,6 +493,7 @@ fn failure_code(error: &str) -> &str {
         | "MCP_WRITE_DEVICE_MISMATCH"
         | "MCP_WRITE_RESULT_CONFLICT"
         | "MCP_WORKER_AUTHORITY_CHANGED" => error,
+        "MCP_STUDENT_DRAFT_CONFLICT" => error,
         _ => "MCP_LOCAL_APPLY_UNKNOWN",
     }
 }
@@ -447,6 +508,24 @@ fn local_failure_code(error: &str, committed: Result<bool, String>) -> &str {
     } else {
         failure_code(error)
     }
+}
+
+fn local_reported_failure_code<'a>(error: &'a str, stage: &str, committed: Result<bool, String>) -> &'a str {
+    let safe = local_failure_code(error, committed);
+    if safe != "MCP_LOCAL_APPLY_UNKNOWN" { return safe; }
+    // These codes describe the failed operation, never whether its transaction committed.
+    let readback = error == "LOCAL_STORE_WRITE_FAILED"
+        || error == "classaimate_mcp_local_payload_invalid";
+    if stage == "receipt_replay" && (readback || error.starts_with("db_")) {
+        return "MCP_LOCAL_REPLAY_READ_FAILED";
+    }
+    if stage == "local_apply" {
+        if readback || error.starts_with("db_mcp_receipt_readback_failed:") {
+            return "MCP_LOCAL_APPLY_READBACK_FAILED";
+        }
+        if let Some(code) = uncertain_failure_code(diagnostic_code(error)) { return code; }
+    }
+    "MCP_LOCAL_APPLY_UNKNOWN"
 }
 
 struct JobBatch {
@@ -537,14 +616,26 @@ fn apply_job(
     if !id(receipt) {
         return Err("MCP_WRITE_JOB_INVALID".to_string());
     }
+    job_diagnostic(receipt, "claim", "STARTED", &Value::Null, 0);
     let claimed = authority.json(
         "POST",
         &format!("write-jobs/{receipt}/claim"),
         Some(json!({})),
-    )?;
+    ).map_err(|error| {
+        job_diagnostic(receipt, "claim", diagnostic_code(&error), &Value::Null, 0);
+        error
+    })?;
     let job = &claimed["job"];
     let claim_revision = &claimed["receipt"]["claimRevision"];
+    let count = job.pointer("/data/rows").or_else(|| job.pointer("/data/items"))
+        .and_then(Value::as_array).map(Vec::len).unwrap_or(1);
+    let stage = std::cell::Cell::new("validate");
+    let set_stage = |next| {
+        stage.set(next);
+        job_diagnostic(receipt, next, "STARTED", claim_revision, count);
+    };
     let result = (|| {
+        set_stage("validate");
         if job["receiptId"] != receipt
             || job.pointer("/target/deviceId") != Some(&json!(authority.device_id))
         {
@@ -557,42 +648,62 @@ fn apply_job(
             "requestSha256":job["requestSha256"],"data":job["data"]});
         validate_authority()?;
         let classify = |error: String| {
-            local_failure_code(
-                &error,
+            job_diagnostic(receipt, stage.get(), diagnostic_code(&error), claim_revision, count);
+            let code = if error == "DRAFT_CONFLICT" && job["operation"] == "student_record_save_drafts" {
+                "MCP_STUDENT_DRAFT_CONFLICT"
+            } else { &error };
+            local_reported_failure_code(
+                code,
+                stage.get(),
                 classaimate_mcp_write_jobs::committed_receipt_exists(store, &input),
             )
             .to_string()
         };
+        set_stage("receipt_replay");
         let replay =
             classaimate_mcp_write_jobs::verified_replay(store, &input).map_err(classify)?;
         let assets = if replay.is_none() {
+            set_stage("assets");
             download_assets(authority, receipt, job, claim_revision, cancelled)?
         } else {
             HashMap::new()
         };
+        set_stage("renew");
         renew(authority, receipt, job, claim_revision)?;
         validate_authority()?;
         if cancelled.load(Ordering::SeqCst) {
             return Err("MCP_WORKER_NETWORK_UNAVAILABLE".to_string());
         }
+        set_stage("local_apply");
         let saved = match replay {
             Some(saved) => saved,
             None => classaimate_mcp_write_jobs::apply_with_assets(store, &input, &assets)
                 .map_err(classify)?,
         };
+        set_stage("result_digest");
         let result_digest = digest(&saved["result"])?;
         if job["expectedResultSha256"] != result_digest {
             return Err("MCP_WRITE_RESULT_CONFLICT".to_string());
         }
+        set_stage("complete_ack");
         let completed = authority.json("POST", &format!("write-jobs/{receipt}/complete"), Some(json!({
             "requestSha256":job["requestSha256"],"resultSha256":result_digest,"localRef":saved["localRef"],"claimRevision":claim_revision,
         })))?;
         if completed["receipt"]["status"] != "saved" {
             return Err("MCP_WORKER_RESPONSE_INVALID".to_string());
         }
+        job_diagnostic(receipt, "saved", "SAVED", claim_revision, count);
         Ok(())
-    })();
+    })().map_err(|error| {
+        if stage.get() == "complete_ack" && matches!(error.as_str(),
+            "MCP_WORKER_NETWORK_UNAVAILABLE" | "MCP_WORKER_RESPONSE_INVALID") {
+            "MCP_LOCAL_ACK_UNCONFIRMED".to_string()
+        } else { error }
+    });
     if let Err(error) = &result {
+        if stage.get() != "local_apply" && stage.get() != "receipt_replay" {
+            job_diagnostic(receipt, stage.get(), diagnostic_code(error), claim_revision, count);
+        }
         if claim_revision.is_u64() {
             let _ = authority.json("POST", &format!("write-jobs/{receipt}/fail"), Some(json!({
                 "requestSha256":job["requestSha256"],"claimRevision":claim_revision,"errorCode":failure_code(error),

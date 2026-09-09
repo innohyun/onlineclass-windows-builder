@@ -62,6 +62,7 @@ fn readback_failures_never_report_rollback_when_commit_exists_or_cannot_be_check
         "IMAGE_INTEGRITY_FAILED",
         "MATERIAL_REVISION_CONFLICT",
         "IMAGE_LOCAL_FILE_FAILED",
+        "MCP_STUDENT_DRAFT_CONFLICT",
     ] {
         assert_eq!(
             local_failure_code(error, Ok(true)),
@@ -84,6 +85,35 @@ fn readback_failures_never_report_rollback_when_commit_exists_or_cannot_be_check
         local_failure_code("IMAGE_LOCAL_FILE_FAILED", Ok(false)),
         "MCP_LOCAL_APPLY_UNKNOWN"
     );
+    assert_eq!(local_failure_code("MCP_STUDENT_DRAFT_CONFLICT", Ok(false)), "MCP_STUDENT_DRAFT_CONFLICT");
+    assert_eq!(diagnostic_code("db_student_record_draft_upsert_failed:password=private-student-content"), "MCP_STUDENT_DRAFT_WRITE_FAILED");
+    assert_eq!(diagnostic_code("private-name secret=raw"), "MCP_LOCAL_APPLY_UNKNOWN");
+}
+
+#[test]
+fn local_failure_reports_preserve_fixed_cause_without_claiming_rollback_or_leaking_details() {
+    for (raw, expected) in [
+        ("db_student_record_draft_set_upsert_failed:private", "MCP_STUDENT_DRAFT_SET_WRITE_FAILED"),
+        ("db_student_record_draft_upsert_failed:private", "MCP_STUDENT_DRAFT_WRITE_FAILED"),
+        ("db_classaimate_mcp_receipt_save_failed:private", "MCP_LOCAL_RECEIPT_WRITE_FAILED"),
+        ("db_mcp_write_transaction_failed:private", "MCP_LOCAL_TRANSACTION_FAILED"),
+        ("db_mcp_write_commit_failed:private", "MCP_LOCAL_COMMIT_FAILED"),
+        ("db_classaimate_mcp_draft_query_failed:private", "MCP_STUDENT_DRAFT_READ_FAILED"),
+        ("db_mcp_receipt_readback_failed:private", "MCP_LOCAL_APPLY_READBACK_FAILED"),
+        ("LOCAL_STORE_WRITE_FAILED", "MCP_LOCAL_APPLY_READBACK_FAILED"),
+        ("db_lock_failed", "MCP_LOCAL_DATABASE_FAILED"),
+    ] {
+        for committed in [Ok(false), Ok(true), Err("private DB error".into())] {
+            assert_eq!(local_reported_failure_code(raw, "local_apply", committed.clone()), expected);
+            assert_eq!(failure_code(expected), expected);
+            assert_eq!(local_reported_failure_code(raw, "receipt_replay", committed), "MCP_LOCAL_REPLAY_READ_FAILED");
+        }
+    }
+    for committed in [Ok(true), Err("private DB error".into())] {
+        assert_eq!(local_reported_failure_code("MCP_STUDENT_DRAFT_CONFLICT", "local_apply", committed), "MCP_LOCAL_APPLY_UNKNOWN");
+    }
+    assert_eq!(local_reported_failure_code("MCP_STUDENT_DRAFT_CONFLICT", "local_apply", Ok(false)), "MCP_STUDENT_DRAFT_CONFLICT");
+    assert_eq!(local_reported_failure_code("private student /path secret", "local_apply", Ok(false)), "MCP_LOCAL_APPLY_UNKNOWN");
 }
 
 fn test_store() -> (std::path::PathBuf, SqliteStore) {
@@ -293,7 +323,7 @@ fn committed_local_job_recovers_lost_ack_without_duplicate_write() {
                 assert_eq!(body["resultSha256"], job["expectedResultSha256"]);
             }
             if suffix == "fail" {
-                assert_eq!(body["errorCode"], "MCP_WORKER_NETWORK_UNAVAILABLE");
+                assert_eq!(body["errorCode"], "MCP_LOCAL_ACK_UNCONFIRMED");
                 assert_eq!(body["claimRevision"], 2);
             }
             let response =
@@ -305,7 +335,7 @@ fn committed_local_job_recovers_lost_ack_without_duplicate_write() {
     let cancelled = AtomicBool::new(false);
     assert_eq!(
         apply_job(&store, &owner, "recover-receipt", &cancelled, || Ok(())).unwrap_err(),
-        "MCP_WORKER_NETWORK_UNAVAILABLE"
+        "MCP_LOCAL_ACK_UNCONFIRMED"
     );
     apply_job(&store, &owner, "recover-receipt", &cancelled, || Ok(())).unwrap();
     server.join().unwrap();
@@ -334,7 +364,104 @@ fn committed_local_job_recovers_lost_ack_without_duplicate_write() {
 }
 
 #[test]
-fn changed_canonical_data_after_commit_stays_unknown_and_is_never_reapplied() {
+fn two_student_math_worker_ack_loss_replays_exact_receipt_and_reads_current_rows() {
+    let (directory, store) = test_store();
+    let baseline = crate::sha256_json(&json!({"draftId":"","text":"","updatedAtMs":0})).unwrap();
+    let scope = json!({"recordType":"subjects","subject":"수학","fromDate":"2026-08-01","toDate":"2026-09-09"});
+    let rows: Vec<Value> = (1..=2).map(|index| json!({"studentCode":format!("A00{index}"),"studentAlias":format!("학생-0{index}"),
+        "studentName":"합성학생","classNo":index,"text":format!("수학 결과 {index}"),"baselineDigest":baseline})).collect();
+    let data = json!({"draftSetId":"two-student-set","scope":scope,"rows":rows});
+    let job = json!({"receiptId":"two-student-receipt","target":{"deviceId":"device-a"},"operation":"student_record_save_drafts",
+        "requestSha256":"d".repeat(64),"expectedResultSha256":digest(&data).unwrap(),"data":data});
+    let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+    let owner = authority(format!("http://{}",server.server_addr()));
+    let server = thread::spawn(move || {
+        for (suffix,status,payload) in [
+            ("claim",200,json!({"job":job,"receipt":{"claimRevision":2}})),
+            ("renew",200,json!({})), ("complete",503,json!({})), ("fail",200,json!({})),
+            ("claim",200,json!({"job":job,"receipt":{"claimRevision":4}})),
+            ("renew",200,json!({})), ("complete",200,json!({"receipt":{"status":"saved"}})),
+        ] {
+            let mut request = server.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+            assert_eq!(request.url(),format!("{API_PATH}/write-jobs/two-student-receipt/{suffix}"));
+            let mut raw=String::new(); request.as_reader().read_to_string(&mut raw).unwrap();
+            let body:Value=serde_json::from_str(&raw).unwrap();
+            if suffix=="complete" { assert_eq!(body["resultSha256"],job["expectedResultSha256"]); }
+            if suffix=="fail" { assert_eq!(body["errorCode"],"MCP_LOCAL_ACK_UNCONFIRMED"); }
+            request.respond(tiny_http::Response::from_string(json!({"ok":true,"data":payload}).to_string()).with_status_code(status)).unwrap();
+        }
+    });
+    let cancelled=AtomicBool::new(false);
+    assert_eq!(apply_job(&store,&owner,"two-student-receipt",&cancelled,||Ok(())).unwrap_err(),"MCP_LOCAL_ACK_UNCONFIRMED");
+    apply_job(&store,&owner,"two-student-receipt",&cancelled,||Ok(())).unwrap();
+    server.join().unwrap();
+    let request=json!({"type":"local_read_request","requestId":"student-current","workspace":"student_record","operation":"student_drafts_get",
+        "input":{"scope":scope,"students":[{"studentAlias":"학생-01","studentCode":"A001"},{"studentAlias":"학생-02","studentCode":"A002"}]},
+        "deadlineAt":chrono::Utc::now().timestamp_millis()+12_000});
+    let response=read_frame(&store,"tenant-a",&request,chrono::Utc::now().timestamp_millis()).unwrap();
+    assert_eq!(response["status"],"ok");
+    assert_eq!(response["result"]["drafts"][0]["text"],"수학 결과 1");
+    assert_eq!(response["result"]["drafts"][1]["text"],"수학 결과 2");
+    assert!(!response.to_string().contains("A001"));
+    let conn=store.conn.lock().unwrap();
+    assert_eq!(conn.query_row("SELECT COUNT(*) FROM student_record_drafts",[],|row|row.get::<_,i64>(0)).unwrap(),2);
+    assert_eq!(conn.query_row("SELECT COUNT(*) FROM classaimate_mcp_local_write_receipts",[],|row|row.get::<_,i64>(0)).unwrap(),1);
+    drop(conn); drop(store); std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn second_student_database_failure_posts_safe_cause_and_retries_one_atomic_batch() {
+    let (directory, store) = test_store();
+    let baseline = crate::sha256_json(&json!({"draftId":"","text":"","updatedAtMs":0})).unwrap();
+    let data = json!({"draftSetId":"db-recovery-set",
+        "scope":{"recordType":"subjects","subject":"수학","fromDate":"2026-08-01","toDate":"2026-09-09"},
+        "rows":(1..=2).map(|index| json!({"studentCode":format!("A00{index}"),"studentAlias":format!("학생-0{index}"),
+            "text":format!("합성 결과 {index}"),"baselineDigest":baseline})).collect::<Vec<_>>()});
+    let job = json!({"receiptId":"db-recovery-receipt","target":{"deviceId":"device-a"},
+        "operation":"student_record_save_drafts","requestSha256":"f".repeat(64),
+        "expectedResultSha256":digest(&data).unwrap(),"data":data});
+    store.conn.lock().unwrap().execute_batch("CREATE TRIGGER synthetic_draft_failure BEFORE INSERT ON student_record_drafts WHEN NEW.student_code='A002' BEGIN SELECT RAISE(ABORT,'private synthetic student detail'); END;").unwrap();
+    let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+    let owner = authority(format!("http://{}", server.server_addr()));
+    let server = thread::spawn(move || {
+        for (suffix, payload) in [
+            ("claim",json!({"job":job,"receipt":{"claimRevision":2}})),
+            ("renew",json!({})), ("fail",json!({})),
+            ("claim",json!({"job":job,"receipt":{"claimRevision":4}})),
+            ("renew",json!({})), ("complete",json!({"receipt":{"status":"saved"}})),
+        ] {
+            let mut request = server.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+            assert_eq!(request.url(), format!("{API_PATH}/write-jobs/db-recovery-receipt/{suffix}"));
+            let mut raw = String::new(); request.as_reader().read_to_string(&mut raw).unwrap();
+            let body: Value = serde_json::from_str(&raw).unwrap();
+            if suffix == "fail" {
+                assert_eq!(body["errorCode"], "MCP_STUDENT_DRAFT_WRITE_FAILED");
+                assert!(!raw.contains("private"));
+                assert!(!raw.contains("A002"));
+            }
+            if suffix == "complete" { assert_eq!(body["resultSha256"], job["expectedResultSha256"]); }
+            request.respond(tiny_http::Response::from_string(json!({"ok":true,"data":payload}).to_string())).unwrap();
+        }
+    });
+    let cancelled = AtomicBool::new(false);
+    assert_eq!(apply_job(&store, &owner, "db-recovery-receipt", &cancelled, || Ok(())).unwrap_err(), "MCP_STUDENT_DRAFT_WRITE_FAILED");
+    {
+        let conn = store.conn.lock().unwrap();
+        for table in ["student_record_draft_sets", "student_record_drafts", "classaimate_mcp_local_write_receipts"] {
+            assert_eq!(conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+        }
+        conn.execute_batch("DROP TRIGGER synthetic_draft_failure").unwrap();
+    }
+    apply_job(&store, &owner, "db-recovery-receipt", &cancelled, || Ok(())).unwrap();
+    server.join().unwrap();
+    let conn = store.conn.lock().unwrap();
+    assert_eq!(conn.query_row("SELECT COUNT(*) FROM student_record_drafts", [], |row| row.get::<_, i64>(0)).unwrap(), 2);
+    assert_eq!(conn.query_row("SELECT COUNT(*) FROM classaimate_mcp_local_write_receipts", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
+    drop(conn); drop(store); std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn changed_canonical_data_after_commit_reports_replay_read_failure_and_is_never_reapplied() {
     let (directory, store) = test_store();
     let data = json!({"scope":{"date":"2026-09-08","period":1,"subject":"수학"},"mutationId":"changed-after-commit",
         "items":[{"action":"create","studentCode":"STU01","docId":"changed-obs","baselineRecords":[],"record":{"note":"초기 합성 기록"}}]});
@@ -366,7 +493,7 @@ fn changed_canonical_data_after_commit_stays_unknown_and_is_never_reapplied() {
         request.as_reader().read_to_string(&mut body).unwrap();
         assert_eq!(
             serde_json::from_str::<Value>(&body).unwrap()["errorCode"],
-            "MCP_LOCAL_APPLY_UNKNOWN"
+            "MCP_LOCAL_REPLAY_READ_FAILED"
         );
         request
             .respond(tiny_http::Response::from_string(
@@ -383,7 +510,7 @@ fn changed_canonical_data_after_commit_stays_unknown_and_is_never_reapplied() {
             || Ok(())
         )
         .unwrap_err(),
-        "MCP_LOCAL_APPLY_UNKNOWN"
+        "MCP_LOCAL_REPLAY_READ_FAILED"
     );
     server.join().unwrap();
     let response = read_frame(

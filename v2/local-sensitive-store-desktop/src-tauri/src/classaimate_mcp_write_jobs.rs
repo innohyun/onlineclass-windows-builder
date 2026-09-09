@@ -14,6 +14,8 @@ mod transaction_store;
 use transaction_store::TransactionStore;
 #[path = "classaimate_mcp_receipt_verification.rs"]
 pub(crate) mod receipt_verification;
+#[path = "classaimate_mcp_student_drafts.rs"]
+pub(crate) mod student_drafts;
 
 const OPERATIONS: [&str; 10] = [
     "student_record_save_drafts",
@@ -67,68 +69,43 @@ fn decode(raw: String) -> Result<Value, String> {
     serde_json::from_str(&raw).map_err(|_| "classaimate_mcp_local_payload_invalid".to_string())
 }
 fn draft_text(payload: &Value, scope: &Value) -> String {
+    let fallback = |value: Option<&Value>, legacy: bool| {
+        value.and_then(Value::as_str).filter(|text| !text.is_empty())
+            .or_else(|| if legacy { payload.get("text").and_then(Value::as_str) } else { None })
+            .unwrap_or("").trim().to_string()
+    };
     match scope
         .get("recordType")
         .and_then(Value::as_str)
         .unwrap_or("")
     {
-        "subjects" => payload
+        "subjects" => fallback(payload
             .get("subjectComments")
             .and_then(Value::as_array)
             .and_then(|rows| {
                 rows.iter()
-                    .find(|row| row.get("subject") == scope.get("subject"))
+                    .find(|row| row["subject"].as_str().unwrap_or("").trim() == scope["subject"].as_str().unwrap_or("").trim())
             })
-            .and_then(|row| row.get("comment"))
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string(),
-        "creative" => payload
+            .and_then(|row| row.get("comment")), payload["recordType"] == "subjects"
+                && payload.get("subjectFilter").and_then(Value::as_str).filter(|value| !value.is_empty())
+                    .or_else(|| payload["subject"].as_str()).unwrap_or("").trim() == scope["subject"].as_str().unwrap_or("").trim()),
+        "creative" => fallback(payload
             .get("creativeComments")
             .and_then(Value::as_array)
             .and_then(|rows| {
                 rows.iter()
-                    .find(|row| row.get("area") == scope.get("creativeArea"))
+                    .find(|row| row["area"].as_str().unwrap_or("").trim() == scope["creativeArea"].as_str().unwrap_or("").trim())
             })
-            .and_then(|row| row.get("comment"))
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string(),
-        _ => payload
-            .get("behaviorComment")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string(),
+            .and_then(|row| row.get("comment")), payload["recordType"] == "creative"
+                && payload["creativeArea"].as_str().unwrap_or("").trim() == scope["creativeArea"].as_str().unwrap_or("").trim()),
+        "behavior" => fallback(payload.get("behaviorComment"), payload["recordType"] == "behavior"),
+        _ => String::new(),
     }
 }
 fn draft_matches_scope(payload: &Value, scope: &Value) -> bool {
-    if payload.get("recordType") != scope.get("recordType") {
-        return false;
-    }
-    match scope
-        .get("recordType")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-    {
-        "subjects" => payload
-            .get("subjectComments")
-            .and_then(Value::as_array)
-            .map(|rows| {
-                rows.iter()
-                    .any(|row| row.get("subject") == scope.get("subject"))
-            })
-            .unwrap_or(false),
-        "creative" => payload
-            .get("creativeComments")
-            .and_then(Value::as_array)
-            .map(|rows| {
-                rows.iter()
-                    .any(|row| row.get("area") == scope.get("creativeArea"))
-            })
-            .unwrap_or(false),
-        "behavior" => true,
-        _ => false,
-    }
+    // Match the canonical preparation picker: a legacy/multi-area row can carry
+    // this area's text, while a newer empty row is not a draft baseline.
+    !draft_text(payload, scope).is_empty()
 }
 fn latest_draft(
     store: &TransactionStore<'_>,
@@ -205,7 +182,15 @@ fn exact_student_batch(store: &TransactionStore<'_>, tenant: &str, data: &Value)
             .iter()
             .find(|row| row.get("studentCode").and_then(Value::as_str) == Some(code))
             .ok_or_else(|| "DRAFT_CONFLICT".to_string())?;
-        if draft_text(value, scope) != source.get("text").and_then(Value::as_str).unwrap_or("")
+        // Exact save/replay compares the stored bytes; only baseline picking trims text.
+        let stored_text = match scope["recordType"].as_str().unwrap_or("") {
+            "subjects" => value["subjectComments"].as_array().and_then(|rows| rows.iter().find(|row| row["subject"] == scope["subject"]))
+                .and_then(|row| row["comment"].as_str()).unwrap_or(""),
+            "creative" => value["creativeComments"].as_array().and_then(|rows| rows.iter().find(|row| row["area"] == scope["creativeArea"]))
+                .and_then(|row| row["comment"].as_str()).unwrap_or(""),
+            _ => value["behaviorComment"].as_str().unwrap_or(""),
+        };
+        if stored_text != source.get("text").and_then(Value::as_str).unwrap_or("")
             || value.get("status").and_then(Value::as_str) != Some("draft")
             || value.get("sourceLabel").and_then(Value::as_str) != Some("내 ChatGPT")
             || value.get("teacherReviewRequired").and_then(Value::as_bool) != Some(true)
