@@ -114,8 +114,9 @@ function oneDriveDownloadFailureMessage(value: string) {
   return `${fallback}${detail} 지금 동기화를 다시 눌러 주세요. 현재 로컬 자료는 유지됩니다.${diagnostic ? ` (${diagnostic})` : ""}`;
 }
 
-export function deviceSyncErrorMessage(error?: string) {
+export function deviceSyncErrorMessage(error?: string, recoveryRequired?: boolean) {
   const value = String(error || "");
+  if (value.includes("restore_recovery_required") && recoveryRequired === false) return "이전 동기화 시도에서 복원 파일을 확인하지 못했습니다. 현재 미완료 복구 작업은 없습니다. 지금 동기화로 다시 확인할 수 있습니다.";
   if (value.includes("restore_recovery_required")) return "중단된 복원을 안전하게 마치지 못했습니다. 원본과 복구 파일을 보존하고 이 학급의 변경·동기화를 중단했습니다. 파일을 삭제하거나 복원을 반복하지 말고 복구 상태를 확인해 주세요.";
   if (value === "lesson_plan_binding_revision_conflict") return "같은 수업 연결 버전의 값이 달라 충돌 자료를 보관하고 세대 적용·기기 확인을 중단했습니다. 웹에서 최신 수업 연결을 확인해 주세요.";
   if (isOneDriveDownloadPending(value)) return ONE_DRIVE_DOWNLOAD_PENDING_MESSAGE;
@@ -147,7 +148,7 @@ function updateActionState(busy = false) {
 
 export function renderDeviceSyncStatus(status: DeviceSyncStatus | null) {
   const failure = status?.error || status?.lastError || "";
-  if (status && failure.startsWith("restore_recovery_required")) status = { ...status, recoveryRequired: true };
+  if (status && failure.startsWith("restore_recovery_required") && status.recoveryRequired !== false) status = { ...status, recoveryRequired: true };
   snapshot = status;
   setText("deviceSyncLatestText", status?.connected ? `${Number(status.latestGeneration || 0)}세대` : "-");
   setText("deviceSyncAppliedText", status?.connected ? `${Number(status.appliedGeneration || 0)}세대` : "-");
@@ -169,7 +170,7 @@ export function renderDeviceSyncStatus(status: DeviceSyncStatus | null) {
     setBadge(pending ? "OneDrive 다운로드 대기" : "확인 필요", pending ? "warning" : "error");
     setText("deviceSyncStatus", pending
       ? ONE_DRIVE_DOWNLOAD_PENDING_MESSAGE
-      : `기기 동기화 상태를 확인하지 못했습니다: ${deviceSyncErrorMessage(status.error)}`);
+      : `기기 동기화 상태를 확인하지 못했습니다: ${deviceSyncErrorMessage(status.error, status.recoveryRequired)}`);
   } else if (!status?.connected) {
     setBadge("PC 연결 필요", "warning");
     setText("deviceSyncStatus", "교사 설정에서 이 PC를 연결하면 OneDrive 최신 내용을 자동으로 맞춥니다.");
@@ -187,7 +188,7 @@ export function renderDeviceSyncStatus(status: DeviceSyncStatus | null) {
     setBadge(pending ? "OneDrive 다운로드 대기" : "확인 필요", pending ? "warning" : "error");
     setText("deviceSyncStatus", pending
       ? ONE_DRIVE_DOWNLOAD_PENDING_MESSAGE
-      : `마지막 동기화 문제: ${deviceSyncErrorMessage(status.lastError)}`);
+      : `마지막 동기화 문제: ${deviceSyncErrorMessage(status.lastError, status.recoveryRequired)}`);
   } else if (status.waitingForOneDrive) {
     setBadge("OneDrive 다운로드 대기", "warning");
     setText("deviceSyncStatus", ONE_DRIVE_DOWNLOAD_PENDING_MESSAGE);
@@ -242,7 +243,10 @@ export async function runDeviceSyncNow(afterRun: () => Promise<unknown>) {
       const message = String((error as Error)?.message || error || "device_sync_failed");
       if (message.startsWith("device_sync_ack_pending:") || message.startsWith("restore_recovery_required")) {
         try { snapshot = await invoke<DeviceSyncStatus>("get_device_sync_status"); }
-        catch { /* Preserve the failure; a failed read must not become success. */ }
+        catch {
+          // A previous successful status cannot establish current recovery safety.
+          if (message.startsWith("restore_recovery_required") && snapshot) snapshot = { ...snapshot, recoveryRequired: undefined };
+        }
       }
       renderDeviceSyncStatus({ ...(snapshot || { connected: false }), ok: false, error: message, lastError: message });
     } finally {

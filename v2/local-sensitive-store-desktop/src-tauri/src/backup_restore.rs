@@ -2,6 +2,10 @@ use super::*;
 use rusqlite::{params_from_iter, types::Value as SqlValue, OptionalExtension};
 use std::collections::{HashMap, HashSet};
 
+#[cfg(test)]
+#[path = "backup_restore_path_tests.rs"]
+mod path_tests;
+
 #[derive(Debug)]
 struct RestoreMediaPlan {
     record_id: String,
@@ -28,6 +32,16 @@ fn check_media_rows(conn: &Connection, tenant: &str, plans: &[RestoreMediaPlan])
         if row != plan.expected_current_row { return Err("restore_local_record_changed".into()); }
     }
     Ok(())
+}
+
+fn restore_target_path(value: &str, namespace: &str) -> Option<PathBuf> {
+    // Snapshot localPath uses the source OS separators; artifact locators keep
+    // their sealed representation. Normalize only the destination in this store.
+    let normalized = value.replace('\\', "/");
+    if normalized.contains(':') { return None; }
+    let path = safe_relative_path(&normalized)?;
+    if !path.starts_with(namespace) || path.components().count() < 2 { return None; }
+    Some(path)
 }
 
 fn restore_intent(store: &SqliteStore, staging: &Path, plans: &[RestoreMediaPlan]) -> Result<crate::restore_journal::Intent, String> {
@@ -99,8 +113,9 @@ fn stage_restore_media(
         let Some(backup_relative_path) = safe_relative_path(&backup_relative) else {
             continue;
         };
-        let Some(local_path) = safe_relative_path(&local_path_text) else {
-            continue;
+        let Some(local_path) = restore_target_path(&local_path_text, "board-media") else {
+            let _ = fs::remove_dir_all(&staging_root);
+            return Err("restore_media_target_invalid".to_string());
         };
         let source_path = crate::backup_v5::artifact_path(
             manifest_path,
@@ -163,7 +178,10 @@ fn stage_restore_media(
             || (!force && current_attachment_timestamps.get(&attachment_id).map(|row| row.0).unwrap_or(i64::MIN) > updated_at_ms)
         { continue; }
         let Some(backup_relative_path) = safe_relative_path(&backup_relative) else { continue; };
-        let Some(local_path) = safe_relative_path(&local_path_text) else { continue; };
+        let Some(local_path) = restore_target_path(&local_path_text, "work-note-attachments") else {
+            let _ = fs::remove_dir_all(&staging_root);
+            return Err("restore_media_target_invalid".to_string());
+        };
         let source_path = crate::backup_v5::artifact_path(
             manifest_path,
             manifest.get("version").and_then(Value::as_i64).unwrap_or(0),

@@ -81,7 +81,7 @@ export function readMacBuildMetadata(projectRoot) {
   return { appName: config.productName, version: pkg.version, identifier: config.identifier, executable };
 }
 
-export function verifyMacApp({ appPath, releaseDir, preparedSidecar, metadata, run }) {
+export function verifyMacApp({ appPath, releaseDir, preparedSidecar, metadata, run, verifySource = true }) {
   if (!lstatSync(appPath).isDirectory()) throw new Error("새 .app 번들이 없습니다.");
   const plist = JSON.parse(requireCommandSuccess(run("/usr/bin/plutil", ["-convert", "json", "-o", "-", path.join(appPath, "Contents/Info.plist")], { stdio: "pipe" }), "app Info.plist"));
   if (plist.CFBundleIdentifier !== metadata.identifier || plist.CFBundleShortVersionString !== metadata.version
@@ -95,7 +95,7 @@ export function verifyMacApp({ appPath, releaseDir, preparedSidecar, metadata, r
     const architectures = requireCommandSuccess(run("/usr/bin/lipo", ["-archs", bundledPath], { stdio: "pipe" }), `architecture ${name}`);
     if (architectures !== "arm64") throw new Error(`Apple Silicon 전용 실행파일이 아닙니다: ${name} (${architectures})`);
     const sha256 = digestPath(bundledPath);
-    if (sha256 !== digestPath(expectedPath)) throw new Error(`번들 실행파일이 현재 빌드와 일치하지 않습니다: ${name}`);
+    if (verifySource && sha256 !== digestPath(expectedPath)) throw new Error(`번들 실행파일이 현재 빌드와 일치하지 않습니다: ${name}`);
     result[name] = { sha256, architecture: architectures };
   }
   return result;

@@ -8,7 +8,7 @@ import { isMacDesktop } from "./settings-dashboard";
 const SHELL_HEIGHT = 56;
 const TEACHER_WEBVIEW_LABEL = "teacher-home";
 const TEACHER_HOME_URL = "https://t.classaimate.com/admin/";
-const TUTORIAL_KEY = "classaimateDesktopShellTutorial:v13";
+const TUTORIAL_KEY = "classaimateDesktopShellTutorial:v14";
 
 type ShellMode = "teacher" | "local";
 export type DesktopActivationIntent = "show-main" | "quick-observation";
@@ -229,7 +229,7 @@ export function initDesktopShell(): DesktopShellController {
     },
     {
       target: localButton,
-      text: "백업·복원에서 기기 동기화 단계를 확인할 수 있습니다. 게시 완료는 로컬 보관본과 서버 메타데이터가 준비됐다는 뜻입니다. OneDrive 전달 상태와 다른 기기의 검증·적용 확인은 별도로 표시합니다. 복구 필요 안내가 나오면 해당 학급의 자료 변경·동기화를 중단하고 원본과 복구 파일을 보존합니다. 이 안내는 동기화·다운로드·복원을 대신 실행하지 않습니다.",
+      text: "백업·복원에서 기기 동기화 단계를 확인할 수 있습니다. 게시 완료는 로컬 보관본과 서버 메타데이터가 준비됐다는 뜻입니다. OneDrive 전달 상태와 다른 기기의 검증·적용 확인은 별도로 표시합니다. 복구 필요 안내가 나오면 해당 학급의 자료 변경·동기화를 중단하고 원본과 복구 파일을 보존합니다. 이전 오류만 남고 현재 미완료 복구 작업이 없다고 확인되면 지금 동기화로 다시 확인할 수 있습니다. 이 안내는 동기화·다운로드·복원을 대신 실행하지 않습니다.",
     },
   ];
 

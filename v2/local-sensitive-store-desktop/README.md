@@ -1,13 +1,19 @@
 # ClassAiMate 교사 데스크
 
-Windows installer for the loopback SQLite service used by tenant observation records in `local_sqlite` mode.
+Windows and macOS Apple Silicon desktop packaging for the loopback SQLite service used by tenant records in `local_sqlite` mode.
 
-## 0.2.80 source release notes (not yet published)
+## 0.2.81 macOS packaging recovery notes
+
+- Replaces the macOS `0.2.80` image whose app bundle did not have a complete bundle seal. The build now ad-hoc signs the nested MCP sidecar and the whole app, then requires `codesign --verify --deep --strict` before creating the disk image.
+- The disk image contains an `Applications` shortcut and Korean installation instructions. Copy the app to Applications, eject the disk image, and launch the copied app; do not keep running it from the mounted image.
+- Developer ID signing and Apple notarization are still unavailable. macOS may therefore require the user-authorized `Privacy & Security > Open Anyway` flow. Native service behavior and revision remain `2026-09-12.1-local-sync-safety`.
+
+## 0.2.80 release notes
 
 - Device-local restore intents and transactional commit receipts recover interrupted attachment replacement before serving requests. Uncertain recovery preserves original/rollback files and blocks changes for the affected tenant.
 - Equal binding revision conflicts stop application and ACK; current attachment rows are rechecked after staging. MCP attachment access shares the restore guard.
 - Separates announced metadata, read-only Cloud Files evidence, and another device's verified application. Status inspection does not hydrate or pin files. Shell tutorial v13 covers these boundaries in four short steps.
-- Includes isolated two-device delivery/retry simulation and real process-kill recovery tests. Native service revision: 2026-09-12.1-local-sync-safety. Installer publication and actual OneDrive delivery remain separate verification steps.
+- Includes isolated two-device delivery/retry simulation and real process-kill recovery tests. Native service revision: 2026-09-12.1-local-sync-safety. Windows x64 and unsigned, not-notarized macOS Apple Silicon installers are published; actual OneDrive delivery remains a separate verification step.
 
 ## 0.2.79 source release notes
 
