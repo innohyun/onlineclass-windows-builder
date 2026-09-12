@@ -45,6 +45,9 @@ pub(crate) fn run_with_kind_version(
     let root = assert_backup_root_allowed(store, backup_root_dir(root_text))?;
     let out_dir = tenant_backup_dir(&root, &tenant_id);
     let _operation = root_operation(store, &out_dir)?;
+    // Lock order: backup root operation -> media access -> SQLite mutex.
+    // File replacement and DB capture must describe the same local state.
+    let _access = store.media_access(&tenant_id)?;
     let created_at_ms = now_ms();
     let backup_id = format!(
         "{}-{:016x}",
@@ -435,7 +438,8 @@ pub(crate) fn run_with_kind_version(
         "archives": manifest.get("archives").cloned().unwrap_or_else(|| json!({}))
     });
     if snapshot_ok {
-        authoritative_restore_manifest(&manifest_path, &manifest, &tenant_id)?;
+        let authoritative = authoritative_restore_manifest(&manifest_path, &manifest, &tenant_id)?;
+        crate::onedrive_evidence::remember(&manifest_path, &manifest, &authoritative);
     }
     // A committed backup is still usable when optional cleanup is deferred.
     // A pre-restore backup must never prune the selected restore source.

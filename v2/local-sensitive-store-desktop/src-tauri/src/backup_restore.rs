@@ -9,13 +9,42 @@ struct RestoreMediaPlan {
     staged_path: PathBuf,
     target_path: PathBuf,
     rollback_path: PathBuf,
+    expected_current_row: Option<String>,
 }
 
-#[derive(Debug)]
-struct AppliedRestoreMedia {
-    target_path: PathBuf,
-    rollback_path: Option<PathBuf>,
+fn media_rows_at_stage(store: &SqliteStore, tenant: &str, table_name: &str, key: &str, timestamp: &str) -> Result<HashMap<String, (i64, String)>, String> {
+    let table = BACKUP_TABLES.iter().find(|table| table.name == table_name).ok_or("restore_media_table_invalid")?;
+    let conn = store.conn.lock().map_err(|_| "db_lock_failed")?;
+    let mut statement = conn.prepare(&format!("SELECT {key},{timestamp},json_object({}) FROM {table_name} AS current WHERE tenant_id=?1", row_json_expression(table, "current"))).map_err(|e| e.to_string())?;
+    let rows = statement.query_map(params![tenant], |row| Ok((row.get::<_, String>(0)?, (row.get::<_, i64>(1)?, row.get::<_, String>(2)?)))).map_err(|e| e.to_string())?;
+    rows.collect::<Result<HashMap<_, _>, _>>().map_err(|e| e.to_string())
 }
+
+fn check_media_rows(conn: &Connection, tenant: &str, plans: &[RestoreMediaPlan]) -> Result<(), String> {
+    for plan in plans {
+        let (table_name, key) = if plan.kind == "board_media" { ("board_media_files", "media_id") } else { ("work_note_attachments", "attachment_id") };
+        let table = BACKUP_TABLES.iter().find(|table| table.name == table_name).ok_or("restore_media_table_invalid")?;
+        let row: Option<String> = conn.query_row(&format!("SELECT json_object({}) FROM {table_name} AS current WHERE tenant_id=?1 AND {key}=?2", row_json_expression(table, "current")), params![tenant, plan.record_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
+        if row != plan.expected_current_row { return Err("restore_local_record_changed".into()); }
+    }
+    Ok(())
+}
+
+fn restore_intent(store: &SqliteStore, staging: &Path, plans: &[RestoreMediaPlan]) -> Result<crate::restore_journal::Intent, String> {
+    let relative = |path: &Path| path.strip_prefix(&store.data_dir).map(Path::to_path_buf)
+        .map_err(|_| "restore_media_target_outside_store".to_string());
+    let mut files = Vec::new();
+    for plan in plans {
+        files.push(crate::restore_journal::Media {
+            staged: relative(&plan.staged_path)?, target: relative(&plan.target_path)?,
+            rollback: relative(&plan.rollback_path)?,
+            incoming_sha256: crate::restore_journal::digest(&plan.staged_path)?,
+            previous_sha256: if plan.target_path.exists() { Some(crate::restore_journal::digest(&plan.target_path)?) } else { None },
+        });
+    }
+    Ok(crate::restore_journal::Intent { operation_id: crate::random_url_token(), staging_root: relative(staging)?, files })
+}
+
 
 fn attached_table_exists(conn: &Connection, schema: &str, table_name: &str) -> Result<bool, String> {
     if schema != "restore" {
@@ -30,56 +59,6 @@ fn attached_table_exists(conn: &Connection, schema: &str, table_name: &str) -> R
     .map_err(|e| format!("db_attached_table_exists_failed:{e}"))
 }
 
-fn rollback_applied_media(applied: &[AppliedRestoreMedia]) {
-    for item in applied.iter().rev() {
-        let _ = fs::remove_file(&item.target_path);
-        if let Some(rollback_path) = &item.rollback_path {
-            if let Some(parent) = item.target_path.parent() {
-                let _ = fs::create_dir_all(parent);
-            }
-            let _ = fs::rename(rollback_path, &item.target_path);
-        }
-    }
-}
-
-fn apply_staged_media(plans: &[RestoreMediaPlan]) -> Result<Vec<AppliedRestoreMedia>, String> {
-    let mut applied = Vec::new();
-    for plan in plans {
-        if let Some(parent) = plan.target_path.parent() {
-            if let Err(error) = fs::create_dir_all(parent) {
-                rollback_applied_media(&applied);
-                return Err(format!("restore_media_dir_failed:{error}"));
-            }
-        }
-        let rollback_path = if plan.target_path.exists() {
-            if let Some(parent) = plan.rollback_path.parent() {
-                if let Err(error) = fs::create_dir_all(parent) {
-                    rollback_applied_media(&applied);
-                    return Err(format!("restore_media_rollback_dir_failed:{error}"));
-                }
-            }
-            if let Err(error) = fs::rename(&plan.target_path, &plan.rollback_path) {
-                rollback_applied_media(&applied);
-                return Err(format!("restore_media_preserve_failed:{error}"));
-            }
-            Some(plan.rollback_path.clone())
-        } else {
-            None
-        };
-        if let Err(error) = fs::rename(&plan.staged_path, &plan.target_path) {
-            if let Some(path) = &rollback_path {
-                let _ = fs::rename(path, &plan.target_path);
-            }
-            rollback_applied_media(&applied);
-            return Err(format!("restore_media_apply_failed:{error}"));
-        }
-        applied.push(AppliedRestoreMedia {
-            target_path: plan.target_path.clone(),
-            rollback_path,
-        });
-    }
-    Ok(applied)
-}
 
 fn stage_restore_media(
     store: &SqliteStore,
@@ -94,24 +73,10 @@ fn stage_restore_media(
     let staging_root = store
         .data_dir
         .join(".restore-staging")
-        .join(format!("{}-{}", safe_segment(backup_id, "backup"), now_ms()));
+        .join(format!("{}-{}", safe_segment(backup_id, "backup"), crate::random_url_token()));
     let staged_dir = staging_root.join("staged");
     let rollback_dir = staging_root.join("rollback");
-    let current_media_timestamps = {
-        let conn = store.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
-        let mut stmt = conn
-            .prepare("SELECT media_id, archived_at_ms FROM board_media_files WHERE tenant_id = ?1")
-            .map_err(|e| format!("restore_media_current_prepare_failed:{e}"))?;
-        let rows = stmt
-            .query_map(params![tenant_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
-            .map_err(|e| format!("restore_media_current_query_failed:{e}"))?;
-        let mut timestamps = HashMap::new();
-        for row in rows {
-            let (media_id, timestamp) = row.map_err(|e| format!("restore_media_current_row_failed:{e}"))?;
-            timestamps.insert(media_id, timestamp);
-        }
-        timestamps
-    };
+    let current_media_timestamps = media_rows_at_stage(store, tenant_id, "board_media_files", "media_id", "archived_at_ms")?;
     let records = manifest
         .get("media")
         .and_then(|media| media.get("records"))
@@ -127,7 +92,7 @@ fn stage_restore_media(
         let archived_at_ms = record.get("archivedAtMs").and_then(Value::as_i64).unwrap_or(0);
         if media_id.is_empty()
             || allowed_media.is_some_and(|allowed| !allowed.contains(&media_id))
-            || (!force && current_media_timestamps.get(&media_id).copied().unwrap_or(i64::MIN) > archived_at_ms)
+            || (!force && current_media_timestamps.get(&media_id).map(|row| row.0).unwrap_or(i64::MIN) > archived_at_ms)
         {
             continue;
         }
@@ -176,6 +141,7 @@ fn stage_restore_media(
             return Err(crate::onedrive_download::io_error(&source_path, "restore_media_stage_failed", &error));
         }
         plans.push(RestoreMediaPlan {
+            expected_current_row: current_media_timestamps.get(&media_id).map(|row| row.1.clone()),
             record_id: media_id,
             kind: "board_media",
             staged_path,
@@ -183,19 +149,7 @@ fn stage_restore_media(
             rollback_path: rollback_dir.join(format!("{index}")),
         });
     }
-    let current_attachment_timestamps = {
-        let conn = store.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
-        let mut statement = conn.prepare("SELECT attachment_id,updated_at_ms FROM work_note_attachments WHERE tenant_id=?1")
-            .map_err(|e| format!("restore_work_note_attachment_current_prepare_failed:{e}"))?;
-        let rows = statement.query_map(params![tenant_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
-            .map_err(|e| format!("restore_work_note_attachment_current_query_failed:{e}"))?;
-        let mut timestamps = HashMap::new();
-        for row in rows {
-            let (attachment_id, timestamp) = row.map_err(|e| format!("restore_work_note_attachment_current_row_failed:{e}"))?;
-            timestamps.insert(attachment_id, timestamp);
-        }
-        timestamps
-    };
+    let current_attachment_timestamps = media_rows_at_stage(store, tenant_id, "work_note_attachments", "attachment_id", "updated_at_ms")?;
     let attachment_records = manifest.get("workNoteAttachments").and_then(|value| value.get("records"))
         .and_then(Value::as_array).cloned().unwrap_or_default();
     let mut attachment_missing = 0i64;
@@ -206,7 +160,7 @@ fn stage_restore_media(
         let updated_at_ms = record.get("updatedAtMs").and_then(Value::as_i64).unwrap_or(0);
         if attachment_id.is_empty()
             || allowed_attachments.is_some_and(|allowed| !allowed.contains(&attachment_id))
-            || (!force && current_attachment_timestamps.get(&attachment_id).copied().unwrap_or(i64::MIN) > updated_at_ms)
+            || (!force && current_attachment_timestamps.get(&attachment_id).map(|row| row.0).unwrap_or(i64::MIN) > updated_at_ms)
         { continue; }
         let Some(backup_relative_path) = safe_relative_path(&backup_relative) else { continue; };
         let Some(local_path) = safe_relative_path(&local_path_text) else { continue; };
@@ -227,6 +181,7 @@ fn stage_restore_media(
             return Err(crate::onedrive_download::io_error(&source_path, "restore_work_note_attachment_stage_failed", &error));
         }
         plans.push(RestoreMediaPlan {
+            expected_current_row: current_attachment_timestamps.get(&attachment_id).map(|row| row.1.clone()),
             record_id: attachment_id,
             kind: "work_note_attachment",
             staged_path,
@@ -258,8 +213,6 @@ where
     let manifest_path = PathBuf::from(preview.get("manifestPath").and_then(|value| value.as_str()).unwrap_or(""));
     let manifest = read_manifest(&manifest_path)?;
     let authoritative = authoritative_restore_manifest(&manifest_path, &manifest, &tenant_id)?;
-    let archive_result =
-        crate::backup_v4::apply_archives(&manifest_path, &authoritative, &tenant_id)?;
     let db_relative = authoritative
         .get("db")
         .and_then(|db| db.get("relativePath"))
@@ -276,32 +229,32 @@ where
             None,
             false,
         )?;
-    let applied_media = match apply_staged_media(&media_plans) {
-        Ok(applied) => applied,
-        Err(error) => {
-            let _ = fs::remove_dir_all(&staging_root);
-            return Err(error);
-        }
-    };
-    let mut conn = match store.conn.lock() {
-        Ok(conn) => conn,
-        Err(_) => {
-            rollback_applied_media(&applied_media);
-            let _ = fs::remove_dir_all(&staging_root);
-            return Err("db_lock_failed".to_string());
-        }
-    };
+    let mut unjournaled_staging = capture::StagingGuard(staging_root.clone());
+    let intent = restore_intent(store, &staging_root, &media_plans)?;
+    let _access = crate::restore_journal::access(&store.data_dir)?;
+    let mut conn = store.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
+    crate::restore_journal::ready(&conn, &tenant_id)?;
     if let Err(error) = conn.execute("ATTACH DATABASE ?1 AS restore", params![db_path.to_string_lossy().to_string()]) {
-        rollback_applied_media(&applied_media);
         let _ = fs::remove_dir_all(&staging_root);
         return Err(format!("restore_db_attach_failed:{error}"));
     }
+    let mut archive_result = json!({});
     let result = (|| -> Result<i64, String> {
-        let transaction = conn.transaction().map_err(|e| format!("restore_transaction_begin_failed:{e}"))?;
-        crate::observation_evidence::check_restore(&transaction, &tenant_id)?;
-        if manual_restore_has_lesson_binding_conflict(&transaction, &tenant_id)? {
-            return Err("lesson_plan_binding_revision_conflict".to_string());
+        {
+            let preflight = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
+            crate::observation_evidence::check_restore(&preflight, &tenant_id)?;
+            if manual_restore_has_lesson_binding_conflict(&preflight, &tenant_id)? {
+                return Err("lesson_plan_binding_revision_conflict".to_string());
+            }
         }
+        crate::restore_journal::prepare(&conn, &store.data_dir, &tenant_id, 0, "manual", &intent)?;
+        unjournaled_staging.0.clear(); // The durable journal owns cleanup now.
+        let transaction = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| format!("restore_transaction_begin_failed:{e}"))?;
+        // Recheck after acquiring SQLite's cross-connection writer lock.
+        if manual_restore_has_lesson_binding_conflict(&transaction, &tenant_id)? { return Err("lesson_plan_binding_revision_conflict".into()); }
+        check_media_rows(&transaction, &tenant_id, &media_plans)?;
+        archive_result = crate::backup_v4::apply_archives(&manifest_path, &authoritative, &tenant_id)?;
+        crate::restore_journal::apply(&transaction, &store.data_dir, &tenant_id, &intent)?;
         let mut imported = 0i64;
         for table in BACKUP_TABLES {
             if !table_exists(&transaction, table.name)? || !attached_table_exists(&transaction, "restore", table.name)? {
@@ -359,6 +312,7 @@ where
                 params![tenant_id],
             )
             .map_err(|e| format!("restore_work_note_fts_insert_failed:{e}"))?;
+        crate::restore_journal::receipt(&transaction, &tenant_id, &intent)?;
         transaction.commit().map_err(|e| format!("restore_transaction_commit_failed:{e}"))?;
         Ok(imported)
     })();
@@ -366,14 +320,13 @@ where
     let imported = match result {
         Ok(imported) => imported,
         Err(error) => {
-            rollback_applied_media(&applied_media);
-            let _ = fs::remove_dir_all(&staging_root);
+            crate::restore_journal::finish(&conn, &store.data_dir, &tenant_id)?;
             return Err(error);
         }
     };
     let media_restored = media_plans.iter().filter(|plan| plan.kind == "board_media").count() as i64;
     let work_note_attachments_restored = media_plans.iter().filter(|plan| plan.kind == "work_note_attachment").count() as i64;
-    let _ = fs::remove_dir_all(&staging_root);
+    crate::restore_journal::finish(&conn, &store.data_dir, &tenant_id)?;
     Ok(json!({
         "ok": true,
         "tenantId": tenant_id,
@@ -679,6 +632,25 @@ fn archive_conflict(
     Ok(())
 }
 
+fn archive_binding_conflicts(conn: &mut Connection, tenant: &str, records: &[SyncRecord], generation: i64, applied: i64) -> Result<bool, String> {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
+    let table = BACKUP_TABLES.iter().find(|table| table.name == "lesson_plan_bindings").ok_or("backup_sync_table_invalid")?;
+    let mut found = false;
+    if attached_table_exists(&tx, "restore", table.name)? {
+        for record in records.iter().filter(|record| record.table_name == table.name && !record.tombstone) {
+            let current = current_record_json(&tx, table, tenant, record)?;
+            let incoming = attached_record_json(&tx, table, tenant, record)?;
+            if current.as_deref().zip(incoming.as_deref()).and_then(|(a,b)| lesson_binding_merge(a,b)) != Some(LessonBindingMerge::RevisionConflict) { continue; }
+            found = true;
+            let raw = incoming.as_deref().unwrap_or("{}");
+            let archived: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM local_store_device_sync_conflicts WHERE tenant_id=?1 AND table_name=?2 AND record_key=?3 AND losing_generation=?4 AND winning_generation=?5 AND payload_json=?6)", params![tenant,table.name,record.record_key,generation,applied,raw],|r| r.get(0)).map_err(|e| e.to_string())?;
+            if !archived { archive_conflict(&tx, tenant, record, generation, applied, raw)?; }
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(found)
+}
+
 fn upsert_sync_record(
     transaction: &rusqlite::Transaction<'_>,
     tenant_id: &str,
@@ -731,10 +703,10 @@ pub(super) fn restore_generation(
         authoritative_restore_manifest(manifest_path, &manifest, tenant_id))?;
     seed_sync_records(store, tenant_id)?;
     let state = local_sync_state(store, tenant_id)?;
-    let archive_result = crate::onedrive_download::with_downloads(||
-        crate::backup_v4::apply_archives(manifest_path, &authoritative, tenant_id))?;
     let local_archives = crate::shared_archive_sync::has_local_only_references(tenant_id, authoritative.get("archives"))?;
     if generation <= state.applied_generation {
+        let archive_result = crate::onedrive_download::with_downloads(||
+            crate::backup_v4::apply_archives(manifest_path, &authoritative, tenant_id))?;
         return Ok(json!({
             "ok": true,
             "applied": false,
@@ -801,26 +773,37 @@ pub(super) fn restore_generation(
         let _ = fs::remove_dir_all(&staging_root);
         return Err("backup_sync_artifact_missing".to_string());
     }
-    let applied_media = match apply_staged_media(&media_plans) {
-        Ok(applied) => applied,
-        Err(error) => {
-            let _ = fs::remove_dir_all(&staging_root);
-            return Err(error);
-        }
-    };
+    let mut unjournaled_staging = capture::StagingGuard(staging_root.clone());
+    let intent = restore_intent(store, &staging_root, &media_plans)?;
+    let _access = crate::restore_journal::access(&store.data_dir)?;
     let mut conn = store.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
+    crate::restore_journal::ready(&conn, tenant_id)?;
     if let Err(error) = conn.execute(
         "ATTACH DATABASE ?1 AS restore",
         params![db_path.to_string_lossy().to_string()],
     ) {
-        rollback_applied_media(&applied_media);
         let _ = fs::remove_dir_all(&staging_root);
         return Err(format!("restore_db_attach_failed:{error}"));
     }
+    let mut archive_result = json!({});
     let result = (|| -> Result<(i64, i64, Vec<PathBuf>), String> {
+        if archive_binding_conflicts(&mut conn, tenant_id, &applicable, generation, state.applied_generation)? {
+            return Err("lesson_plan_binding_revision_conflict".into());
+        }
+        crate::restore_journal::prepare(&conn, &store.data_dir, tenant_id, generation,
+            manifest.get("artifactSetSha256").and_then(Value::as_str).unwrap_or(""), &intent)?;
+        unjournaled_staging.0.clear();
         let transaction = conn
-            .transaction()
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|e| format!("restore_transaction_begin_failed:{e}"))?;
+        if manual_restore_has_lesson_binding_conflict(&transaction, tenant_id)? {
+            return Err("lesson_plan_binding_revision_conflict".into());
+        }
+        // Immutable archive union must not run for a rejected binding revision.
+        check_media_rows(&transaction, tenant_id, &media_plans)?;
+        archive_result = crate::onedrive_download::with_downloads(||
+            crate::backup_v4::apply_archives(manifest_path, &authoritative, tenant_id))?;
+        crate::restore_journal::apply(&transaction, &store.data_dir, tenant_id, &intent)?;
         transaction
             .execute(
                 "UPDATE local_store_device_sync_state SET applying = 1 WHERE tenant_id = ?1",
@@ -857,23 +840,12 @@ pub(super) fn restore_generation(
             } else {
                 None
             };
-            if matches!(binding_merge, Some(LessonBindingMerge::Stale | LessonBindingMerge::RevisionConflict)) {
-                if binding_merge == Some(LessonBindingMerge::RevisionConflict) {
-                    archive_conflict(
-                        &transaction,
-                        tenant_id,
-                        record,
-                        generation,
-                        state.applied_generation,
-                        incoming.as_deref().unwrap_or("{}"),
-                    )?;
-                    conflicts += 1;
-                }
+            if binding_merge == Some(LessonBindingMerge::RevisionConflict) { return Err("lesson_plan_binding_revision_conflict".into()); }
+            if binding_merge == Some(LessonBindingMerge::Stale) {
                 upsert_sync_record(&transaction, tenant_id, record)?;
                 continue;
             }
             if local_record_is_dirty(&transaction, tenant_id, record)?
-                && current.is_some()
                 && current.as_ref() != incoming.as_ref()
                 && binding_merge != Some(LessonBindingMerge::Equivalent)
             {
@@ -883,7 +855,7 @@ pub(super) fn restore_generation(
                     record,
                     state.applied_generation,
                     generation,
-                    current.as_deref().unwrap_or("{}"),
+                    current.as_deref().unwrap_or("{\"tombstone\":true}"),
                 )?;
                 conflicts += 1;
             }
@@ -1007,6 +979,7 @@ pub(super) fn restore_generation(
                 params![tenant_id, generation, latest_status, remaining_dirty, now_ms(), state.change_sequence, local_archives],
             )
             .map_err(|e| format!("restore_sync_state_update_failed:{e}"))?;
+        crate::restore_journal::receipt(&transaction, tenant_id, &intent)?;
         transaction
             .commit()
             .map_err(|e| format!("restore_sync_commit_failed:{e}"))?;
@@ -1016,15 +989,14 @@ pub(super) fn restore_generation(
     let (imported, conflicts, deleted_files) = match result {
         Ok(value) => value,
         Err(error) => {
-            rollback_applied_media(&applied_media);
-            let _ = fs::remove_dir_all(&staging_root);
+            crate::restore_journal::finish(&conn, &store.data_dir, tenant_id)?;
             return Err(error);
         }
     };
     for path in deleted_files {
         let _ = fs::remove_file(path);
     }
-    let _ = fs::remove_dir_all(&staging_root);
+    crate::restore_journal::finish(&conn, &store.data_dir, tenant_id)?;
     Ok(json!({
         "ok": true,
         "applied": true,
@@ -1597,6 +1569,56 @@ mod tests {
     }
 
     #[test]
+    fn generation_binding_conflict_stops_before_apply_and_archives_once() {
+        let (base, backup_root, store) = test_store();
+        set_folder(&store, "tenant-a".into(), backup_root.to_string_lossy().into()).unwrap();
+        lesson_binding(&store, "2026-08-24", 4, 100);
+        observation(&store, "guarded", "incoming", 100);
+        let selected = run_with_kind(&store, "tenant-a".into(), "auto_sync", Some(354)).unwrap();
+        store.conn.lock().unwrap().execute("UPDATE lesson_plan_bindings SET date_key='2026-08-26' WHERE tenant_id='tenant-a'", []).unwrap();
+        observation(&store, "guarded", "keep-local", 200);
+        let before = local_sync_state(&store, "tenant-a").unwrap();
+        for _ in 0..2 {
+            assert_eq!(restore_generation(&store, "tenant-a", Path::new(selected["manifestPath"].as_str().unwrap()), 354, "announced", false).unwrap_err(), "lesson_plan_binding_revision_conflict");
+            assert_eq!(lesson_binding_revision(&store), ("2026-08-26".into(), 4));
+            assert!(observation_row(&store, "guarded").unwrap().0.contains("keep-local"));
+            let state = local_sync_state(&store, "tenant-a").unwrap();
+            assert_eq!(state.applied_generation, before.applied_generation);
+            assert_eq!(state.first_dirty_at_ms, before.first_dirty_at_ms);
+            assert_eq!(state.conflict_lifetime_count, before.conflict_lifetime_count + 1);
+            let conn = store.conn.lock().unwrap();
+            assert_eq!(conn.query_row("SELECT COUNT(*) FROM local_store_device_sync_conflicts WHERE tenant_id='tenant-a'", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+            assert_eq!(conn.query_row("SELECT COUNT(*) FROM local_store_restore_journal", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        }
+        drop(store);
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn staged_media_rechecks_local_row_before_replacing_newer_content() {
+        use base64::Engine;
+        let (base, backup_root, store) = test_store();
+        set_folder(&store, "tenant-a".into(), backup_root.to_string_lossy().into()).unwrap();
+        let write = |bytes:&[u8]| store.upsert_board_media(json!({"tenantId":"tenant-a","boardId":"qa-board","postId":"qa-post","mediaId":"qa-media","fileName":"qa.bin","contentType":"application/octet-stream","dataBase64":base64::engine::general_purpose::STANDARD.encode(bytes)})).unwrap();
+        write(b"old");
+        let selected=run_with_kind(&store,"tenant-a".into(),"auto_sync",Some(354)).unwrap();
+        let path=Path::new(selected["manifestPath"].as_str().unwrap());
+        let manifest=read_manifest(path).unwrap();
+        let authoritative=authoritative_restore_manifest(path,&manifest,"tenant-a").unwrap();
+        let (staging,plans,_,_)=stage_restore_media(&store,"tenant-a",path,&authoritative,None,None,true).unwrap();
+        assert_eq!(plans.len(),1,"selected synthetic media: {authoritative}");
+        write(b"newer-local-content");
+        let _access=store.media_access("tenant-a").unwrap();
+        let mut conn=store.conn.lock().unwrap();
+        let tx=conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).unwrap();
+        assert_eq!(check_media_rows(&tx,"tenant-a",&plans).unwrap_err(),"restore_local_record_changed");
+        tx.rollback().unwrap(); drop(conn); drop(_access);
+        let row=store.get_board_media_file("tenant-a".into(),"qa-media".into()).unwrap();
+        assert_eq!(base64::engine::general_purpose::STANDARD.decode(row["dataBase64"].as_str().unwrap()).unwrap(),b"newer-local-content");
+        fs::remove_dir_all(staging).unwrap(); drop(store); fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
     fn restore_aborts_before_merge_when_safety_backup_fails() {
         let (base, backup_root, store) = test_store();
         set_folder(&store, "tenant-a".to_string(), backup_root.to_string_lossy().to_string()).expect("set backup folder");
@@ -1621,30 +1643,4 @@ mod tests {
         fs::remove_dir_all(base).expect("remove test directory");
     }
 
-    #[test]
-    fn media_apply_failure_restores_already_replaced_files() {
-        let base = std::env::temp_dir().join(format!("onlineclass-backup-media-rollback-test-{}", random_url_token()));
-        let staged = base.join("staged");
-        let target = base.join("target");
-        let rollback = base.join("rollback");
-        fs::create_dir_all(&staged).expect("create staged directory");
-        fs::create_dir_all(&target).expect("create target directory");
-        fs::write(staged.join("one"), b"new-one").expect("write staged file");
-        fs::write(target.join("one"), b"old-one").expect("write target file");
-        let plans = vec![
-            RestoreMediaPlan {
-                record_id: "one".to_string(), kind: "board_media", staged_path: staged.join("one"),
-                target_path: target.join("one"), rollback_path: rollback.join("one"),
-            },
-            RestoreMediaPlan {
-                record_id: "two".to_string(), kind: "board_media", staged_path: staged.join("missing"),
-                target_path: target.join("two"), rollback_path: rollback.join("two"),
-            },
-        ];
-        let error = apply_staged_media(&plans).expect_err("second media apply must fail");
-        assert!(error.starts_with("restore_media_apply_failed:"));
-        assert_eq!(fs::read(target.join("one")).expect("read restored target"), b"old-one");
-        assert!(!target.join("two").exists());
-        fs::remove_dir_all(base).expect("remove test directory");
-    }
 }

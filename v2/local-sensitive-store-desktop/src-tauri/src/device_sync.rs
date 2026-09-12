@@ -42,6 +42,8 @@ pub(crate) struct DeviceSyncManager {
     sync_lock: Mutex<()>,
     #[cfg(test)]
     test_api_root: Option<String>,
+    #[cfg(test)]
+    test_skip_retry_delay: bool,
 }
 
 fn now_ms() -> i64 {
@@ -125,6 +127,9 @@ mod publication;
 #[cfg(test)]
 #[path = "device_sync_publication_tests.rs"]
 mod publication_tests;
+#[cfg(test)]
+#[path = "device_sync_simulation_tests.rs"]
+mod simulation_tests;
 
 impl DeviceSyncManager {
     pub(crate) fn new(data_dir: PathBuf, store: Arc<SqliteStore>) -> Self {
@@ -135,6 +140,8 @@ impl DeviceSyncManager {
             sync_lock: Mutex::new(()),
             #[cfg(test)]
             test_api_root: None,
+            #[cfg(test)]
+            test_skip_retry_delay: false,
         }
     }
 
@@ -309,6 +316,9 @@ impl DeviceSyncManager {
         let data = self.authorized_get(session, credential, "/checkpoints/latest")?;
         backup::remember_checkpoint_pins(&self.store, &session.tenant_id, &data)?;
         let checkpoint = data.get("checkpoint").cloned().filter(|value| !value.is_null());
+        if let Ok(root)=backup::configured_tenant_dir(&self.store,&session.tenant_id) {
+            crate::onedrive_evidence::select_checkpoint(&root,checkpoint.as_ref());
+        }
         let snapshot_version = data
             .pointer("/snapshotPolicy/maxWritableSnapshotVersion")
             .and_then(Value::as_i64)
@@ -326,7 +336,10 @@ impl DeviceSyncManager {
     ) -> Result<Value, String> {
         let mut last_error = String::new();
         for delay in [0u64, 1, 2, 4, 8] {
-            if delay > 0 {
+            let skip = false;
+            #[cfg(test)]
+            let skip = skip || self.test_skip_retry_delay;
+            if delay > 0 && !skip {
                 thread::sleep(Duration::from_secs(delay));
             }
             match crate::onedrive_download::with_downloads(|| backup::find_and_verify_generation(
@@ -356,12 +369,22 @@ impl DeviceSyncManager {
         })
     }
 
+    fn post_ack(&self, session: &DeviceSyncSession, credential: &str, generation: i64, artifact_root: &str) -> Result<Value, String> {
+        let _access = self.store.media_access(&session.tenant_id)?;
+        self.authorized_post(session, credential, &format!("/checkpoints/{generation}/acks"),
+            json!({ "artifactSetSha256": artifact_root })).map_err(|error| {
+                if error.starts_with("device_sync_http_401:") || error.starts_with("device_sync_http_403:") { error }
+                else { format!("device_sync_ack_pending:{error}") }
+            })
+    }
+
     fn apply_checkpoint(
         &self,
         session: &DeviceSyncSession,
         credential: &str,
         checkpoint: &Value,
     ) -> Result<(), String> {
+        self.store.restore_ready(&session.tenant_id)?;
         let generation = checkpoint_generation(Some(checkpoint));
         let state = backup::local_sync_state(&self.store, &session.tenant_id)?;
         let artifact_root =
@@ -410,12 +433,7 @@ impl DeviceSyncManager {
                 &status,
                 recovery_generation.is_some(),
             )?;
-            let acknowledged = self.authorized_post(
-                session,
-                credential,
-                &format!("/checkpoints/{generation}/acks"),
-                json!({ "artifactSetSha256": artifact_root }),
-            )?;
+            let acknowledged = self.post_ack(session, credential, generation, &artifact_root)?;
             backup::remember_ack(&self.store, &session.tenant_id, generation, &session.device_id, &artifact_root)?;
             backup::mark_sync_latest(
                 &self.store,
@@ -458,12 +476,7 @@ impl DeviceSyncManager {
         )?;
         backup::mark_sync_applied_content(&self.store, &session.tenant_id, &content_sha256)?;
         if source_device_id != session.device_id {
-            let acknowledged = self.authorized_post(
-                session,
-                credential,
-                &format!("/checkpoints/{generation}/acks"),
-                json!({ "artifactSetSha256": artifact_root }),
-            )?;
+            let acknowledged = self.post_ack(session, credential, generation, &artifact_root)?;
             backup::remember_ack(&self.store, &session.tenant_id, generation, &session.device_id, &artifact_root)?;
             backup::mark_sync_latest(
                 &self.store,
@@ -485,6 +498,7 @@ impl DeviceSyncManager {
             None => return Ok(json!({ "ok": true, "connected": false })),
         };
         let credential = self.credential(&session)?;
+        self.store.restore_ready(&session.tenant_id)?;
         backup::seed_sync_records(&self.store, &session.tenant_id)?;
         let _ = backup::auto_configure_onedrive(&self.store, &session.tenant_id)?;
         let (mut latest, mut snapshot_version) = self.latest_checkpoint(&session, &credential)?;
@@ -594,6 +608,20 @@ impl DeviceSyncManager {
         };
         let state = backup::local_sync_state(&self.store, &session.tenant_id)?;
         let backup_status = backup::connection_status(&self.store, &session.tenant_id);
+        let evidence_root = backup::configured_tenant_dir(&self.store, &session.tenant_id).ok();
+        let recovery_required = {
+            let conn = self.store.conn.lock().map_err(|_| "db_lock_failed")?;
+            crate::restore_journal::ready(&conn, &session.tenant_id).is_err()
+        };
+        let phase = if recovery_required { "recovery_required" }
+            else if state.last_error.starts_with("onedrive_snapshot_pending") { "snapshot_missing" }
+            else if state.last_error.starts_with("onedrive_download_pending") { "artifact_pending" }
+            else if state.last_error.contains("digest_mismatch") || state.last_error.contains("checkpoint_mismatch") { "integrity_error" }
+            else if state.applied_generation > 0 && state.applied_generation >= state.latest_generation
+                && state.last_error.starts_with("device_sync_ack_pending:") { "ack_pending" }
+            else if !state.last_error.is_empty() { "error" }
+            else if state.latest_generation > state.applied_generation { "snapshot_pending" }
+            else { "idle" };
         Ok(json!({
             "ok": true,
             "connected": true,
@@ -609,6 +637,9 @@ impl DeviceSyncManager {
             "connectedAtMs": session.connected_at_ms,
             "oneDriveConfigured": backup_status.as_ref().ok().and_then(|value| value.get("configured")).and_then(Value::as_bool).unwrap_or(false),
             "backupError": backup_status.err(),
+            "oneDriveEvidence": crate::onedrive_evidence::status(evidence_root.as_deref(), state.latest_generation),
+            "syncPhase": phase,
+            "recoveryRequired": recovery_required,
             "appliedGeneration": state.applied_generation,
             "publishedGeneration": state.published_generation,
             "latestGeneration": state.latest_generation,

@@ -11,8 +11,21 @@ use url::Url;
 const DB_FILE: &str = "onlineclass-shared-archive.sqlite";
 const FILE_DIR: &str = "shared-archive-files";
 
+#[cfg(test)]
+thread_local! { static TEST_ROOT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) }; }
+#[cfg(test)]
+pub(crate) fn with_test_root<T>(root:&Path, action:impl FnOnce()->T)->T {
+    assert!(root.starts_with(std::env::temp_dir()) && !root.components().any(|p|matches!(p,std::path::Component::ParentDir)));
+    struct Reset(Option<PathBuf>);
+    impl Drop for Reset { fn drop(&mut self) { TEST_ROOT.with(|slot|*slot.borrow_mut()=self.0.take()); } }
+    let _reset=Reset(TEST_ROOT.with(|slot|slot.replace(Some(root.into()))));
+    action()
+}
+
 pub(crate) fn storage_paths() -> (PathBuf, PathBuf) {
     let root = super::default_data_dir();
+    #[cfg(test)]
+    let root = TEST_ROOT.with(|slot|slot.borrow().clone()).unwrap_or(root);
     (root.join(DB_FILE), root.join(FILE_DIR))
 }
 

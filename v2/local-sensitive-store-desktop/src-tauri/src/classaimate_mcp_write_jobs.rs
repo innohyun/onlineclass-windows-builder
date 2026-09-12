@@ -703,6 +703,7 @@ pub(crate) fn ensure_schema(conn: &Connection) -> Result<(), String> {
 pub(crate) fn verified_replay(store: &SqliteStore, input: &Value) -> Result<Option<Value>, String> {
     required_object(Some(input))?;
     let tenant = required_id(input.get("tenantId"))?;
+    let _access = store.media_access(&tenant)?;
     let receipt = required_id(input.get("receiptId"))?;
     let operation = input.get("operation").and_then(Value::as_str).unwrap_or("");
     let request_sha = input
@@ -772,8 +773,9 @@ pub(crate) fn apply(store: &SqliteStore, input: &Value) -> Result<Value, String>
 }
 
 pub(crate) fn apply_with_assets(store: &SqliteStore, input: &Value, assets: &HashMap<String, Vec<u8>>) -> Result<Value, String> {
-    if let Some(result) = verified_replay(store, input)? { return Ok(result); }
     let tenant = required_id(input.get("tenantId"))?;
+    let _access = store.media_access(&tenant)?;
+    if let Some(result) = verified_replay(store, input)? { return Ok(result); }
     let receipt = required_id(input.get("receiptId"))?;
     let operation = input.get("operation").and_then(Value::as_str).unwrap_or("");
     let request_sha = input.get("requestSha256").and_then(Value::as_str).unwrap_or("");

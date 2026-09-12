@@ -1,6 +1,8 @@
 use base64::{engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD}, Engine as _};
 use chrono::{DateTime, Utc};
 mod backup;
+mod restore_journal;
+mod onedrive_evidence;
 mod backup_http_worker;
 mod backup_v4;
 mod backup_v5;
@@ -60,7 +62,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-09-09.2-student-record-recovery";
+pub(crate) const SERVICE_VERSION: &str = "2026-09-12.1-local-sync-safety";
 const WORK_MEETING_ROOT_PAGE_ID: &str = "classaimate:work-meeting-minutes";
 const WORK_MEETING_ROOT_TITLE: &str = "업무 회의록";
 const WORK_MEETING_ROOT_INTRO: &str = "모바일에서 확정한 업무 회의록이 자동으로 들어옵니다.";
@@ -1330,6 +1332,19 @@ fn normalize_student_private_detail(input: Value) -> Result<NormalizedStudentPri
 }
 
 fn default_data_dir() -> PathBuf {
+    #[cfg(test)] {
+        // Unit tests must never fall through to the installed user's AppData,
+        // including shared-archive helpers called indirectly by snapshot tests.
+        if let Ok(explicit) = env::var("ONLINECLASS_LOCAL_STORE_DIR") {
+            let path = PathBuf::from(explicit);
+            assert!(path.starts_with(env::temp_dir()) && !path.components().any(|part| matches!(part, std::path::Component::ParentDir)), "tests require an isolated temporary store");
+            return path;
+        }
+        static TEST_ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        return TEST_ROOT.get_or_init(|| env::temp_dir().join(format!("classaimate-qa-default-{}-{}", std::process::id(), random_url_token()))).clone();
+    }
+    #[cfg(not(test))]
+    {
     if let Ok(explicit) = env::var("ONLINECLASS_LOCAL_STORE_DIR") {
         let trimmed = explicit.trim();
         if !trimmed.is_empty() {
@@ -1352,6 +1367,7 @@ fn default_data_dir() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("."))
         .join(".onlineclass")
         .join("local-sensitive-store")
+    }
 }
 
 fn resolve_paths() -> StorePaths {
@@ -1682,11 +1698,25 @@ fn is_safe_mobile_meeting_root(page: &Value, include_canonical: bool) -> bool {
 }
 
 impl SqliteStore {
+    fn restore_ready(&self, tenant: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|_| "db_lock_failed")?;
+        restore_journal::ready(&conn, tenant)
+    }
+    fn media_access(&self, tenant: &str) -> Result<restore_journal::AccessGuard, String> {
+        let guard = restore_journal::access(&self.data_dir)?;
+        let conn = self.conn.lock().map_err(|_| "db_lock_failed")?;
+        restore_journal::ready(&conn, tenant)?;
+        Ok(guard)
+    }
+
     fn open(db_path: PathBuf) -> Result<Self, String> {
         if let Some(parent) = db_path.parent() {
             fs::create_dir_all(parent).map_err(|e| format!("db_dir_create_failed:{e}"))?;
         }
         let conn = Connection::open(&db_path).map_err(|e| format!("db_open_failed:{e}"))?;
+        // Recover existing operations before schema migrations can touch rows.
+        let data_dir = db_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+        restore_journal::recover(&conn, &data_dir)?;
         conn.execute_batch(
             r#"
             PRAGMA journal_mode = WAL;
@@ -2022,10 +2052,7 @@ impl SqliteStore {
         password_vault::ensure_schema(&conn)?;
         backup::install_sync_tracking(&conn)?;
         device_sync_conflicts::ensure_schema(&conn)?;
-        let data_dir = db_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .to_path_buf();
+        restore_journal::install_guards(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
             db_path,
@@ -2091,6 +2118,7 @@ impl SqliteStore {
 
     fn delete_work_note(&self, tenant_id: String, page_id: String) -> Result<Value, String> {
         let tenant = normalize_tenant_id(Some(&Value::String(tenant_id)));
+        let _access = self.media_access(&tenant)?;
         let page = normalize_id_segment(Some(&Value::String(page_id)), 180);
         if tenant.is_empty() { return Err("tenant_id_required".to_string()); }
         if page.is_empty() { return Err("work_note_page_id_required".to_string()); }
@@ -3585,6 +3613,7 @@ impl SqliteStore {
 
     fn upsert_board_media(&self, input: Value) -> Result<Value, String> {
         let tenant_id = normalize_tenant_id(input.get("tenantId"));
+        let _access = self.media_access(&tenant_id)?;
         let board_id = normalize_id_segment(input.get("boardId"), 180);
         let post_id = normalize_id_segment(input.get("postId").or_else(|| input.get("id")).or_else(|| input.get("docId")), 180);
         let media_id = normalize_id_segment(input.get("mediaId").or_else(|| input.get("storagePath")).or_else(|| input.get("sourceUrl")), 220);
@@ -3708,6 +3737,7 @@ impl SqliteStore {
 
     fn get_board_media_file(&self, tenant_id: String, media_id: String) -> Result<Value, String> {
         let safe_tenant = normalize_tenant_id(Some(&Value::String(tenant_id)));
+        let _access = self.media_access(&safe_tenant)?;
         let safe_media = normalize(&media_id, 220).replace(['/', '\\'], "_");
         if safe_tenant.is_empty() || safe_media.is_empty() {
             return Err("media_identity_required".to_string());

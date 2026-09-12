@@ -77,6 +77,7 @@ pub(super) fn run_if_due(
 ) -> Result<Value, String> {
     let tenant_dir = configured_tenant_dir(store, tenant_id)?;
     let _operation = root_operation(store, &tenant_dir)?;
+    let _access = store.media_access(tenant_id)?;
     let manual_retention = crate::backup_v5::prune_manual_snapshots(&tenant_dir)?;
     {
         let conn = store.conn.lock().map_err(|_| "db_lock_failed")?;

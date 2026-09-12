@@ -322,6 +322,7 @@ pub(crate) fn delete_manual_backup(
     }
     let tenant_dir = configured_tenant_dir(store, &tenant_id)?;
     let _operation = root_operation(store, &tenant_dir)?;
+    store.restore_ready(&tenant_id)?;
     let requested_manifest = PathBuf::from(manifest_path.trim());
     if manifest_path.trim().is_empty() {
         return Err("backup_manual_delete_manifest_required".to_string());
@@ -427,6 +428,7 @@ pub(crate) fn apply_legacy_cleanup(
     }
     let tenant_dir = configured_tenant_dir(store, &tenant_id)?;
     let _operation = root_operation(store, &tenant_dir)?;
+    store.restore_ready(&tenant_id)?;
     maintenance::require_pin_context(store, &tenant_id, now_ms())?;
     let verified_v5_created_at_ms = latest_verified_v5_created_at(store, &tenant_id, &tenant_dir)?;
     crate::backup_v5::apply_legacy_cleanup(
@@ -445,6 +447,7 @@ pub(crate) fn undo_legacy_cleanup(store: &SqliteStore, tenant_id: String) -> Res
     }
     let tenant_dir = configured_tenant_dir(store, &tenant_id)?;
     let _operation = root_operation(store, &tenant_dir)?;
+    store.restore_ready(&tenant_id)?;
     crate::backup_v5::undo_legacy_quarantine(&tenant_dir, now_ms())
 }
 

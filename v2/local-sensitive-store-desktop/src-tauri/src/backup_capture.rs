@@ -5,7 +5,7 @@ pub(super) struct StagingGuard(pub(super) PathBuf);
 impl Drop for StagingGuard {
     fn drop(&mut self) {
         // This unique directory was created by the current capture only.
-        if self.0.exists() {
+        if !self.0.as_os_str().is_empty() && self.0.exists() {
             let _ = fs::remove_dir_all(&self.0);
         }
     }

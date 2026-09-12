@@ -8,7 +8,7 @@ import { isMacDesktop } from "./settings-dashboard";
 const SHELL_HEIGHT = 56;
 const TEACHER_WEBVIEW_LABEL = "teacher-home";
 const TEACHER_HOME_URL = "https://t.classaimate.com/admin/";
-const TUTORIAL_KEY = "classaimateDesktopShellTutorial:v12";
+const TUTORIAL_KEY = "classaimateDesktopShellTutorial:v13";
 
 type ShellMode = "teacher" | "local";
 export type DesktopActivationIntent = "show-main" | "quick-observation";
@@ -219,14 +219,22 @@ export function initDesktopShell(): DesktopShellController {
     },
     {
       target: localButton,
-      text: "로컬 자료함은 같은 SQLite를 수업자료·기존 학생 자료·업무자료·학생별 보기·빠른 관찰로 나눠 쓰는 공간입니다. 승인된 ChatGPT 작업은 이 앱이 연결하며 AI 설정 탭을 계속 열어 둘 필요는 없습니다. 원문 저장·영수증·재조회가 확인돼야 완료입니다. 연결이 끊겨도 생성 결과는 암호화해 최대 24시간 보존하지만 조회·작업 승인 기한은 자동 연장하지 않습니다. " + (isMacDesktop()
+      text: "로컬 자료함은 같은 SQLite를 수업자료·기존 학생 자료·업무자료·학생별 보기·빠른 관찰로 나눠 쓰는 공간입니다. 승인된 ChatGPT 작업은 이 앱이 연결하며 AI 설정 탭을 계속 열어 둘 필요는 없습니다. 원문 저장·영수증·재조회가 확인돼야 완료입니다. 연결이 끊겨도 생성 결과는 암호화해 최대 24시간 보존하지만 조회·작업 승인 기한은 자동 연장하지 않습니다.",
+    },
+    {
+      target: localButton,
+      text: isMacDesktop()
         ? "Mac 로그인 시 자동 실행은 기본으로 꺼져 있습니다. 설정에서 켤 수 있고, 창을 닫은 뒤에는 메뉴 막대에서 다시 열 수 있습니다. 인증정보는 macOS 키체인에 보관합니다. 내장 교사 홈은 승인된 학급의 로컬 요청만 이 앱을 통해 전달합니다. 새로운 파일 접근이나 기기 권한을 허용하지 않습니다. PC 연결과 백업은 별개입니다. 백업 폴더 오류가 있어도 로컬 자료는 사용할 수 있고 기기 간 동기화만 보류됩니다. 이 안내는 자동 실행이나 자료 복원을 대신 실행하지 않습니다."
-        : "일반 바로가기는 현재 화면을, 빠른 관찰기록 바로가기는 이 앱의 관찰 화면을 곧바로 엽니다. 데이터나 백업이 복제되지는 않습니다. 기기 동기화는 최신 세대에 필요한 OneDrive 파일만 다운로드 요청합니다. 요청 거절 오류(380)가 나면 해당 파일 읽기로 한 번 더 요청하며, 폴더 전체를 다운로드하거나 항상 유지로 바꾸지 않습니다. 다운로드 후 검증을 마친 뒤 로컬 자료와 보관본에 반영합니다. 대기·실패 시 현재 자료는 유지됩니다. 백업·복원의 오류 안내를 확인하고 지금 동기화에서 다시 시도할 수 있습니다. 이 안내는 동기화나 복원을 대신 실행하지 않습니다."),
+        : "일반 바로가기는 현재 화면을, 빠른 관찰기록 바로가기는 이 앱의 관찰 화면을 곧바로 엽니다. 데이터나 백업이 복제되지는 않습니다. 기기 동기화는 최신 세대에 필요한 OneDrive 파일만 다운로드 요청합니다. 요청 거절 오류(380)가 나면 해당 파일 읽기로 한 번 더 요청하며, 폴더 전체를 다운로드하거나 항상 유지로 바꾸지 않습니다. 다운로드 후 검증을 마친 뒤 로컬 자료와 보관본에 반영합니다. 대기·실패 시 현재 자료는 유지됩니다. 백업·복원의 오류 안내를 확인하고 지금 동기화에서 다시 시도할 수 있습니다. 이 안내는 동기화나 복원을 대신 실행하지 않습니다.",
+    },
+    {
+      target: localButton,
+      text: "백업·복원에서 기기 동기화 단계를 확인할 수 있습니다. 게시 완료는 로컬 보관본과 서버 메타데이터가 준비됐다는 뜻입니다. OneDrive 전달 상태와 다른 기기의 검증·적용 확인은 별도로 표시합니다. 복구 필요 안내가 나오면 해당 학급의 자료 변경·동기화를 중단하고 원본과 복구 파일을 보존합니다. 이 안내는 동기화·다운로드·복원을 대신 실행하지 않습니다.",
     },
   ];
 
   function renderTutorial() {
-    tutorialSteps.forEach((step, index) => step.target.classList.toggle("desktop-shell-tutorial-target", index === tutorialIndex));
+    tutorialSteps.forEach((step) => step.target.classList.toggle("desktop-shell-tutorial-target", step.target === tutorialSteps[tutorialIndex].target));
     tutorialBody.textContent = tutorialSteps[tutorialIndex].text;
     tutorialStep.textContent = `${tutorialIndex + 1} / ${tutorialSteps.length}`;
     tutorialPrevious.disabled = tutorialIndex === 0;

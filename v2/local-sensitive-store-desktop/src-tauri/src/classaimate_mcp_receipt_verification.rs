@@ -193,6 +193,9 @@ pub(crate) fn read_only(
     {
         return Err(invalid());
     }
+    // File readback must observe the same DB/file cut as restore and apply.
+    // Keep the public read error contract; never turn recovery into "missing".
+    let _access = store.media_access(tenant).map_err(|_| "MCP_LOCAL_RECEIPT_READ_FAILED")?;
     let conn = store
         .conn
         .lock()

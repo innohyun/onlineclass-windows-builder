@@ -463,6 +463,7 @@ fn rollback_files(published: &[PublishedFile]) {
 }
 
 pub(crate) fn finalize(store: &SqliteStore, tenant_id: String, document_id: String) -> Result<Value, String> {
+    let _access = store.media_access(&tenant_id)?;
     let tenant_id = normalize_tenant_id(Some(&Value::String(tenant_id)));
     let document_id = safe_id(&document_id, 128)?;
     let current = receipt(store, &tenant_id, &document_id)?.ok_or_else(|| "work_note_localization_not_found".to_string())?;
@@ -604,6 +605,8 @@ mod tests {
              CREATE TABLE work_note_attachments (tenant_id TEXT NOT NULL,attachment_id TEXT NOT NULL,page_id TEXT NOT NULL,block_id TEXT NOT NULL,file_name TEXT NOT NULL,content_type TEXT NOT NULL,byte_size INTEGER NOT NULL,sha256 TEXT NOT NULL,local_path TEXT NOT NULL,created_at_ms INTEGER NOT NULL,updated_at_ms INTEGER NOT NULL,PRIMARY KEY(tenant_id,attachment_id));",
         ).unwrap();
         ensure_schema(&conn).unwrap();
+        crate::restore_journal::install(&conn).unwrap();
+        crate::restore_journal::install_guards(&conn).unwrap();
         let store = SqliteStore { conn: Mutex::new(conn), db_path, data_dir: directory.clone() };
         begin(&store, json!({ "tenantId":"tenant-a","documentId":"document-a","rootPageId":"root-a",
             "documentTitle":"참고자료","preparedRevision":2,"snapshotSha256":"a".repeat(64),"expectedPageCount":2 })).unwrap();
@@ -648,6 +651,8 @@ mod tests {
              CREATE TABLE work_note_attachments (tenant_id TEXT NOT NULL,attachment_id TEXT NOT NULL,page_id TEXT NOT NULL,block_id TEXT NOT NULL,file_name TEXT NOT NULL,content_type TEXT NOT NULL,byte_size INTEGER NOT NULL,sha256 TEXT NOT NULL,local_path TEXT NOT NULL,created_at_ms INTEGER NOT NULL,updated_at_ms INTEGER NOT NULL,PRIMARY KEY(tenant_id,attachment_id));",
         ).unwrap();
         ensure_schema(&conn).unwrap();
+        crate::restore_journal::install(&conn).unwrap();
+        crate::restore_journal::install_guards(&conn).unwrap();
         let store = SqliteStore { conn: Mutex::new(conn), db_path, data_dir: directory.clone() };
         begin(&store, json!({ "tenantId":"tenant-a","documentId":"document-a","rootPageId":"old-root",
             "documentTitle":"이전 준비본","preparedRevision":2,"snapshotSha256":"a".repeat(64),"expectedPageCount":1 })).unwrap();
@@ -682,6 +687,8 @@ mod tests {
             "INSERT INTO work_note_pages VALUES ('tenant-a','destination-a',NULL,'최근 폴더','📁',0,'{}','[]','',1,1)", [],
         ).unwrap();
         ensure_schema(&conn).unwrap();
+        crate::restore_journal::install(&conn).unwrap();
+        crate::restore_journal::install_guards(&conn).unwrap();
         let store = SqliteStore { conn: Mutex::new(conn), db_path, data_dir: directory.clone() };
         let started = begin(&store, json!({ "tenantId":"tenant-a","documentId":"document-a","rootPageId":"root-a",
             "documentTitle":"참고자료","preparedRevision":2,"snapshotSha256":"a".repeat(64),"expectedPageCount":2,

@@ -141,6 +141,20 @@ fn missing_fts_legacy_receipt_and_database_error_never_become_missing_or_apply()
 }
 
 #[test]
+fn pending_restore_blocks_receipt_readback_without_disclosure_or_database_write() {
+    let fixture = Fixture::new();
+    let job = text_job();
+    classaimate_mcp_write_jobs::apply(&fixture.store, &job).unwrap();
+    fixture.store.conn.lock().unwrap().execute(
+        "INSERT INTO local_store_restore_journal VALUES ('tenant-a','blocked',354,'qa','prepared','{}')", [],
+    ).unwrap();
+    let before = fixture.changes();
+    assert_eq!(read_only(&fixture.store, "tenant-a", &input(&job)).unwrap_err(), "MCP_LOCAL_RECEIPT_READ_FAILED");
+    assert_eq!(fixture.changes(), before);
+    assert_eq!(read_only(&fixture.store, "tenant-b", &input(&job)).unwrap(), json!({"status":"missing"}));
+}
+
+#[test]
 fn observation_receipt_checks_all_22_canonical_rows_and_rejects_empty_mutation() {
     let fixture = Fixture::new();
     let items: Vec<Value> = (1..=22).map(|index| json!({"action":"create","studentCode":format!("STU{index:02}"),

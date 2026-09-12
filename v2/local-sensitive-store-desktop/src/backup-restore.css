@@ -626,6 +626,7 @@
 .backup-storage-policy summary { cursor: pointer; color: #34527e; font-size: 12px; font-weight: 800; }
 .backup-storage-policy p { margin-top: 8px; }
 .backup-storage-actions { display: flex; justify-content: flex-end; gap: 8px; }
+#backupStoragePanel .local-reader-tutorial-target { scroll-margin-top: 24px; }
 #backupStorageTutorial { right: auto; bottom: auto; max-height: calc(100vh - 32px); overflow: auto; }
 #backupStorageTutorial h2 { margin-top: 12px; }
 

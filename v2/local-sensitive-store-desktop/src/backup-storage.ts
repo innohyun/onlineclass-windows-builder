@@ -325,7 +325,8 @@ export function initBackupStorage(options: Options) {
     step.target.classList.add('local-reader-tutorial-target'); text('backupStorageTutorialStep', `${tutorialIndex + 1} / ${tutorialSteps.length}`);
     text('backupStorageTutorialTitle', step.title); text('backupStorageTutorialCopy', step.copy);
     required<HTMLButtonElement>('backupStorageTutorialNext').textContent = tutorialIndex === tutorialSteps.length - 1 ? '완료' : '다음'; tutorial.hidden = false;
-    step.target.scrollIntoView({ block: 'center', behavior: 'instant' });
+    // Reserve room below the target for the explanatory panel on narrow screens.
+    step.target.scrollIntoView({ block: 'start', behavior: 'instant' });
     positionTutorial();
     window.requestAnimationFrame(positionTutorial);
   };

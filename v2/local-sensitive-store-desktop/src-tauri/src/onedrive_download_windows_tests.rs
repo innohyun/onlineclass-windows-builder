@@ -256,6 +256,25 @@ impl Drop for CloudFixture {
 }
 
 #[test]
+fn onedrive_evidence_reads_metadata_without_hydration_or_pinning() {
+    let fixture = CloudFixture::new(Response::ReadAfter380);
+    let before = fixture.info("selected.bin");
+    assert_eq!(crate::onedrive_evidence::file_state(&fixture.root.join("selected.bin")), crate::onedrive_evidence::FileState::InSync);
+    crate::onedrive_evidence::test_selected_files(&fixture.root, &[fixture.root.join("selected.bin")]);
+    let status=crate::onedrive_evidence::status(Some(&fixture.root),354);
+    assert_eq!(status["state"],"in_sync");
+    assert_eq!(status["requiredFileCount"],1);
+    fs::write(fixture.root.join("ordinary.bin"),b"synthetic-only").unwrap();
+    fs::copy(fixture.root.join("ordinary.bin"),fixture.root.join("ordinary-copy.bin")).unwrap();
+    assert_eq!(crate::onedrive_evidence::file_state(&fixture.root.join("ordinary-copy.bin")),crate::onedrive_evidence::FileState::Unknown);
+    let after = fixture.info("selected.bin");
+    assert_eq!(after.OnDiskDataSize, 0);
+    assert_eq!(after.PinState, before.PinState);
+    assert!(fixture.fetches().is_empty());
+    assert_eq!(fixture.info("unselected.bin").OnDiskDataSize, 0);
+}
+
+#[test]
 fn onedrive_cloud_files_380_falls_back_to_real_reads_through_eof_without_pinning() {
     let mut fixture = CloudFixture::new(Response::ReadAfter380);
     let before = fixture.info("selected.bin");

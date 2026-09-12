@@ -207,6 +207,7 @@ pub(crate) fn save<R: Read + ?Sized>(
     }
     output.sync_all().map_err(|e| format!("work_note_attachment_sync_failed:{e}"))?;
     drop(output);
+    let _access = store.media_access(&tenant)?;
     if target_path.exists() { fs::remove_file(&target_path).map_err(|e| format!("work_note_attachment_replace_failed:{e}"))?; }
     fs::rename(&temp_path, &target_path).map_err(|e| format!("work_note_attachment_rename_failed:{e}"))?;
     let local_path_text = local_path.to_string_lossy().to_string();
@@ -229,6 +230,7 @@ pub(crate) fn save<R: Read + ?Sized>(
 
 pub(crate) fn open(store: &SqliteStore, tenant_id: String, attachment_id: String) -> Result<AttachmentFile, String> {
     let tenant = normalize_tenant_id(Some(&Value::String(tenant_id)));
+    let _access = store.media_access(&tenant)?;
     let attachment = safe_id(&attachment_id);
     if tenant.is_empty() { return Err("tenant_id_required".to_string()); }
     if attachment.is_empty() { return Err("work_note_attachment_id_required".to_string()); }
@@ -245,6 +247,7 @@ pub(crate) fn resolve_local_path(
     attachment_id: String,
 ) -> Result<(PathBuf, String), String> {
     let tenant = normalize_tenant_id(Some(&Value::String(tenant_id)));
+    let _access = store.media_access(&tenant)?;
     let attachment = safe_id(&attachment_id);
     if tenant.is_empty() { return Err("tenant_id_required".to_string()); }
     if attachment.is_empty() { return Err("work_note_attachment_id_required".to_string()); }
@@ -262,6 +265,7 @@ pub(crate) fn resolve_local_path(
 
 pub(crate) fn delete(store: &SqliteStore, tenant_id: String, attachment_id: String) -> Result<usize, String> {
     let tenant = normalize_tenant_id(Some(&Value::String(tenant_id)));
+    let _access = store.media_access(&tenant)?;
     let attachment = safe_id(&attachment_id);
     if tenant.is_empty() { return Err("tenant_id_required".to_string()); }
     if attachment.is_empty() { return Err("work_note_attachment_id_required".to_string()); }

@@ -19,6 +19,18 @@ export type DeviceSyncStatus = {
   conflictUnreviewedCount?: number;
   conflictLifetimeCount?: number;
   waitingForOneDrive?: boolean;
+  syncPhase?: string;
+  recoveryRequired?: boolean;
+  oneDriveEvidence?: {
+    state: "unknown" | "pending" | "in_sync" | "error" | "unsupported";
+    checkedAtMs: number;
+    requiredFileCount: number;
+    inSyncFileCount?: number;
+    pendingFileCount?: number;
+    missingFileCount?: number;
+    unknownFileCount?: number;
+    errorFileCount?: number;
+  };
   error?: string;
 };
 
@@ -104,6 +116,8 @@ function oneDriveDownloadFailureMessage(value: string) {
 
 export function deviceSyncErrorMessage(error?: string) {
   const value = String(error || "");
+  if (value.includes("restore_recovery_required")) return "중단된 복원을 안전하게 마치지 못했습니다. 원본과 복구 파일을 보존하고 이 학급의 변경·동기화를 중단했습니다. 파일을 삭제하거나 복원을 반복하지 말고 복구 상태를 확인해 주세요.";
+  if (value === "lesson_plan_binding_revision_conflict") return "같은 수업 연결 버전의 값이 달라 충돌 자료를 보관하고 세대 적용·기기 확인을 중단했습니다. 웹에서 최신 수업 연결을 확인해 주세요.";
   if (isOneDriveDownloadPending(value)) return ONE_DRIVE_DOWNLOAD_PENDING_MESSAGE;
   const downloadFailure = oneDriveDownloadFailureMessage(value);
   if (downloadFailure) return downloadFailure;
@@ -121,7 +135,7 @@ export function deviceSyncErrorMessage(error?: string) {
 
 function updateActionState(busy = false) {
   busy = busy || syncRun !== null;
-  const unavailable = !snapshot?.connected || !snapshot.credentialAvailable || !snapshot.oneDriveConfigured || Boolean(snapshot.backupError);
+  const unavailable = !snapshot?.connected || !snapshot.credentialAvailable || !snapshot.oneDriveConfigured || Boolean(snapshot.backupError) || snapshot.recoveryRequired === true;
   document.querySelectorAll<HTMLButtonElement>('button[data-action="run-device-sync"]').forEach((button) => {
     button.disabled = busy || unavailable;
   });
@@ -132,6 +146,8 @@ function updateActionState(busy = false) {
 }
 
 export function renderDeviceSyncStatus(status: DeviceSyncStatus | null) {
+  const failure = status?.error || status?.lastError || "";
+  if (status && failure.startsWith("restore_recovery_required")) status = { ...status, recoveryRequired: true };
   snapshot = status;
   setText("deviceSyncLatestText", status?.connected ? `${Number(status.latestGeneration || 0)}세대` : "-");
   setText("deviceSyncAppliedText", status?.connected ? `${Number(status.appliedGeneration || 0)}세대` : "-");
@@ -139,7 +155,16 @@ export function renderDeviceSyncStatus(status: DeviceSyncStatus | null) {
   setText("deviceSyncConflictText", status?.connected
     ? `미검토 ${Number(status.conflictUnreviewedCount || 0)} · 보관 ${Number(status.conflictRetainedCount ?? status.conflictCount ?? 0)} · 누적 ${Number(status.conflictLifetimeCount ?? status.conflictCount ?? 0)}`
     : "-");
-  if (status?.ok === false && status.error) {
+  if (status?.recoveryRequired) {
+    setBadge("복구 확인 필요", "error");
+    setText("deviceSyncStatus", deviceSyncErrorMessage("restore_recovery_required"));
+  } else if (status?.syncPhase === "ack_pending" || failure.startsWith("device_sync_ack_pending:")) {
+    setBadge("기기 확인 전송 대기", "warning");
+    setText("deviceSyncStatus", "이 PC의 자료 적용은 끝났지만 서버에 기기 확인을 전달하지 못했습니다. 확인 전송을 재시도하며, 아직 검증 완료로 표시하지 않습니다.");
+  } else if (status?.syncPhase === "snapshot_missing" || failure.startsWith("onedrive_snapshot_pending")) {
+    setBadge("OneDrive 보관본 도착 대기", "warning");
+    setText("deviceSyncStatus", "서버에는 최신 세대가 게시되었지만 이 PC의 폴더에는 해당 보관본이 아직 보이지 않습니다. 업로드·수신 지연 또는 계정·폴더 차이를 확인해야 하며 현재 자료는 유지됩니다.");
+  } else if (status?.ok === false && status.error) {
     const pending = isOneDriveDownloadPending(status.error);
     setBadge(pending ? "OneDrive 다운로드 대기" : "확인 필요", pending ? "warning" : "error");
     setText("deviceSyncStatus", pending
@@ -171,12 +196,18 @@ export function renderDeviceSyncStatus(status: DeviceSyncStatus | null) {
     setText("deviceSyncStatus", "이 PC의 최근 변경 내용을 잠시 모은 뒤 자동으로 새 세대에 반영합니다.");
   } else if (status.latestStatus === "announced") {
     setBadge("다른 기기 확인 대기", "warning");
-    setText("deviceSyncStatus", "최신 내용과 보관본은 OneDrive에 저장되었습니다. 다른 기기가 확인하면 검증 완료로 바뀝니다. 충돌 건수는 동기화를 막지 않는 누적 보관 기록입니다.");
+    const evidence = status.oneDriveEvidence;
+    const detail = evidence?.state === "in_sync"
+      ? "OneDrive 공급자는 필수 파일을 동기화 상태로 표시하지만, 다른 PC의 수신·적용 완료를 뜻하지는 않습니다."
+      : evidence?.state === "pending" ? "OneDrive 필수 파일의 전달 대기 또는 미도착이 관찰되었습니다."
+      : evidence?.state === "error" ? "OneDrive 파일 상태를 확인하지 못했습니다."
+      : "OneDrive 업로드 완료 여부는 아직 확인되지 않았습니다.";
+    setText("deviceSyncStatus", `로컬 보관본 생성과 서버 세대 게시가 완료되었습니다. ${detail} 다른 기기가 검증·적용 후 확인하면 검증 완료로 바뀝니다.`);
   } else {
     setBadge("최신 상태", "ok");
     setText("deviceSyncStatus", status.lastSuccessAtMs
       ? `${formatDateTime(status.lastSuccessAtMs)}에 자료와 보관본의 최신 상태를 확인했습니다. 충돌 건수는 누적 보관 기록입니다.`
-      : "현재 PC와 OneDrive의 자료·보관본이 일치합니다. 충돌 건수는 누적 보관 기록입니다.");
+      : "이 PC는 확인된 최신 세대까지 반영했습니다. 서버의 다른 기기 확인과 OneDrive 파일 전달 상태는 별도로 판단합니다. 충돌 건수는 누적 보관 기록입니다.");
   }
   updateActionState();
 }
@@ -209,6 +240,10 @@ export async function runDeviceSyncNow(afterRun: () => Promise<unknown>) {
       }
     } catch (error) {
       const message = String((error as Error)?.message || error || "device_sync_failed");
+      if (message.startsWith("device_sync_ack_pending:") || message.startsWith("restore_recovery_required")) {
+        try { snapshot = await invoke<DeviceSyncStatus>("get_device_sync_status"); }
+        catch { /* Preserve the failure; a failed read must not become success. */ }
+      }
       renderDeviceSyncStatus({ ...(snapshot || { connected: false }), ok: false, error: message, lastError: message });
     } finally {
       statusRevision += 1;

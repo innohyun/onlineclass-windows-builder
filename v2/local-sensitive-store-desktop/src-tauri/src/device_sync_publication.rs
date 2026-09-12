@@ -9,6 +9,7 @@ impl DeviceSyncManager {
         latest_status: &str,
         snapshot_version: i64,
     ) -> Result<(), String> {
+        self.store.restore_ready(&session.tenant_id)?;
         let pending = backup::pending_publication(&self.store, &session.tenant_id)?;
         let tenant_dir = backup::configured_tenant_dir(&self.store, &session.tenant_id)?;
         let reusable = pending.as_ref().filter(|pending| {
@@ -85,9 +86,11 @@ impl DeviceSyncManager {
             .get("databaseSha256")
             .and_then(Value::as_str)
             .ok_or("device_sync_snapshot_invalid")?;
+        let _access = self.store.media_access(&session.tenant_id)?;
         let checkpoint=self.authorized_post(session,credential,"/checkpoints",json!({
             "baseGeneration":base_generation,"artifactSetSha256":root,"databaseSha256":database,"snapshotVersion":snapshot_version,
         }))?;
+        crate::onedrive_evidence::select_checkpoint(&tenant_dir,Some(&checkpoint));
         backup::mark_sync_published(
             &self.store,
             &session.tenant_id,

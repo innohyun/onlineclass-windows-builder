@@ -18,6 +18,9 @@ mod restore_runtime;
 mod optimization_tests;
 
 const BACKUP_CONFIG_FILE: &str = "backup-config.json";
+pub(crate) fn restore_guard_tables() -> impl Iterator<Item = &'static str> {
+    BACKUP_TABLES.iter().map(|table| table.name)
+}
 const BACKUP_NAMESPACE_DIR: &str = "OnlineClassLocalBackups";
 const BACKUP_INTERVAL_MS: i64 = 24 * 60 * 60 * 1000;
 
@@ -959,6 +962,7 @@ fn verify_checkpoint_manifest_path(
     } else {
         manifest.clone()
     };
+    crate::onedrive_evidence::remember(path, &manifest, &authoritative);
     Ok(json!({
         "ok": true,
         "tenantId": tenant_id,
@@ -1123,6 +1127,7 @@ pub(crate) fn restore_preview(store: &SqliteStore, body: Value) -> Result<Value,
 pub(crate) fn restore(store: &SqliteStore, body: Value) -> Result<Value, String> {
     let tenant_id = normalize_tenant_id(body.get("tenantId"));
     let _operation = root_operation(store, &configured_tenant_dir(store, &tenant_id)?)?;
+    store.restore_ready(&tenant_id)?;
     restore_runtime::restore(store, body)
 }
 
@@ -1135,6 +1140,7 @@ pub(crate) fn restore_generation(
     force_all: bool,
 ) -> Result<Value, String> {
     let _operation = root_operation(store, &configured_tenant_dir(store, tenant_id)?)?;
+    store.restore_ready(tenant_id)?;
     restore_runtime::restore_generation(store, tenant_id, manifest_path, generation, latest_status, force_all)
 }
 

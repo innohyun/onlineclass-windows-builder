@@ -563,6 +563,7 @@ pub(crate) fn verify_bundle_reference_at(
     {
         return Err("archive_sync_bundle_root_mismatch".to_string());
     }
+    crate::onedrive_evidence::remember_bundle(bundle_dir, &document);
     Ok(document)
 }
 

@@ -257,7 +257,7 @@ jobs:
           $currentLaunch = Start-GuiShortcut $shortcut.File.FullName $shortcut.Target
           $desktopProcess = $currentLaunch.Process
           $installedTarget = $currentLaunch.Path
-          Wait-LocalServiceVersion '2026-09-09.2-student-record-recovery'
+          Wait-LocalServiceVersion '2026-09-12.1-local-sync-safety'
           if ($quickShortcut.Target -and ([IO.Path]::GetFullPath($quickShortcut.Target) -ine [IO.Path]::GetFullPath($installedTarget))) { throw "Quick observation shortcut resolves to an unexpected GUI executable." }
           $backgroundProcessId = $desktopProcess.Id
           for ($cycle = 1; $cycle -le 10; $cycle++) {
