@@ -110,10 +110,12 @@ async function main() {
   const json = (file) => JSON.parse(readFileSync(file, "utf8").replace(/^\uFEFF/u, ""));
   const git = (...args) => execFileSync("git", args, { encoding: "utf8", timeout: 30000 }).trim();
   const project = path.resolve("v2/local-sensitive-store-desktop");
+  const checkoutChanges = git("status", "--porcelain");
+  if (checkoutChanges) console.error(`Public builder changed paths (publication remains blocked):\n${checkoutChanges}`);
   const authority = validateBuildSource({ source: json("builder-source.json"), sourceCommit: process.env.SOURCE_COMMIT_INPUT,
     builderCommit: git("rev-parse", "HEAD"), workflowCommit: process.env.GITHUB_SHA,
     repository: process.env.GITHUB_REPOSITORY, ref: process.env.GITHUB_REF,
-    version: json(path.join(project, "package.json")).version, dirty: Boolean(git("status", "--porcelain")) });
+    version: json(path.join(project, "package.json")).version, dirty: Boolean(checkoutChanges) });
   assert.ok(!process.env.RELEASE_TAG_INPUT || process.env.RELEASE_TAG_INPUT === authority.releaseTag, "release tag must match package version");
   const bundle = path.join(project, "src-tauri/target/release/bundle/nsis");
   const installers = readdirSync(bundle, { withFileTypes: true }).filter((entry) => entry.isFile() && entry.name.endsWith(".exe"));

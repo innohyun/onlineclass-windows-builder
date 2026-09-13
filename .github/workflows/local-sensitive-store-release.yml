@@ -289,6 +289,14 @@ jobs:
           if ($reopenedProcess.Id -eq $foregroundProcessId) { throw "Background OFF relaunch did not create a new process." }
           Stop-Process -Id $reopenedProcess.Id -Force
 
+      - name: Preserve the GUI-verified installer before publication
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-verified-installer-${{ github.sha }}-${{ github.run_attempt }}
+          path: v2/local-sensitive-store-desktop/src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Publish installer release and manifest
         shell: pwsh
         working-directory: .

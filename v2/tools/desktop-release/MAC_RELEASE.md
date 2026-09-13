@@ -5,11 +5,13 @@
 ## 선행 조건
 
 - 검증한 private `origin/main` source와 package/Tauri/Cargo 버전을 먼저 commit/push한다.
+- 공통 프로젝트의 `.gitattributes`는 `src-tauri/Cargo.toml`만 LF checkout으로 고정한다. Windows Tauri의 LF 재작성은 내용 diff가 없어도 CRLF checkout을 Git dirty로 만들 수 있다. 새 clone에서 실제 CLI 전후 clean을 확인하며 dirty guard를 우회하거나 tracked 변경을 무시하지 않는다.
 - `sync-windows-builder.mjs`의 dry-run과 secret scan을 확인하고 깨끗한 별도 builder checkout에 source를 동기화한다. dirty 허용 옵션을 쓰지 않는다.
 - Windows와 Mac 빌드는 동일 builder HEAD에서 동시에 시작할 수 있다. 단 Mac publish 단계 전에는 Windows workflow가 성공해 `local-sensitive-store-v{version}` 공개 release, EXE와 Windows manifest가 존재해야 한다.
 - 그 Windows release의 target, 실제 tag commit, manifest의 source/builder SHA가 현재 builder HEAD와 일치해야 한다. source sync를 또 해서 builder HEAD가 움직였다면 이전 release에 Mac만 섞어 넣지 않는다.
 - 기존 Mac DMG나 receipt가 하나라도 있으면 workflow는 중단한다. 이전/부분 업로드를 먼저 검사하며 자동 덮어쓰기·삭제·재빌드 승격은 하지 않는다.
 - Windows publisher도 같은 버전의 release 또는 tag가 이미 있으면 동일 source라도 기본 차단한다. 새 release 생성 뒤 실제 tag·release ID·target SHA를 다시 검증하고 그 release ID에 EXE → manifest 순서로 업로드한다. asset 교체/삭제와 자동 재업로드는 없다. 생성/업로드/readback이 불확실하면 이전 asset을 보존한 채 별도로 진단한다.
+- Windows는 GUI/upgrade gate 통과 뒤 NSIS EXE만 source SHA/attempt 이름의 Actions artifact로 7일 보존한다. 이후 publisher 실패가 이 파일을 자동 공개하거나 다른 source로 승격할 권한은 아니다. 사용자 DB·credential·임의 작업폴더는 artifact에 포함하지 않는다.
 
 ## 실행
 
