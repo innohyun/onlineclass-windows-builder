@@ -34,6 +34,7 @@ fn valid_snapshot(
         json!({"records":[]}),
         json!({"records":[]}),
         json!({"count":0,"records":[]}),
+        json!({"count":0,"records":[]}),
         json!({}),
     )
     .unwrap();

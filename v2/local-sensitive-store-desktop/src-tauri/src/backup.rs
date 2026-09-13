@@ -93,6 +93,7 @@ const BACKUP_TABLES: &[BackupTable] = &[
     BackupTable { name: "observation_evidence_revisions", columns: &["tenant_id","revision_id","doc_id","payload_json","revision_hash","saved_at_ms"], key_columns: &["tenant_id","revision_id"], timestamp_column: "saved_at_ms", optional: true },
     BackupTable { name: "observation_evidence_batches", columns: &["tenant_id","receipt_id","payload_json","commitment_sha256","created_at_ms"], key_columns: &["tenant_id","receipt_id"], timestamp_column: "created_at_ms", optional: true },
     BackupTable { name: "observation_evidence_mutations", columns: &["tenant_id","mutation_id","request_hash","payload_json","created_at_ms"], key_columns: &["tenant_id","mutation_id"], timestamp_column: "created_at_ms", optional: true },
+    BackupTable { name: "observation_evidence_deletions", columns: &["tenant_id","deletion_id","doc_id","target_revision_id","mutation_id","payload_json","deletion_hash","deleted_at_ms"], key_columns: &["tenant_id","deletion_id"], timestamp_column: "deleted_at_ms", optional: true },
     BackupTable { name: "observation_evidence_receipts", columns: &["tenant_id","receipt_id","payload_json","created_at_ms"], key_columns: &["tenant_id","receipt_id"], timestamp_column: "created_at_ms", optional: true },
     BackupTable { name: "observation_evidence_exports", columns: &["tenant_id","export_id","payload_json","created_at_ms"], key_columns: &["tenant_id","export_id"], timestamp_column: "created_at_ms", optional: true },
     BackupTable {
@@ -1088,6 +1089,7 @@ pub(crate) fn restore_preview(store: &SqliteStore, body: Value) -> Result<Value,
         .ok_or_else(|| "backup_db_required".to_string())?;
     let db_path = manifest_path.parent().unwrap_or_else(|| Path::new(".")).join(db_relative);
     let conn = Connection::open(&db_path).map_err(|e| format!("backup_db_open_failed:{e}"))?;
+    crate::teaching_source_backup::validate_snapshot(&conn,&tenant_id)?;
     let mut counts = serde_json::Map::new();
     for table in BACKUP_TABLES {
         if !table_exists(&conn, table.name)? {
@@ -1099,6 +1101,11 @@ pub(crate) fn restore_preview(store: &SqliteStore, body: Value) -> Result<Value,
             .unwrap_or(0);
         counts.insert(table.name.to_string(), json!(count));
     }
+    let (home_count,source_count,chunk_count,link_count)=crate::teaching_source_backup::counts(&conn,"main",&tenant_id)?;
+    counts.insert("teachingSourceActorHomeCount".into(),json!(home_count));
+    counts.insert("teachingSourceCount".into(),json!(source_count));
+    counts.insert("teachingSourceChunkCount".into(),json!(chunk_count));
+    counts.insert("curriculumSourceLinkCount".into(),json!(link_count));
     if let Some(archive_counts) = authoritative.get("counts").and_then(Value::as_object) {
         for key in [
             "sharedArchiveCount",
@@ -1121,6 +1128,7 @@ pub(crate) fn restore_preview(store: &SqliteStore, body: Value) -> Result<Value,
         "counts": counts,
         "media": authoritative.get("media").cloned().unwrap_or_else(|| json!({})),
         "workNoteAttachments": authoritative.get("workNoteAttachments").cloned().unwrap_or_else(|| json!({})),
+        "teachingSources": authoritative.get("teachingSources").cloned().unwrap_or_else(|| json!({"count":0,"records":[]})),
         "archives": authoritative.get("archives").cloned().unwrap_or_else(|| json!({}))
     }))
 }

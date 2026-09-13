@@ -573,7 +573,8 @@ pub(crate) fn list_backups(
                 "source": manifest.get("source").cloned().unwrap_or_else(|| json!({})),
                 "counts": manifest.get("counts").cloned().unwrap_or_else(|| json!({})),
                 "media": manifest.get("media").cloned().unwrap_or_else(|| json!({})),
-                "workNoteAttachments": manifest.get("workNoteAttachments").cloned().unwrap_or_else(|| json!({}))
+                "workNoteAttachments": manifest.get("workNoteAttachments").cloned().unwrap_or_else(|| json!({})),
+                "teachingSources": manifest.get("teachingSources").cloned().unwrap_or_else(|| json!({"count":0,"records":[]}))
             }));
         }
     }
@@ -687,6 +688,7 @@ pub(super) fn backup_manifest_summary(path: &Path, fallback_tenant_id: &str) -> 
         "counts": manifest.get("counts").cloned().unwrap_or_else(|| json!({})),
         "media": manifest.get("media").cloned().unwrap_or_else(|| json!({})),
         "workNoteAttachments": manifest.get("workNoteAttachments").cloned().unwrap_or_else(|| json!({})),
+        "teachingSources": manifest.get("teachingSources").cloned().unwrap_or_else(|| json!({"count":0,"records":[]})),
         "archives": manifest.get("archives").cloned().unwrap_or_else(|| json!({}))
     }))
 }

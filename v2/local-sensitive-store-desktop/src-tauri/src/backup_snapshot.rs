@@ -69,6 +69,8 @@ pub(crate) fn run_with_kind_version(
             .map_err(|e| format!("backup_media_dir_failed:{e}"))?;
         fs::create_dir_all(staging_dir.join("work-note-attachments"))
             .map_err(|e| format!("backup_work_note_attachment_dir_failed:{e}"))?;
+        fs::create_dir_all(staging_dir.join("teaching-sources"))
+            .map_err(|e| format!("backup_teaching_source_dir_failed:{e}"))?;
     }
     let db_relative_path = PathBuf::from("db").join("local-sensitive.sqlite");
     let db_path = staging_dir.join(&db_relative_path);
@@ -276,6 +278,54 @@ pub(crate) fn run_with_kind_version(
             "status": status
         }));
     }
+    let teaching_source_rows = captured.teaching_sources;
+    let teaching_source_count = teaching_source_rows.len() as i64;
+    let mut teaching_source_records = Vec::new();
+    let mut teaching_sources_copied = 0i64;
+    let mut teaching_sources_skipped = 0i64;
+    let mut teaching_sources_missing = 0i64;
+    let mut teaching_sources_failed = 0i64;
+    let mut teaching_source_bytes = 0i64;
+    for (index,row) in teaching_source_rows.into_iter().enumerate() {
+        let legacy_relative_path=PathBuf::from("teaching-sources").join(format!("{index:x}.bin"));
+        let source_path=crate::teaching_source_backup::source_path(store,&row.owner_uid,&row.local_path)?;
+        let captured_stamp=captured.teaching_source_stamps.get(&format!("{}:{}",row.owner_uid,row.source_id));
+        let mut status="copied";let mut artifact=None;
+        match fs::metadata(&source_path) {
+            Ok(source_meta) => {
+                if snapshot_version==crate::backup_v5::SNAPSHOT_VERSION {
+                    match crate::backup_v5::put_object(&out_dir,&source_path,&backup_id) {
+                        Ok(object)=>{if object.created{teaching_sources_copied+=1;}else{teaching_sources_skipped+=1;status="skipped";}artifact=Some(object.artifact);}
+                        Err(_)=>{teaching_sources_failed+=1;status="failed";}
+                    }
+                } else {
+                    let target_path=staging_dir.join(&legacy_relative_path);
+                    if let Some(parent)=target_path.parent(){fs::create_dir_all(parent).map_err(|e|format!("backup_teaching_source_target_dir_failed:{e}"))?;}
+                    if fs::copy(&source_path,&target_path).is_err(){teaching_sources_failed+=1;status="failed";}else{
+                        teaching_sources_copied+=1;let digest=sha256_file(&target_path)?;
+                        artifact=Some(ArtifactDigest{relative_path:legacy_relative_path.to_string_lossy().replace('\\',"/"),size:digest.0,sha256:digest.1});
+                    }
+                }
+                teaching_source_bytes+=source_meta.len() as i64;
+            }
+            Err(_)=>{teaching_sources_missing+=1;status="missing";}
+        }
+        if artifact.is_some()&&(capture::file_stamp(&source_path).ok().as_ref()!=captured_stamp||captured_stamp.is_none()){
+            return Err("backup_capture_teaching_source_changed".into());
+        }
+        let (backup_relative_path,artifact_size,artifact_sha256)=if let Some(artifact)=artifact {
+            if artifact.sha256!=row.sha256||artifact.size!=row.size{return Err("backup_capture_teaching_source_changed".into());}
+            let relative=artifact.relative_path.clone();let size=artifact.size;let sha=artifact.sha256.clone();
+            if artifact_paths.insert(relative.clone()){artifacts.push(artifact);}(relative,size,sha)
+        } else {(legacy_relative_path.to_string_lossy().replace('\\',"/"),0,String::new())};
+        teaching_source_records.push(json!({
+            "sourceKey":format!("{}:{}",row.owner_uid,row.source_id),"ownerUid":row.owner_uid,
+            "sourceId":row.source_id,"sourceRevision":row.revision,"bundleSha256":row.bundle_sha256,
+            "localPath":row.local_path,"backupRelativePath":backup_relative_path,
+            "size":if artifact_size>0{artifact_size}else{row.size},"sha256":if artifact_sha256.is_empty(){row.sha256}else{artifact_sha256},
+            "updatedAtMs":row.updated_at_ms,"status":status
+        }));
+    }
     let stats = capture::statistics(&db_path, &tenant_id)?;
     let archives = crate::shared_archive_sync::ensure_tenant_bundles(&tenant_id, &out_dir)?;
     let counts = json!({
@@ -303,6 +353,10 @@ pub(crate) fn run_with_kind_version(
         "workNoteCount": stats.get("workNoteCount").and_then(|value| value.as_i64()).unwrap_or(0),
         "workNoteAttachmentCount": attachment_count,
         "cloudSyncRunCount": stats.get("cloudSyncRunCount").and_then(|value| value.as_i64()).unwrap_or(0),
+        "teachingSourceActorHomeCount": stats.get("teachingSourceActorHomeCount").and_then(|value| value.as_i64()).unwrap_or(0),
+        "teachingSourceCount": stats.get("teachingSourceCount").and_then(|value| value.as_i64()).unwrap_or(0),
+        "teachingSourceChunkCount": stats.get("teachingSourceChunkCount").and_then(|value| value.as_i64()).unwrap_or(0),
+        "curriculumSourceLinkCount": stats.get("curriculumSourceLinkCount").and_then(|value| value.as_i64()).unwrap_or(0),
         "sharedArchiveCount": archives.get("count").and_then(Value::as_i64).unwrap_or(0),
         "sharedArchiveBoardCount": archives.get("boardCount").and_then(Value::as_i64).unwrap_or(0),
         "sharedArchiveAssignmentCount": archives.get("assignmentCount").and_then(Value::as_i64).unwrap_or(0),
@@ -331,12 +385,14 @@ pub(crate) fn run_with_kind_version(
         "bytes": attachment_bytes,
         "records": attachment_records
     });
+    let teaching_sources=json!({"count":teaching_source_count,"copied":teaching_sources_copied,"skipped":teaching_sources_skipped,"missing":teaching_sources_missing,"failed":teaching_sources_failed,"bytes":teaching_source_bytes,"records":teaching_source_records});
     let captured_content = capture::content_root(
         &db_path,
         &tenant_id,
         &sync,
         &media,
         &work_note_attachments,
+        &teaching_sources,
         &archives,
     )?;
     sync["contentSha256"] = json!(captured_content);
@@ -351,6 +407,7 @@ pub(crate) fn run_with_kind_version(
         sync.clone(),
         media.clone(),
         work_note_attachments.clone(),
+        teaching_sources.clone(),
         archives.clone(),
         counts.clone(),
     )?;
@@ -371,7 +428,8 @@ pub(crate) fn run_with_kind_version(
         })
         .collect::<Vec<_>>();
     let snapshot_ok =
-        failed == 0 && missing == 0 && attachments_failed == 0 && attachments_missing == 0;
+        failed == 0 && missing == 0 && attachments_failed == 0 && attachments_missing == 0
+          && teaching_sources_failed == 0 && teaching_sources_missing == 0;
     let manifest = json!({
         "ok": snapshot_ok,
         "version": snapshot_version,
@@ -393,6 +451,7 @@ pub(crate) fn run_with_kind_version(
         "counts": counts,
         "media": media,
         "workNoteAttachments": work_note_attachments,
+        "teachingSources": teaching_sources,
         "archives": archives,
         "securityMode": "plain_warning"
     });
@@ -435,6 +494,7 @@ pub(crate) fn run_with_kind_version(
         "counts": manifest.get("counts").cloned().unwrap_or_else(|| json!({})),
         "media": manifest.get("media").cloned().unwrap_or_else(|| json!({})),
         "workNoteAttachments": manifest.get("workNoteAttachments").cloned().unwrap_or_else(|| json!({})),
+        "teachingSources": manifest.get("teachingSources").cloned().unwrap_or_else(|| json!({})),
         "archives": manifest.get("archives").cloned().unwrap_or_else(|| json!({}))
     });
     if snapshot_ok {

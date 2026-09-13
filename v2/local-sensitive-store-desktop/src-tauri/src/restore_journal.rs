@@ -246,7 +246,8 @@ fn validate(root: &Path, intent: &Intent) -> Result<(), String> {
                 .rollback
                 .starts_with(intent.staging_root.join("rollback"))
             || !(file.target.starts_with("board-media")
-                || file.target.starts_with("work-note-attachments"))
+                || file.target.starts_with("work-note-attachments")
+                || file.target.starts_with("teaching-sources"))
             || !targets.insert(file.target.clone())
         {
             return Err(error());

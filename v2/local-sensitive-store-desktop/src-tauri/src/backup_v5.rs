@@ -261,7 +261,7 @@ fn manifest_object_references(tenant_dir: &Path) -> Result<HashSet<String>, Stri
                 return Err("backup_object_reference_index_mismatch".to_string());
             }
         }
-        for group in ["media", "workNoteAttachments"] {
+        for group in ["media", "workNoteAttachments", "teachingSources"] {
             let records = authoritative[group]["records"]
                 .as_array()
                 .ok_or_else(|| "backup_object_reference_index_incomplete".to_string())?;

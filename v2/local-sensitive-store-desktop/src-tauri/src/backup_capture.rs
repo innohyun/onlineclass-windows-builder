@@ -17,6 +17,8 @@ pub(super) struct Capture {
     pub(super) media: Vec<MediaRow>,
     pub(super) media_stamps: HashMap<String, (u64, std::time::SystemTime)>,
     pub(super) attachments: Vec<WorkNoteAttachmentRow>,
+    pub(super) teaching_sources: Vec<crate::teaching_source_backup::FileRow>,
+    pub(super) teaching_source_stamps: HashMap<String, (u64, std::time::SystemTime)>,
 }
 
 // The database and its record versions/attachment locators are one SQLite cut.
@@ -42,7 +44,7 @@ pub(super) fn export(
             .unchecked_transaction()
             .map_err(|e| format!("backup_capture_transaction_failed:{e}"))?;
         transaction
-            .execute_batch(&backup_schema_sql("backup."))
+            .execute_batch(&format!("{}\n{}", backup_schema_sql("backup."), crate::teaching_source_backup::schema("backup.")))
             .map_err(|e| format!("backup_schema_failed:{e}"))?;
         for table in BACKUP_TABLES {
             if !table_exists(&transaction, table.name)? {
@@ -55,6 +57,14 @@ pub(super) fn export(
             transaction.execute(&format!(
                 "INSERT INTO backup.{0} ({columns}) SELECT {columns} FROM main.{0} WHERE tenant_id=?1", table.name), params![tenant_id])
                 .map_err(|e| format!("backup_table_copy_failed:{}:{e}", table.name))?;
+        }
+        let teaching_sources = crate::teaching_source_backup::capture(&transaction, tenant_id)?;
+        let mut teaching_source_stamps = HashMap::new();
+        for row in &teaching_sources {
+            let source_path=crate::teaching_source_backup::source_path(store,&row.owner_uid,&row.local_path)?;
+            if let Ok(stamp) = file_stamp(&source_path) {
+                teaching_source_stamps.insert(format!("{}:{}", row.owner_uid, row.source_id), stamp);
+            }
         }
         crate::observation_evidence::check_captured_backup(&transaction, tenant_id)?;
         check_tracking_coverage(&transaction, tenant_id)?;
@@ -77,6 +87,8 @@ pub(super) fn export(
             media,
             media_stamps,
             attachments: attachment_rows_from(&transaction, tenant_id)?,
+            teaching_sources,
+            teaching_source_stamps,
         };
         transaction
             .commit()
@@ -121,6 +133,7 @@ pub(super) fn content_root(
     sync: &Value,
     media: &Value,
     attachments: &Value,
+    teaching_sources: &Value,
     archives: &Value,
 ) -> Result<String, String> {
     let connection =
@@ -131,6 +144,7 @@ pub(super) fn content_root(
         .and_then(Value::as_array)
         .ok_or("backup_sync_records_required")?;
     let mut primary = database_content_hasher(&connection, tenant_id, records)?;
+    crate::teaching_source_backup::update_content_hasher(&connection, "main", tenant_id, &mut primary)?;
     for (kind, id_key, collection) in [
         (b"board-media\0".as_slice(), "mediaId", media),
         (
@@ -138,6 +152,7 @@ pub(super) fn content_root(
             "attachmentId",
             attachments,
         ),
+        (b"teaching-source\0".as_slice(), "sourceKey", teaching_sources),
     ] {
         for file in collection
             .get("records")
@@ -254,5 +269,10 @@ pub(super) fn statistics(db_path: &Path, tenant_id: &str) -> Result<Value, Strin
             .map_err(|e| format!("backup_capture_count_failed:{table}:{e}"))?;
         counts[key] = json!(count);
     }
+    let (homes,sources,chunks,links)=crate::teaching_source_backup::counts(&conn,"main",tenant_id)?;
+    counts["teachingSourceActorHomeCount"]=json!(homes);
+    counts["teachingSourceCount"]=json!(sources);
+    counts["teachingSourceChunkCount"]=json!(chunks);
+    counts["curriculumSourceLinkCount"]=json!(links);
     Ok(counts)
 }

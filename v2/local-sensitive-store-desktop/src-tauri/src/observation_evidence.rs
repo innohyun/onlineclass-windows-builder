@@ -34,6 +34,7 @@ pub(crate) fn schema(prefix: &str) -> String {
     format!("CREATE TABLE IF NOT EXISTS {prefix}observation_evidence_revisions (tenant_id TEXT NOT NULL,revision_id TEXT NOT NULL,doc_id TEXT NOT NULL,payload_json TEXT NOT NULL,revision_hash TEXT NOT NULL,saved_at_ms INTEGER NOT NULL,PRIMARY KEY(tenant_id,revision_id));
     CREATE TABLE IF NOT EXISTS {prefix}observation_evidence_batches (tenant_id TEXT NOT NULL,receipt_id TEXT NOT NULL,payload_json TEXT NOT NULL,commitment_sha256 TEXT NOT NULL,created_at_ms INTEGER NOT NULL,PRIMARY KEY(tenant_id,receipt_id));
     CREATE TABLE IF NOT EXISTS {prefix}observation_evidence_mutations (tenant_id TEXT NOT NULL,mutation_id TEXT NOT NULL,request_hash TEXT NOT NULL,payload_json TEXT NOT NULL,created_at_ms INTEGER NOT NULL,PRIMARY KEY(tenant_id,mutation_id));
+    CREATE TABLE IF NOT EXISTS {prefix}observation_evidence_deletions (tenant_id TEXT NOT NULL,deletion_id TEXT NOT NULL,doc_id TEXT NOT NULL,target_revision_id TEXT NOT NULL,mutation_id TEXT NOT NULL,payload_json TEXT NOT NULL,deletion_hash TEXT NOT NULL,deleted_at_ms INTEGER NOT NULL,PRIMARY KEY(tenant_id,deletion_id));
     CREATE TABLE IF NOT EXISTS {prefix}observation_evidence_receipts (tenant_id TEXT NOT NULL,receipt_id TEXT NOT NULL,payload_json TEXT NOT NULL,created_at_ms INTEGER NOT NULL,PRIMARY KEY(tenant_id,receipt_id));
     CREATE TABLE IF NOT EXISTS {prefix}observation_evidence_exports (tenant_id TEXT NOT NULL,export_id TEXT NOT NULL,payload_json TEXT NOT NULL,created_at_ms INTEGER NOT NULL,PRIMARY KEY(tenant_id,export_id));
     CREATE TABLE IF NOT EXISTS {prefix}observation_evidence_reconciliation (tenant_id TEXT NOT NULL,state_id TEXT NOT NULL,payload_json TEXT NOT NULL,created_at_ms INTEGER NOT NULL,PRIMARY KEY(tenant_id,state_id));")
@@ -274,6 +275,12 @@ impl SqliteStore {
                 return Err("observation_duplicate_record".into());
             }
             let prior = read_record(&tx, tenant, doc)?;
+            let deleted: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM observation_evidence_deletions WHERE tenant_id=?1 AND doc_id=?2)",
+                params![tenant, doc], |row| row.get(0)).map_err(db)?;
+            if deleted {
+                return Err("observation_record_deleted".into());
+            }
             let reason = input["correctionReason"]
                 .as_str()
                 .unwrap_or_default()
@@ -392,6 +399,69 @@ impl SqliteStore {
         }
         Ok(result)
     }
+    pub(crate) fn evidence_delete_in_transaction(
+        &self,
+        tx: &rusqlite::Connection,
+        tenant: &str,
+        inputs: &[Value],
+        mutation_id: &str,
+        request_identity: &Value,
+    ) -> Result<Vec<Value>, String> {
+        if tenant.is_empty() || mutation_id.is_empty() || inputs.is_empty() || inputs.len() > 200 {
+            return Err("observation_delete_invalid".into());
+        }
+        let request_hash = hash(&json!({"tenantId":tenant,"records":request_identity,"mutationId":mutation_id}));
+        let prior=tx.query_row("SELECT request_hash,payload_json FROM observation_evidence_mutations WHERE tenant_id=?1 AND mutation_id=?2",params![tenant,mutation_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional().map_err(db)?;
+        if let Some((digest, raw)) = prior {
+            if digest != request_hash { return Err("observation_mutation_conflict".into()); }
+            let deletions: Vec<Value> = serde_json::from_str(&raw).map_err(|_| "observation_evidence_invalid_mutation")?;
+            for deletion in &deletions {
+                let stored=tx.query_row("SELECT payload_json,deletion_hash FROM observation_evidence_deletions WHERE tenant_id=?1 AND deletion_id=?2",params![tenant,deletion["deletionId"].as_str()],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional().map_err(db)?;
+                let Some((payload, digest)) = stored else { return Err("observation_deletion_replay_mismatch".into()); };
+                let parsed: Value = serde_json::from_str(&payload).map_err(|_| "observation_deletion_replay_mismatch")?;
+                if parsed != *deletion || hash(&parsed) != digest || read_record(tx, tenant, deletion["docId"].as_str().unwrap_or_default())?.is_some() {
+                    return Err("observation_deletion_replay_mismatch".into());
+                }
+            }
+            return Ok(deletions);
+        }
+        let mut docs = HashSet::new();
+        let mut prepared = Vec::new();
+        for input in inputs {
+            let doc = input["docId"].as_str().filter(|value| !value.is_empty()).ok_or("observation_delete_invalid")?;
+            let student = input["studentCode"].as_str().filter(|value| !value.is_empty()).ok_or("observation_delete_invalid")?;
+            let expected = input["expectedRevisionId"].as_str().filter(|value| !value.is_empty()).ok_or("observation_delete_invalid")?;
+            if !docs.insert(doc.to_string()) { return Err("observation_delete_invalid".into()); }
+            let record = read_record(tx, tenant, doc)?.ok_or("observation_revision_conflict")?;
+            if record["studentCode"] != student || record["revisionId"] != expected {
+                return Err("observation_revision_conflict".into());
+            }
+            if verify_record(tx, &self.data_dir, tenant, doc)?["errors"].as_array().is_none_or(|errors| errors.iter().any(|error| error != "legacy_photo_unverified" && error != "server_batches_missing_locally")) {
+                return Err("observation_evidence_integrity_mismatch".into());
+            }
+            prepared.push(record);
+        }
+        let now = now_ms();
+        let mut deletions = Vec::new();
+        for record in prepared {
+            let deletion = json!({"version":1,"kind":"delete","tenantId":tenant,"deletionId":uuid(),
+                "docId":record["docId"],"targetRevisionId":record["revisionId"],"targetRevisionHash":record["revisionHash"],
+                "mutationId":mutation_id,"deletedAtMs":now});
+            let digest = hash(&deletion);
+            tx.execute("INSERT INTO observation_evidence_deletions VALUES(?1,?2,?3,?4,?5,?6,?7,?8)", params![
+                tenant, deletion["deletionId"].as_str(), deletion["docId"].as_str(),
+                deletion["targetRevisionId"].as_str(), mutation_id, deletion.to_string(), digest, now,
+            ]).map_err(db)?;
+            if tx.execute("DELETE FROM lesson_observations WHERE tenant_id=?1 AND doc_id=?2 AND json_extract(payload_json,'$.revisionId')=?3", params![
+                tenant, deletion["docId"].as_str(), deletion["targetRevisionId"].as_str(),
+            ]).map_err(db)? != 1 { return Err("observation_revision_conflict".into()); }
+            deletions.push(deletion);
+        }
+        tx.execute("INSERT INTO observation_evidence_mutations VALUES(?1,?2,?3,?4,?5)", params![
+            tenant, mutation_id, request_hash, json!(deletions).to_string(), now,
+        ]).map_err(db)?;
+        Ok(deletions)
+    }
     pub(crate) fn evidence_detail(
         &self,
         tenant: &str,
@@ -399,7 +469,18 @@ impl SqliteStore {
         export: bool,
     ) -> Result<Value, String> {
         let conn = self.conn.lock().map_err(|_| "db_lock_failed")?;
-        let record = read_record(&conn, tenant, doc)?.ok_or("observation_not_found")?;
+        let record = read_record(&conn, tenant, doc)?;
+        let mut deletion_stmt=conn.prepare("SELECT payload_json,deletion_hash FROM observation_evidence_deletions WHERE tenant_id=?1 AND doc_id=?2 ORDER BY deleted_at_ms,deletion_id").map_err(db)?;
+        let deletion_rows=deletion_stmt.query_map(params![tenant,doc],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?))).map_err(db)?;
+        let mut deletions = Vec::new();
+        for row in deletion_rows {
+            let (raw, digest) = row.map_err(db)?;
+            let mut deletion: Value = serde_json::from_str(&raw).map_err(|_| "observation_deletion_invalid")?;
+            deletion["deletionHash"] = json!(digest);
+            deletions.push(deletion);
+        }
+        drop(deletion_stmt);
+        if record.is_none() && deletions.is_empty() { return Err("observation_not_found".into()); }
         let revisions = revisions(&conn, tenant, doc)?;
         let mut batches = Vec::new();
         let mut receipts = Vec::new();
@@ -435,7 +516,8 @@ impl SqliteStore {
             }
         }
         let mut verification = verify_record(&conn, &self.data_dir, tenant, doc)?;
-        let mut out = json!({"ok":true,"record":record,"revisions":revisions,"heads":heads(&revisions),"batches":batches,"receipts":receipts});
+        let mut out = json!({"ok":true,"record":record,"deleted":!deletions.is_empty(),"deletions":deletions,
+            "revisions":revisions,"heads":heads(&revisions),"batches":batches,"receipts":receipts});
         if export {
             use base64::Engine;
             let mut media = Vec::new();
@@ -782,7 +864,38 @@ fn verify_record(conn: &Connection, dir: &Path, tenant: &str, doc: &str) -> Resu
     if heads.len() != 1 {
         errors.push("revision_branch_conflict");
     }
-    if let Some(record) = read_record(conn, tenant, doc)? {
+    let mut deletion_stmt=conn.prepare("SELECT deletion_id,doc_id,target_revision_id,mutation_id,deleted_at_ms,payload_json,deletion_hash FROM observation_evidence_deletions WHERE tenant_id=?1 AND doc_id=?2 ORDER BY deleted_at_ms,deletion_id").map_err(db)?;
+    let deletion_rows=deletion_stmt.query_map(params![tenant,doc],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,String>(3)?,row.get::<_,i64>(4)?,r_to_value(row.get::<_,String>(5)?),row.get::<_,String>(6)?))).map_err(db)?;
+    let mut deletions = Vec::new();
+    for row in deletion_rows {
+        let (deletion_id, deletion_doc, target, mutation_id, deleted_at, deletion, digest) = row.map_err(db)?;
+        match deletion {
+            Some(deletion) => {
+                let exact_keys = deletion.as_object().is_some_and(|object| object.len() == 9
+                    && object.keys().all(|key| matches!(key.as_str(), "version" | "kind" | "tenantId"
+                        | "deletionId" | "docId" | "targetRevisionId" | "targetRevisionHash"
+                        | "mutationId" | "deletedAtMs")));
+                if !exact_keys || hash(&deletion) != digest || deletion["tenantId"] != tenant
+                    || deletion["deletionId"] != deletion_id || deletion["docId"] != doc
+                    || deletion["docId"] != deletion_doc || deletion["targetRevisionId"] != target
+                    || deletion["mutationId"] != mutation_id || deletion["deletedAtMs"] != deleted_at
+                    || deletion["kind"] != "delete" || deletion["version"] != 1 {
+                    errors.push("deletion_authority_mismatch");
+                }
+                deletions.push(deletion);
+            }
+            None => errors.push("deletion_payload_invalid"),
+        }
+    }
+    drop(deletion_stmt);
+    if deletions.len() > 1 { errors.push("deletion_conflict"); }
+    if let Some(deletion) = deletions.first() {
+        if !heads.iter().any(|head| head["revisionId"] == deletion["targetRevisionId"]
+            && head["revisionHash"] == deletion["targetRevisionHash"]) {
+            errors.push("deletion_target_mismatch");
+        }
+        if read_record(conn, tenant, doc)?.is_some() { errors.push("deleted_record_present"); }
+    } else if let Some(record) = read_record(conn, tenant, doc)? {
         if let Some(head) = heads.first() {
             let mut expected = head["record"].clone();
             expected["evidenceVersion"] = json!(1);
@@ -796,6 +909,10 @@ fn verify_record(conn: &Connection, dir: &Path, tenant: &str, doc: &str) -> Resu
         errors.push("current_record_missing");
     }
     Ok(json!({"valid":errors.is_empty(),"errors":errors}))
+}
+
+fn r_to_value(raw: String) -> Option<Value> {
+    serde_json::from_str(&raw).ok()
 }
 
 /// A restore may add history, but cannot replace known provenance or select an older head.
@@ -816,6 +933,7 @@ fn check_attached_evidence(conn: &Connection, tenant: &str, source: &str) -> Res
         ("observation_evidence_revisions", "revision_id"),
         ("observation_evidence_batches", "receipt_id"),
         ("observation_evidence_mutations", "mutation_id"),
+        ("observation_evidence_deletions", "deletion_id"),
         ("observation_evidence_receipts", "receipt_id"),
         ("observation_evidence_exports", "export_id"),
     ] {
@@ -882,15 +1000,28 @@ fn check_attached_evidence(conn: &Connection, tenant: &str, source: &str) -> Res
             }
         }
     }
+    let deletions_exist:bool=conn.query_row(&format!("SELECT EXISTS(SELECT 1 FROM {source}.sqlite_master WHERE type='table' AND name='observation_evidence_deletions')"),[],|r|r.get(0)).map_err(db)?;
+    if deletions_exist {
+        let mut stmt=conn.prepare(&format!("SELECT payload_json,deletion_hash,doc_id,target_revision_id FROM {source}.observation_evidence_deletions WHERE tenant_id=?1")).map_err(db)?;
+        let rows=stmt.query_map(params![tenant],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?))).map_err(db)?;
+        for row in rows {
+            let (raw,digest,doc,target)=row.map_err(db)?;
+            let deletion:Value=serde_json::from_str(&raw).map_err(|_|"observation_deletion_invalid")?;
+            if hash(&deletion)!=digest || deletion["tenantId"]!=tenant || deletion["docId"]!=doc
+                || deletion["targetRevisionId"]!=target || deletion["kind"]!="delete" {
+                return Err("observation_evidence_restore_conflict".into());
+            }
+        }
+    }
     Ok(())
 }
 
 pub(crate) fn observation_merge_guard() -> String {
-    "((json_extract(main.lesson_observations.payload_json,'$.revisionId') IS NULL AND excluded.updated_at_ms>=main.lesson_observations.updated_at_ms) OR
+    "(NOT EXISTS(SELECT 1 FROM main.observation_evidence_deletions d WHERE d.tenant_id=excluded.tenant_id AND d.doc_id=excluded.doc_id) AND ((json_extract(main.lesson_observations.payload_json,'$.revisionId') IS NULL AND excluded.updated_at_ms>=main.lesson_observations.updated_at_ms) OR
       json_extract(excluded.payload_json,'$.revisionHash')=json_extract(main.lesson_observations.payload_json,'$.revisionHash') OR
       EXISTS(WITH RECURSIVE ancestors(id) AS (
         SELECT json_extract(excluded.payload_json,'$.revisionId') UNION
         SELECT p.value FROM ancestors a JOIN observation_evidence_revisions r ON r.tenant_id=excluded.tenant_id AND r.revision_id=a.id
         JOIN json_each(CASE WHEN json_extract(r.payload_json,'$.eventKind')='resolve' THEN json_extract(r.payload_json,'$.parentRevisionIds') ELSE json_array(json_extract(r.payload_json,'$.previousRevisionId')) END) p WHERE p.value IS NOT NULL
-      ) SELECT 1 FROM ancestors WHERE id=json_extract(main.lesson_observations.payload_json,'$.revisionId')))".to_string()
+      ) SELECT 1 FROM ancestors WHERE id=json_extract(main.lesson_observations.payload_json,'$.revisionId'))))".to_string()
 }

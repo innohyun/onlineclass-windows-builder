@@ -9,6 +9,7 @@ mod path_tests;
 #[derive(Debug)]
 struct RestoreMediaPlan {
     record_id: String,
+    owner_uid: Option<String>,
     kind: &'static str,
     staged_path: PathBuf,
     target_path: PathBuf,
@@ -26,6 +27,11 @@ fn media_rows_at_stage(store: &SqliteStore, tenant: &str, table_name: &str, key:
 
 fn check_media_rows(conn: &Connection, tenant: &str, plans: &[RestoreMediaPlan]) -> Result<(), String> {
     for plan in plans {
+        if plan.kind=="teaching_source" {
+            let owner=plan.owner_uid.as_deref().ok_or("teaching_source_restore_owner_required")?;
+            if crate::teaching_source_backup::current_guard(conn,owner,&plan.record_id)?!=plan.expected_current_row{return Err("restore_local_record_changed".into());}
+            continue;
+        }
         let (table_name, key) = if plan.kind == "board_media" { ("board_media_files", "media_id") } else { ("work_note_attachments", "attachment_id") };
         let table = BACKUP_TABLES.iter().find(|table| table.name == table_name).ok_or("restore_media_table_invalid")?;
         let row: Option<String> = conn.query_row(&format!("SELECT json_object({}) FROM {table_name} AS current WHERE tenant_id=?1 AND {key}=?2", row_json_expression(table, "current")), params![tenant, plan.record_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
@@ -82,7 +88,7 @@ fn stage_restore_media(
     allowed_media: Option<&HashSet<String>>,
     allowed_attachments: Option<&HashSet<String>>,
     force: bool,
-) -> Result<(PathBuf, Vec<RestoreMediaPlan>, i64, i64), String> {
+) -> Result<(PathBuf, Vec<RestoreMediaPlan>, i64, i64, i64), String> {
     let backup_id = manifest.get("backupId").and_then(Value::as_str).unwrap_or("backup");
     let staging_root = store
         .data_dir
@@ -158,6 +164,7 @@ fn stage_restore_media(
         plans.push(RestoreMediaPlan {
             expected_current_row: current_media_timestamps.get(&media_id).map(|row| row.1.clone()),
             record_id: media_id,
+            owner_uid: None,
             kind: "board_media",
             staged_path,
             target_path: store.data_dir.join(local_path),
@@ -201,13 +208,47 @@ fn stage_restore_media(
         plans.push(RestoreMediaPlan {
             expected_current_row: current_attachment_timestamps.get(&attachment_id).map(|row| row.1.clone()),
             record_id: attachment_id,
+            owner_uid: None,
             kind: "work_note_attachment",
             staged_path,
             target_path: store.data_dir.join(local_path),
             rollback_path: rollback_dir.join(format!("attachment-{index}")),
         });
     }
-    Ok((staging_root, plans, media_missing, attachment_missing))
+    let db_relative=manifest.get("db").and_then(|value|value.get("relativePath")).and_then(Value::as_str).ok_or("backup_db_required")?;
+    let db_safe=safe_relative_path(db_relative).ok_or("backup_db_path_invalid")?;
+    let db_path=crate::backup_v5::artifact_path(manifest_path,manifest.get("version").and_then(Value::as_i64).unwrap_or(0),&db_safe)?;
+    let backup_conn=Connection::open_with_flags(&db_path,rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e|format!("restore_teaching_source_db_open_failed:{e}"))?;
+    crate::teaching_source_backup::validate_snapshot(&backup_conn,tenant_id)?;
+    let source_rows=crate::teaching_source_backup::file_rows(&backup_conn,"main",tenant_id)?;
+    let records=manifest.get("teachingSources").and_then(|value|value.get("records")).and_then(Value::as_array).cloned().unwrap_or_default();
+    if records.len()!=source_rows.len(){let _=fs::remove_dir_all(&staging_root);return Err("teaching_source_backup_manifest_mismatch".into());}
+    let mut source_missing=0_i64;let mut seen=HashSet::new();
+    for (index,row) in source_rows.iter().enumerate(){
+        let record=records.iter().find(|record|record.get("ownerUid").and_then(Value::as_str)==Some(row.owner_uid.as_str())&&record.get("sourceId").and_then(Value::as_str)==Some(row.source_id.as_str())).ok_or("teaching_source_backup_manifest_mismatch")?;
+        if !seen.insert((row.owner_uid.clone(),row.source_id.clone())){return Err("teaching_source_backup_manifest_mismatch".into());}
+        let local_path=normalize_json_text(record.get("localPath"),600);
+        let size=record.get("size").and_then(Value::as_u64).ok_or("teaching_source_backup_manifest_mismatch")?;
+        let revision=record.get("sourceRevision").and_then(Value::as_i64).ok_or("teaching_source_backup_manifest_mismatch")?;
+        let sha=normalize_json_text(record.get("sha256"),80);
+        let bundle=normalize_json_text(record.get("bundleSha256"),80);
+        crate::teaching_source_backup::validate_manifest_file(row,revision,&local_path,size,&sha,&bundle)?;
+        if !matches!(record.get("status").and_then(Value::as_str),Some("copied"|"skipped")){return Err("teaching_source_backup_artifact_incomplete".into());}
+        let (restore_file,guard)=crate::teaching_source_backup::should_restore_file(store,row)?;
+        if !restore_file{continue;}
+        let relative=normalize_json_text(record.get("backupRelativePath"),600);
+        let safe=safe_relative_path(&relative).ok_or("teaching_source_backup_artifact_path_invalid")?;
+        let source_path=crate::backup_v5::artifact_path(manifest_path,manifest.get("version").and_then(Value::as_i64).unwrap_or(0),&safe)?;
+        crate::onedrive_download::prepare(&source_path)?;
+        if !source_path.is_file(){source_missing+=1;continue;}
+        if sha256_file(&source_path)?!=(row.size,row.sha256.clone()){return Err("teaching_source_backup_artifact_digest_mismatch".into());}
+        let target_path=crate::teaching_source_backup::source_path(store,&row.owner_uid,&row.local_path)?;
+        let staged_path=staged_dir.join(format!("teaching-source-{index}"));
+        if let Some(parent)=staged_path.parent(){fs::create_dir_all(parent).map_err(|e|format!("restore_teaching_source_stage_dir_failed:{e}"))?;}
+        fs::copy(&source_path,&staged_path).map_err(|e|crate::onedrive_download::io_error(&source_path,"restore_teaching_source_stage_failed",&e))?;
+        plans.push(RestoreMediaPlan{record_id:row.source_id.clone(),owner_uid:Some(row.owner_uid.clone()),kind:"teaching_source",staged_path,target_path,rollback_path:rollback_dir.join(format!("teaching-source-{index}")),expected_current_row:guard});
+    }
+    Ok((staging_root, plans, media_missing, attachment_missing, source_missing))
 }
 
 fn restore_with_prebackup<F>(store: &SqliteStore, body: Value, create_safety_backup: F) -> Result<Value, String>
@@ -220,11 +261,14 @@ where
         .map_err(|error| format!("pre_restore_backup_failed:{error}"))?;
     let safety_media = safety_backup.get("media").cloned().unwrap_or_else(|| json!({}));
     let safety_attachments = safety_backup.get("workNoteAttachments").cloned().unwrap_or_else(|| json!({}));
+    let safety_sources = safety_backup.get("teachingSources").cloned().unwrap_or_else(|| json!({}));
     if safety_backup.get("ok").and_then(Value::as_bool) != Some(true)
         || safety_media.get("missing").and_then(Value::as_i64).unwrap_or(0) > 0
         || safety_media.get("failed").and_then(Value::as_i64).unwrap_or(0) > 0
         || safety_attachments.get("missing").and_then(Value::as_i64).unwrap_or(0) > 0
         || safety_attachments.get("failed").and_then(Value::as_i64).unwrap_or(0) > 0
+        || safety_sources.get("missing").and_then(Value::as_i64).unwrap_or(0) > 0
+        || safety_sources.get("failed").and_then(Value::as_i64).unwrap_or(0) > 0
     {
         return Err("pre_restore_backup_failed:safety_backup_incomplete".to_string());
     }
@@ -237,7 +281,7 @@ where
         .and_then(|value| value.as_str())
         .ok_or_else(|| "backup_db_required".to_string())?;
     let db_path = manifest_path.parent().unwrap_or_else(|| Path::new(".")).join(db_relative);
-    let (staging_root, media_plans, media_missing, work_note_attachments_missing) =
+    let (staging_root, media_plans, media_missing, work_note_attachments_missing, teaching_sources_missing) =
         stage_restore_media(
             store,
             &tenant_id,
@@ -256,6 +300,7 @@ where
         let _ = fs::remove_dir_all(&staging_root);
         return Err(format!("restore_db_attach_failed:{error}"));
     }
+    if let Err(error)=crate::teaching_source_backup::validate_restore(&conn,&tenant_id){let _=conn.execute_batch("DETACH DATABASE restore");let _=fs::remove_dir_all(&staging_root);return Err(error);}
     let mut archive_result = json!({});
     let result = (|| -> Result<i64, String> {
         {
@@ -291,9 +336,12 @@ where
                 .collect::<Vec<String>>()
                 .join(", ");
             let merge_guard = restore_merge_guard(table);
+            let source_guard = if table.name == "lesson_observations" {
+                format!(" AND NOT EXISTS (SELECT 1 FROM main.observation_evidence_deletions d WHERE d.tenant_id=restore.{name}.tenant_id AND d.doc_id=restore.{name}.doc_id)", name=table.name)
+            } else { String::new() };
             let sql = format!(
                 "INSERT INTO main.{name} ({columns})
-                 SELECT {columns} FROM restore.{name} WHERE tenant_id = ?1
+                 SELECT {columns} FROM restore.{name} WHERE tenant_id = ?1{source_guard}
                  ON CONFLICT({keys}) DO UPDATE SET {update_set}
                  WHERE {merge_guard}",
                 name = table.name,
@@ -301,12 +349,16 @@ where
                 keys = table.key_columns.join(", "),
                 update_set = update_set,
                 merge_guard = merge_guard,
+                source_guard = source_guard,
             );
             imported += transaction
                 .execute(&sql, params![tenant_id])
                 .map_err(|e| format!("restore_table_merge_failed:{}:{e}", table.name))? as i64;
         }
+        let (teaching_sources_imported,_teaching_sources_retained)=crate::teaching_source_backup::apply(&transaction,&tenant_id)?;
+        imported+=teaching_sources_imported;
         for plan in &media_plans {
+            if plan.kind=="teaching_source"{continue;}
             let local_path = plan
                 .target_path
                 .strip_prefix(&store.data_dir)
@@ -344,6 +396,7 @@ where
     };
     let media_restored = media_plans.iter().filter(|plan| plan.kind == "board_media").count() as i64;
     let work_note_attachments_restored = media_plans.iter().filter(|plan| plan.kind == "work_note_attachment").count() as i64;
+    let teaching_sources_restored = media_plans.iter().filter(|plan| plan.kind == "teaching_source").count() as i64;
     crate::restore_journal::finish(&conn, &store.data_dir, &tenant_id)?;
     Ok(json!({
         "ok": true,
@@ -355,6 +408,8 @@ where
         "mediaMissing": media_missing,
         "workNoteAttachmentsRestored": work_note_attachments_restored,
         "workNoteAttachmentsMissing": work_note_attachments_missing,
+        "teachingSourcesRestored": teaching_sources_restored,
+        "teachingSourcesMissing": teaching_sources_missing,
         "archives": archive_result,
         "safetyBackup": safety_backup
     }))
@@ -758,11 +813,14 @@ pub(super) fn restore_generation(
         .get("workNoteAttachments")
         .cloned()
         .unwrap_or_else(|| json!({}));
+    let safety_sources=safety_backup.get("teachingSources").cloned().unwrap_or_else(||json!({}));
     if safety_backup.get("ok").and_then(Value::as_bool) != Some(true)
         || safety_media.get("missing").and_then(Value::as_i64).unwrap_or(0) > 0
         || safety_media.get("failed").and_then(Value::as_i64).unwrap_or(0) > 0
         || safety_attachments.get("missing").and_then(Value::as_i64).unwrap_or(0) > 0
         || safety_attachments.get("failed").and_then(Value::as_i64).unwrap_or(0) > 0
+        || safety_sources.get("missing").and_then(Value::as_i64).unwrap_or(0) > 0
+        || safety_sources.get("failed").and_then(Value::as_i64).unwrap_or(0) > 0
     {
         return Err("pre_restore_backup_failed:safety_backup_incomplete".to_string());
     }
@@ -778,7 +836,7 @@ pub(super) fn restore_generation(
     // Only selected incoming files participate. In particular, the protective backup
     // above must not enable hydration of historical snapshots or deduplicated objects.
     crate::onedrive_download::with_downloads(|| crate::onedrive_download::prepare(&db_path))?;
-    let (staging_root, media_plans, media_missing, attachment_missing) = crate::onedrive_download::with_downloads(|| stage_restore_media(
+    let (staging_root, media_plans, media_missing, attachment_missing, teaching_sources_missing) = crate::onedrive_download::with_downloads(|| stage_restore_media(
         store,
         tenant_id,
         manifest_path,
@@ -787,7 +845,7 @@ pub(super) fn restore_generation(
         Some(&allowed_attachments),
         true,
     ))?;
-    if media_missing > 0 || attachment_missing > 0 {
+    if media_missing > 0 || attachment_missing > 0 || teaching_sources_missing > 0 {
         let _ = fs::remove_dir_all(&staging_root);
         return Err("backup_sync_artifact_missing".to_string());
     }
@@ -803,6 +861,7 @@ pub(super) fn restore_generation(
         let _ = fs::remove_dir_all(&staging_root);
         return Err(format!("restore_db_attach_failed:{error}"));
     }
+    if let Err(error)=crate::teaching_source_backup::validate_restore(&conn,tenant_id){let _=conn.execute_batch("DETACH DATABASE restore");let _=fs::remove_dir_all(&staging_root);return Err(error);}
     let mut archive_result = json!({});
     let mut retained_observation_projections = 0i64;
     let result = (|| -> Result<(i64, i64, Vec<PathBuf>), String> {
@@ -934,13 +993,17 @@ pub(super) fn restore_generation(
                 } else {
                     String::new()
                 };
+                let source_guard = if table.name == "lesson_observations" {
+                    " AND NOT EXISTS (SELECT 1 FROM main.observation_evidence_deletions d WHERE d.tenant_id=restore.lesson_observations.tenant_id AND d.doc_id=restore.lesson_observations.doc_id)"
+                } else { "" };
                 let sql = format!(
                     "INSERT INTO main.{name} ({columns})
-                     SELECT {columns} FROM restore.{name} WHERE tenant_id = ?1 AND {where_clause}
+                     SELECT {columns} FROM restore.{name} WHERE tenant_id = ?1 AND {where_clause}{source_guard}
                      ON CONFLICT({keys}) DO UPDATE SET {update_set}{merge_guard}",
                     name = table.name,
                     keys = table.key_columns.join(", "),
                     merge_guard = merge_guard,
+                    source_guard = source_guard,
                 );
                 let changed = transaction
                     .execute(&sql, params_from_iter(values))
@@ -955,7 +1018,10 @@ pub(super) fn restore_generation(
             }
             upsert_sync_record(&transaction, tenant_id, record)?;
         }
+        let (teaching_sources_imported,_teaching_sources_retained)=crate::teaching_source_backup::apply(&transaction,tenant_id)?;
+        imported+=teaching_sources_imported;
         for plan in &media_plans {
+            if plan.kind=="teaching_source"{continue;}
             let relative = plan
                 .target_path
                 .strip_prefix(&store.data_dir)
@@ -1631,7 +1697,7 @@ mod tests {
         let path=Path::new(selected["manifestPath"].as_str().unwrap());
         let manifest=read_manifest(path).unwrap();
         let authoritative=authoritative_restore_manifest(path,&manifest,"tenant-a").unwrap();
-        let (staging,plans,_,_)=stage_restore_media(&store,"tenant-a",path,&authoritative,None,None,true).unwrap();
+        let (staging,plans,_,_,_)=stage_restore_media(&store,"tenant-a",path,&authoritative,None,None,true).unwrap();
         assert_eq!(plans.len(),1,"selected synthetic media: {authoritative}");
         write(b"newer-local-content");
         let _access=store.media_access("tenant-a").unwrap();

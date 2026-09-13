@@ -32,6 +32,8 @@ mod work_note_reader;
 mod device_sync_conflicts;
 mod lesson_plan_bindings;
 mod local_workspaces;
+mod teaching_sources;
+mod teaching_source_backup;
 mod password_vault;
 mod password_vault_crypto;
 mod quick_observation;
@@ -63,7 +65,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-09-13.1-observation-sync-prevention";
+pub(crate) const SERVICE_VERSION: &str = "2026-09-13.4-teaching-sources-backup";
 const WORK_MEETING_ROOT_PAGE_ID: &str = "classaimate:work-meeting-minutes";
 const WORK_MEETING_ROOT_TITLE: &str = "업무 회의록";
 const WORK_MEETING_ROOT_INTRO: &str = "모바일에서 확정한 업무 회의록이 자동으로 들어옵니다.";
@@ -154,6 +156,7 @@ const LOCAL_SENSITIVE_STORE_ROUTES: &[&str] = &[
     "/v1/work-notes/reconcile-mobile-meeting-root",
     "/v1/work-notes/reconcile-system-folders",
     "/v1/work-note-attachments",
+    "/v1/teaching-sources",
     "/v1/work-notes/import",
     "/v1/work-notes/export",
     "/v1/work-note-localizations",
@@ -185,7 +188,7 @@ const LOCAL_SENSITIVE_STORE_ROUTES: &[&str] = &[
     "/v1/password-vault/shared/decrypt",
     "/v1/password-vault/shared/recover",
 ];
-const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 25] = [
+const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 27] = [
     "observation_evidence_v1",
     "non_lesson_observations",
     "teacher_local_records",
@@ -206,11 +209,13 @@ const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 25] = [
     "classaimate_mcp_receipt_readback_v1",
     "classaimate_mcp_lesson_snapshot_v1",
     "lesson_observations_mcp_v1",
+    "lesson_observations_delete_v1",
     "classaimate_public_mcp_local_read_v1",
     "teacher_counseling_mcp_drafts_v1",
     "password_vault_personal_v1",
     "password_vault_shared_v1",
     "quick_observation_v1",
+    "teaching_sources_v1",
 ];
 
 #[derive(Clone, Debug, Serialize)]
@@ -2047,6 +2052,7 @@ impl SqliteStore {
         quick_observation::ensure_schema(&conn)?;
         observation_evidence::ensure_schema(&conn, db_path.parent().unwrap_or_else(|| Path::new(".")))?;
         work_note_attachments::ensure_schema(&conn)?;
+        teaching_sources::ensure_schema(&conn)?;
         work_note_localization::ensure_schema(&conn)?;
         lesson_plan_bindings::ensure_schema(&conn)?;
         classaimate_mcp_write_jobs::ensure_schema(&conn)?;
@@ -4811,6 +4817,15 @@ fn json_response(status: u16, payload: Value, origin: &str) -> Response<std::io:
 }
 
 fn request_error_status(error: &str) -> u16 {
+    if matches!(error,
+        "teaching_source_not_found" | "teaching_source_file_missing") { return 404; }
+    if matches!(error,
+        "teaching_source_conflict" | "teaching_source_revision_conflict" |
+        "teaching_source_file_sha_conflict" | "teaching_source_stale") { return 409; }
+    if matches!(error,
+        "teaching_source_file_size_invalid" | "teaching_source_body_too_large") { return 413; }
+    if error=="teaching_source_insufficient_disk_space" { return 507; }
+    if error.starts_with("teaching_source_") && !error.contains("_failed:") { return 400; }
     match error {
         "INVALID_LOCAL_READ_REQUEST" => 400,
         "MCP_LOCAL_RECEIPT_CONFLICT" | "MCP_LOCAL_RECEIPT_UNSUPPORTED" => 409,
@@ -4966,6 +4981,27 @@ fn handle_request(
         }
     }
     match work_note_attachments::handle_http_request(&mut request, &store, &browser_links, &pairing_key, &origin) {
+        Ok(Some(response)) => {
+            let _ = request.respond(response);
+            return;
+        }
+        Ok(None) => {}
+        Err(error) => {
+            let status = request_error_status(&error);
+            let response = json_response(
+                status,
+                json!({
+                    "ok": false,
+                    "error": if status >= 500 { "internal_error" } else { error.as_str() },
+                    "details": error
+                }),
+                &origin,
+            );
+            let _ = request.respond(response);
+            return;
+        }
+    }
+    match teaching_sources::handle_http_request(&mut request, &store, &browser_links, &origin) {
         Ok(Some(response)) => {
             let _ = request.respond(response);
             return;

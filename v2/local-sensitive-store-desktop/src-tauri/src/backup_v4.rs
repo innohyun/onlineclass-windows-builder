@@ -41,6 +41,7 @@ pub(crate) fn write_apply_index(
     sync: Value,
     media: Value,
     work_note_attachments: Value,
+    teaching_sources: Value,
     archives: Value,
     counts: Value,
 ) -> Result<(Value, u64, String), String> {
@@ -52,6 +53,7 @@ pub(crate) fn write_apply_index(
         "sync": sync,
         "media": media,
         "workNoteAttachments": work_note_attachments,
+        "teachingSources": teaching_sources,
         "archives": archives,
         "counts": counts,
     });
@@ -94,6 +96,7 @@ pub(crate) fn projection(manifest_path: &Path, manifest: &Value) -> Result<Value
         "sync": index.get("sync").cloned().unwrap_or(Value::Null),
         "media": index.get("media").cloned().unwrap_or_else(|| json!({})),
         "workNoteAttachments": index.get("workNoteAttachments").cloned().unwrap_or_else(|| json!({})),
+        "teachingSources": index.get("teachingSources").cloned().unwrap_or_else(|| json!({"count":0,"records":[]})),
         "archives": index.get("archives").cloned().unwrap_or_else(|| json!({"count":0,"records":[]})),
         "counts": index.get("counts").cloned().unwrap_or_else(|| json!({})),
     }))
@@ -210,6 +213,7 @@ pub(crate) fn verify_authoritative_index(
     let allow_shared_paths = manifest.get("version").and_then(Value::as_i64) == Some(5);
     verify_mapped_files(&artifacts, &authoritative["media"], allow_shared_paths)?;
     verify_mapped_files(&artifacts, &authoritative["workNoteAttachments"], allow_shared_paths)?;
+    verify_mapped_files(&artifacts, &authoritative["teachingSources"], allow_shared_paths)?;
     if generation.is_some() {
         let sync = authoritative
             .get("sync")

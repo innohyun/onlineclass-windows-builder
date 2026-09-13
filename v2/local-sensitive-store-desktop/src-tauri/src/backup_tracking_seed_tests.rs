@@ -144,7 +144,7 @@ fn tracking_seed_upgrade_covers_actual_legacy_baseline_without_rewriting_existin
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(seed, 2);
+    assert_eq!(seed, SYNC_RECORD_SEED_VERSION);
     drop(conn);
     let state_after = local_sync_state(fixture.store(), "qa-seed").unwrap();
     assert_eq!(
@@ -253,6 +253,7 @@ fn tracking_seed_catalog_changes_require_a_new_seed_version() {
     // rewrite an existing version's mapping and strand already-seeded tenants.
     let expected = match SYNC_RECORD_SEED_VERSION {
         2 => "b239f33a1ee7432a4428076d4637a06d249d0eb8d71d23e72e2c468a8c619337",
+        3 | 4 => "4a961a3154207fcd66f94d020e698d08520a9b5c0a5ca0f296e64bc1872faca9",
         _ => panic!("register the new seed version and its syncable table coverage"),
     };
     assert_eq!(
@@ -270,11 +271,12 @@ fn tracking_seed_marker_failure_rolls_back_backfill_and_dirty_state() {
         .conn
         .lock()
         .unwrap()
-        .execute_batch(
+        .execute_batch(&format!(
             "CREATE TRIGGER synthetic_marker_failure
         BEFORE UPDATE OF seed_version ON local_store_device_sync_state
-        WHEN NEW.seed_version=2 BEGIN SELECT RAISE(ABORT,'synthetic marker failure'); END;",
-        )
+        WHEN NEW.seed_version={} BEGIN SELECT RAISE(ABORT,'synthetic marker failure'); END;",
+            SYNC_RECORD_SEED_VERSION
+        ))
         .unwrap();
     let before = fixture.tracking();
     let state_before = fixture.state();

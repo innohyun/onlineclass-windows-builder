@@ -2,6 +2,15 @@
 
 Windows and macOS Apple Silicon desktop packaging for the loopback SQLite service used by tenant records in `local_sqlite` mode.
 
+## 0.2.86 source release notes
+
+- Adds native-only capability `lesson_observations_delete_v1` for atomic deletion of 1–200 exact observation records after revision CAS validation.
+- Deletes only the current `lesson_observations` projection and writes immutable, content-minimal deletion tombstones so older backups cannot resurrect it. Existing revision evidence and photos remain unchanged.
+- Replays the same mutation without a second delete and ACKs only after exact absence and tombstone readback. The combined native service revision is `2026-09-13.4-teaching-sources-backup`.
+- Adds actor-owned `teaching_sources`, searchable chunk FTS, curriculum links, managed-file SHA verification, and bounded MCP reads without returning local paths or whole source files.
+- Includes actor-owned source metadata, chunks, curriculum links, import runs, and managed originals in the teacher-selected plaintext OneDrive Backup V5. Originals use SHA-256 content objects; restore verifies revision, scope, path, size, and digest before rebuilding FTS.
+- This source version does not publish installers or mutate real teacher data. Public delivery and production verification remain separate release steps.
+
 ## 0.2.81 macOS packaging recovery notes
 
 - Replaces the macOS `0.2.80` image whose app bundle did not have a complete bundle seal. The build now ad-hoc signs the nested MCP sidecar and the whole app, then requires `codesign --verify --deep --strict` before creating the disk image.

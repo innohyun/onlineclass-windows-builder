@@ -7,7 +7,7 @@ mod seed_tests;
 
 // Bump when the backed table/key/column catalog expands; the coverage test pins
 // each seed version so a new table cannot silently inherit a completed old seed.
-const SYNC_RECORD_SEED_VERSION: i64 = 2;
+const SYNC_RECORD_SEED_VERSION: i64 = 4;
 
 pub(crate) fn syncable_tables() -> impl Iterator<Item = &'static BackupTable> {
     BACKUP_TABLES
@@ -120,7 +120,7 @@ pub(crate) fn install_sync_tracking(conn: &Connection) -> Result<(), String> {
             r#"
             CREATE TRIGGER IF NOT EXISTS local_store_sync_{name}_insert
             AFTER INSERT ON {name}
-            WHEN COALESCE((SELECT applying FROM local_store_device_sync_state WHERE tenant_id = NEW.tenant_id), 0) = 0
+            WHEN COALESCE((SELECT applying FROM local_store_device_sync_state WHERE tenant_id = NEW.tenant_id), 0) = 0{insert_exclusion}
             BEGIN
               INSERT INTO local_store_device_sync_state (tenant_id, first_dirty_at_ms, last_dirty_at_ms, change_sequence)
               VALUES (NEW.tenant_id, {timestamp}, {timestamp}, 1)
@@ -145,7 +145,7 @@ pub(crate) fn install_sync_tracking(conn: &Connection) -> Result<(), String> {
             END;
             CREATE TRIGGER IF NOT EXISTS local_store_sync_{name}_update
             AFTER UPDATE ON {name}
-            WHEN ({changed}) AND COALESCE((SELECT applying FROM local_store_device_sync_state WHERE tenant_id = NEW.tenant_id), 0) = 0
+            WHEN ({changed}) AND COALESCE((SELECT applying FROM local_store_device_sync_state WHERE tenant_id = NEW.tenant_id), 0) = 0{insert_exclusion}
             BEGIN
               INSERT INTO local_store_device_sync_state (tenant_id, first_dirty_at_ms, last_dirty_at_ms, change_sequence)
               VALUES (NEW.tenant_id, {timestamp}, {timestamp}, 1)
@@ -170,7 +170,7 @@ pub(crate) fn install_sync_tracking(conn: &Connection) -> Result<(), String> {
             END;
             CREATE TRIGGER IF NOT EXISTS local_store_sync_{name}_delete
             AFTER DELETE ON {name}
-            WHEN COALESCE((SELECT applying FROM local_store_device_sync_state WHERE tenant_id = OLD.tenant_id), 0) = 0
+            WHEN COALESCE((SELECT applying FROM local_store_device_sync_state WHERE tenant_id = OLD.tenant_id), 0) = 0{delete_exclusion}
             BEGIN
               INSERT INTO local_store_device_sync_state (tenant_id, first_dirty_at_ms, last_dirty_at_ms, change_sequence)
               VALUES (OLD.tenant_id, {timestamp}, {timestamp}, 1)
@@ -195,6 +195,8 @@ pub(crate) fn install_sync_tracking(conn: &Connection) -> Result<(), String> {
             END;
             "#,
             name = table.name,
+            insert_exclusion="",
+            delete_exclusion="",
         );
         conn.execute_batch(&trigger_sql)
             .map_err(|e| format!("db_sync_tracking_trigger_failed:{}:{e}", table.name))?;
@@ -444,6 +446,8 @@ pub(super) fn tenant_primary_content_sha256(
             .as_array()
             .ok_or("backup_sync_records_required")?,
     )?;
+    crate::teaching_source_backup::update_content_hasher(&conn, "main", tenant_id, &mut hasher)?;
+    let teaching_source_files = crate::teaching_source_backup::file_rows(&conn, "main", tenant_id)?;
     drop(conn);
     for row in list_media_rows(store, tenant_id)? {
         let path = store.data_dir.join(row.local_path);
@@ -464,6 +468,21 @@ pub(super) fn tenant_primary_content_sha256(
             let (size, sha256) = sha256_file(&path)?;
             hasher.update(b"work-note-attachment\0");
             hasher.update(row.attachment_id.as_bytes());
+            hasher.update([0]);
+            hasher.update(size.to_string().as_bytes());
+            hasher.update([0]);
+            hasher.update(sha256.as_bytes());
+            hasher.update([b'\n']);
+        }
+    }
+    for row in teaching_source_files {
+        let path = crate::teaching_source_backup::source_path(store,&row.owner_uid,&row.local_path)?;
+        if path.is_file() {
+            let (size, sha256) = sha256_file(&path)?;
+            hasher.update(b"teaching-source\0");
+            hasher.update(row.owner_uid.as_bytes());
+            hasher.update([0]);
+            hasher.update(row.source_id.as_bytes());
             hasher.update([0]);
             hasher.update(size.to_string().as_bytes());
             hasher.update([0]);

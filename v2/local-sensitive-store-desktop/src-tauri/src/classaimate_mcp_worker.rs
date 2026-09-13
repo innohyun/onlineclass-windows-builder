@@ -1,6 +1,6 @@
 use crate::{
     classaimate_mcp_observations, classaimate_mcp_write_jobs, device_sync::DeviceSyncManager,
-    local_workspaces, SqliteStore, SERVICE_VERSION,
+    local_workspaces, teaching_sources, SqliteStore, SERVICE_VERSION,
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -29,6 +29,7 @@ const CAPABILITIES: &[&str] = &[
     "classaimate_public_mcp_write_jobs_v1",
     "classaimate_public_mcp_operations_v1",
     "lesson_observations_mcp_v1",
+    "lesson_observations_delete_v1",
     "observation_evidence_v1",
     "classaimate_mcp_native_worker_v1",
     "classaimate_mcp_material_assets_v1",
@@ -36,6 +37,7 @@ const CAPABILITIES: &[&str] = &[
     "classaimate_mcp_receipt_readback_v1",
     "classaimate_mcp_student_drafts_read_v1",
     "classaimate_mcp_student_selection_v1",
+    "classaimate_mcp_teaching_sources_v1",
 ];
 static STARTED: AtomicBool = AtomicBool::new(false);
 static STATE: Mutex<(&str, &str, i64)> = Mutex::new(("waiting_connection", "", 0));
@@ -300,7 +302,7 @@ fn send(socket: &mut WebSocket<MaybeTlsStream<TcpStream>>, frame: Value) -> Resu
         .map_err(|_| "MCP_WORKER_DISCONNECTED".to_string())
 }
 
-fn read_local(store: &SqliteStore, tenant: &str, frame: &Value) -> Result<Value, String> {
+fn read_local(store: &SqliteStore, tenant: &str, owner: &str, frame: &Value) -> Result<Value, String> {
     let input = frame["input"]
         .as_object()
         .ok_or_else(|| "INVALID_LOCAL_READ_REQUEST".to_string())?;
@@ -325,6 +327,21 @@ fn read_local(store: &SqliteStore, tenant: &str, frame: &Value) -> Result<Value,
         };
         if !allowed { return Err("INVALID_LOCAL_READ_REQUEST".into()); }
         return classaimate_mcp_write_jobs::receipt_verification::read_only(store, tenant, &frame["input"]);
+    }
+    if workspace == "teaching_sources" {
+        let allowed: &[&str] = match operation {
+            "matches" => &["lessons", "query", "subjectCode", "sourceTypes", "limit", "offset", "expectedSnapshotDigest"],
+            "chunks" => &["refs", "maxChars"],
+            _ => return Err("INVALID_LOCAL_READ_REQUEST".to_string()),
+        };
+        if input.keys().any(|key| !allowed.contains(&key.as_str())) {
+            return Err("INVALID_LOCAL_READ_REQUEST".to_string());
+        }
+        return if operation == "matches" {
+            teaching_sources::mcp_matches(store, tenant, owner, &frame["input"])
+        } else {
+            teaching_sources::mcp_chunks(store, tenant, owner, &frame["input"])
+        };
     }
     let allowed: &[&str] = match (workspace, operation) {
         ("lesson_observations", "observations_list") => &[
@@ -373,7 +390,7 @@ fn read_local(store: &SqliteStore, tenant: &str, frame: &Value) -> Result<Value,
     }
 }
 
-fn read_frame(store: &SqliteStore, tenant: &str, frame: &Value, now: i64) -> Option<Value> {
+fn read_frame_for_owner(store: &SqliteStore, tenant: &str, owner: &str, frame: &Value, now: i64) -> Option<Value> {
     let request_id = frame["requestId"].as_str()?;
     let deadline = frame["deadlineAt"].as_i64()?;
     if !id(request_id)
@@ -383,13 +400,17 @@ fn read_frame(store: &SqliteStore, tenant: &str, frame: &Value, now: i64) -> Opt
     {
         return None;
     }
-    let response = match read_local(store, tenant, frame) {
+    let response = match read_local(store, tenant, owner, frame) {
         Ok(result) => {
             json!({"type":"local_read_result","requestId":request_id,"status":"ok","result":result})
         }
         Err(error) => {
             let not_found = error == "local_workspace_page_not_found";
-            let code = if not_found { "local_workspace_page_not_found" }
+            let code = if ["teaching_source_stale","teaching_source_file_sha_conflict","teaching_source_file_missing","teaching_source_not_found","teaching_source_path_invalid"].contains(&error.as_str()) {
+                    "MCP_TEACHING_SOURCE_STALE"
+                } else if error=="teaching_source_max_chars_exceeded" {
+                    "MCP_TEACHING_SOURCE_MAX_CHARS_EXCEEDED"
+                } else if not_found { "local_workspace_page_not_found" }
                 else if ["MCP_LOCAL_RECEIPT_CONFLICT", "MCP_LOCAL_RECEIPT_UNSUPPORTED", "MCP_LOCAL_RECEIPT_READ_FAILED", "MCP_STUDENT_DRAFT_READ_FAILED", "INVALID_LOCAL_READ_REQUEST",
                     "MCP_STUDENT_SELECTION_INVALID", "MCP_STUDENT_SELECTION_READ_FAILED", "MCP_STUDENT_SELECTION_TOO_LARGE",
                     "MCP_STUDENT_WORKSPACE_NOT_FOUND", "MCP_STUDENT_WORKSPACE_SCOPE_MISMATCH"].contains(&error.as_str()) {
@@ -406,6 +427,11 @@ fn read_frame(store: &SqliteStore, tenant: &str, frame: &Value, now: i64) -> Opt
             json!({"type":"local_read_result","requestId":request_id,"status":"error","errorCode":"LOCAL_READ_RESULT_TOO_LARGE"}),
         )
     }
+}
+
+#[cfg(test)]
+fn read_frame(store: &SqliteStore, tenant: &str, frame: &Value, now: i64) -> Option<Value> {
+    read_frame_for_owner(store, tenant, tenant, frame, now)
 }
 
 fn renew(
@@ -810,9 +836,10 @@ where
                     {
                         let request_id = request_id.to_string();
                         validate_authority()?;
-                        if let Some(response) = read_frame(
+                        if let Some(response) = read_frame_for_owner(
                             &store,
                             &authority.tenant_id,
+                            &authority.actor_id,
                             &frame,
                             chrono::Utc::now().timestamp_millis(),
                         ) {

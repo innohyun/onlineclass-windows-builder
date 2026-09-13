@@ -133,6 +133,12 @@ pub(crate) fn apply(store: &SqliteStore, input: &Value) -> Result<Value, String>
     if !id(&data["mutationId"]) {
         return Err(invalid());
     }
+    if data["action"] == "delete" {
+        return apply_delete(store, input, tenant, data, &scope, items);
+    }
+    if data.get("action").is_some_and(|action| action != "save") {
+        return Err(invalid());
+    }
     let mutation = data["mutationId"].as_str().unwrap();
     let mut conn = store.conn.lock().map_err(|_| "db_lock_failed")?;
     let tx = conn.transaction().map_err(db)?;
@@ -271,11 +277,102 @@ pub(crate) fn apply(store: &SqliteStore, input: &Value) -> Result<Value, String>
     Ok(json!({"replayed":false,"result":data,"localRef":local_ref}))
 }
 
+fn apply_delete(
+    store: &SqliteStore,
+    input: &Value,
+    tenant: &str,
+    data: &Value,
+    scope: &Value,
+    items: &[Value],
+) -> Result<Value, String> {
+    if data.as_object().is_none_or(|object| {
+        object.len() != 4
+            || object
+                .keys()
+                .any(|key| !matches!(key.as_str(), "action" | "scope" | "items" | "mutationId"))
+    }) {
+        return Err(invalid());
+    }
+    let mutation = data["mutationId"].as_str().ok_or_else(invalid)?;
+    let mut conn = store.conn.lock().map_err(|_| "db_lock_failed")?;
+    let tx = conn.transaction().map_err(db)?;
+    let replay: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM observation_evidence_mutations WHERE tenant_id=?1 AND mutation_id=?2)",
+            params![tenant, mutation],
+            |row| row.get(0),
+        )
+        .map_err(db)?;
+    let mut docs = BTreeSet::new();
+    for item in items {
+        if item.as_object().is_none_or(|object| {
+            object.len() != 4
+                || object.keys().any(|key| {
+                    !matches!(key.as_str(), "action" | "studentCode" | "docId" | "expectedRevisionId")
+                })
+        }) || item["action"] != "delete"
+            || !id(&item["studentCode"])
+            || item["studentCode"].as_str().is_some_and(|student| {
+                student.len() > 80 || student != student.to_uppercase()
+            })
+            || !id(&item["docId"])
+            || !id(&item["expectedRevisionId"])
+            || !docs.insert(item["docId"].as_str().unwrap())
+        {
+            return Err(invalid());
+        }
+        if !replay {
+            let current = read(&tx, tenant, item["docId"].as_str().unwrap())?
+                .ok_or("observation_revision_conflict")?;
+            if !in_scope(&current, scope)
+                || current["studentCode"] != item["studentCode"]
+                || current["revisionId"] != item["expectedRevisionId"]
+            {
+                return Err("observation_revision_conflict".into());
+            }
+        }
+    }
+    let deletions = store.evidence_delete_in_transaction(&tx, tenant, items, mutation, data)?;
+    for deletion in &deletions {
+        if read(&tx, tenant, deletion["docId"].as_str().unwrap_or_default())?.is_some() {
+            return Err("LOCAL_STORE_WRITE_FAILED".into());
+        }
+        let valid: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM observation_evidence_deletions WHERE tenant_id=?1 AND deletion_id=?2 AND deletion_hash=?3)",
+            params![tenant, deletion["deletionId"].as_str(), crate::observation_evidence::hash(deletion)],
+            |row| row.get(0),
+        ).map_err(db)?;
+        if !valid { return Err("LOCAL_STORE_WRITE_FAILED".into()); }
+    }
+    let local_ref = format!("lesson-observations:{mutation}");
+    tx.execute(
+        "INSERT INTO classaimate_mcp_local_write_receipts VALUES(?1,?2,?3,?4,?5,?6,?7)",
+        params![tenant, input["receiptId"].as_str(), "lesson_observations_manage",
+            input["requestSha256"].as_str(), data.to_string(), local_ref, chrono::Utc::now().timestamp_millis()],
+    ).map_err(db)?;
+    tx.commit().map_err(db)?;
+    Ok(json!({"replayed":false,"result":data,"localRef":local_ref}))
+}
+
 pub(crate) fn verify_replay(conn: &Connection, tenant: &str, data: &Value) -> Result<(), String> {
     let raw: String = conn.query_row("SELECT payload_json FROM observation_evidence_mutations WHERE tenant_id=?1 AND mutation_id=?2",params![tenant,data["mutationId"].as_str()],|r|r.get(0)).map_err(db)?;
     let saved: Vec<Value> = serde_json::from_str(&raw).map_err(|_| invalid())?;
     for record in saved {
-        if read(conn, tenant, record["docId"].as_str().unwrap_or_default())? != Some(record) {
+        if data["action"] == "delete" {
+            let stored: Option<(String, String)> = conn.query_row(
+                "SELECT payload_json,deletion_hash FROM observation_evidence_deletions WHERE tenant_id=?1 AND deletion_id=?2",
+                params![tenant, record["deletionId"].as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            ).optional().map_err(db)?;
+            if read(conn, tenant, record["docId"].as_str().unwrap_or_default())?.is_some()
+                || stored.is_none_or(|(payload, digest)| {
+                    serde_json::from_str::<Value>(&payload).ok().as_ref() != Some(&record)
+                        || crate::observation_evidence::hash(&record) != digest
+                })
+            {
+                return Err("LOCAL_STORE_WRITE_FAILED".into());
+            }
+        } else if read(conn, tenant, record["docId"].as_str().unwrap_or_default())? != Some(record) {
             return Err("LOCAL_STORE_WRITE_FAILED".into());
         }
     }
@@ -380,6 +477,58 @@ mod tests {
         assert_eq!(
             crate::classaimate_mcp_write_jobs::apply(&store, &request(stale)).unwrap_err(),
             "observation_revision_conflict"
+        );
+        drop(store);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn mcp_observation_delete_is_atomic_replay_safe_and_minimal() {
+        let root = std::env::temp_dir().join(format!(
+            "classaimate-mcp-observation-delete-{}",
+            crate::random_url_token()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let store = SqliteStore::open(root.join("store.sqlite3")).unwrap();
+        let created = batch();
+        crate::classaimate_mcp_write_jobs::apply(&store, &request(created.clone())).unwrap();
+        let rows = {
+            let conn = store.conn.lock().unwrap();
+            records(&conn, "tenant-a", &created["scope"]).unwrap()
+        };
+        let deletion = json!({"action":"delete","scope":created["scope"],"mutationId":"delete-22","items":rows.iter().map(|record|json!({
+            "action":"delete","studentCode":record["studentCode"],"docId":record["docId"],"expectedRevisionId":record["revisionId"]
+        })).collect::<Vec<_>>()});
+        let mut stale = deletion.clone();
+        stale["mutationId"] = json!("delete-stale");
+        stale["items"][21]["expectedRevisionId"] = json!("stale-revision");
+        assert_eq!(
+            crate::classaimate_mcp_write_jobs::apply(&store, &request(stale)).unwrap_err(),
+            "observation_revision_conflict"
+        );
+        {
+            let conn = store.conn.lock().unwrap();
+            assert_eq!(records(&conn, "tenant-a", &created["scope"]).unwrap().len(), 22);
+            assert_eq!(conn.query_row("SELECT COUNT(*) FROM observation_evidence_deletions", [], |row| row.get::<_,i64>(0)).unwrap(), 0);
+        }
+        crate::classaimate_mcp_write_jobs::apply(&store, &request(deletion.clone())).unwrap();
+        {
+            let conn = store.conn.lock().unwrap();
+            assert!(records(&conn, "tenant-a", &created["scope"]).unwrap().is_empty());
+            assert_eq!(conn.query_row("SELECT COUNT(*) FROM observation_evidence_deletions", [], |row| row.get::<_,i64>(0)).unwrap(), 22);
+            let payload:String=conn.query_row("SELECT payload_json FROM observation_evidence_deletions LIMIT 1",[],|row|row.get(0)).unwrap();
+            assert!(!payload.contains("studentCode"));
+            assert!(!payload.contains("subject"));
+            assert!(!payload.contains("note"));
+            let tombstone:Value=serde_json::from_str(&payload).unwrap();
+            assert_eq!(tombstone.as_object().unwrap().len(), 9);
+        }
+        let detail = store.evidence_detail("tenant-a", "record-1", false).unwrap();
+        assert_eq!(detail["deleted"], true);
+        assert_eq!(detail["verification"]["valid"], true);
+        assert_eq!(
+            crate::classaimate_mcp_write_jobs::apply(&store, &request(deletion)).unwrap()["replayed"],
+            true
         );
         drop(store);
         std::fs::remove_dir_all(root).unwrap();
