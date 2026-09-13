@@ -35,7 +35,7 @@ jobs:
           set -euo pipefail
           test "$(uname -m)" = arm64
           node v2/tools/desktop-release/mac-release-workflow.mjs preflight
-          echo "ONLINECLASS_LOCAL_STORE_DIR=$(mktemp -d "$RUNNER_TEMP/classaimate-macos-store.XXXXXX")" >> "$GITHUB_ENV"
+          echo "ONLINECLASS_LOCAL_STORE_DIR=$(mktemp -d "${TMPDIR:?}/classaimate-macos-store.XXXXXX")" >> "$GITHUB_ENV"
       - name: Install locked frontend dependencies
         working-directory: v2/local-sensitive-store-desktop
         run: npm ci

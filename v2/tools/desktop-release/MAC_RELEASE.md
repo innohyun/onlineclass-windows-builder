@@ -20,7 +20,7 @@ gh workflow run local-sensitive-store-macos-release.yml \
 gh run view <run-id> --repo innohyun/onlineclass-windows-builder
 ```
 
-수동 dispatch만 지원한다. public builder `main`, exact source input, sourceRepo, sourceDirty=false, clean builder HEAD를 검증한다. `macos-15` arm64 runner에서 Node 22와 Rust host를 확인하고, 임시 `ONLINECLASS_LOCAL_STORE_DIR`로 기존 Node packaging gate와 Rust lib tests를 실행한다. native Keychain 상호작용 시험 등 ignored 항목은 통과로 세지 않는다.
+수동 dispatch만 지원한다. public builder `main`, exact source input, sourceRepo, sourceDirty=false, clean builder HEAD를 검증한다. `macos-15` arm64 runner에서 Node 22와 Rust host를 확인하고, OS `TMPDIR` 안의 `mktemp -d`로 만든 `ONLINECLASS_LOCAL_STORE_DIR`에서 기존 Node packaging gate와 Rust lib tests를 실행한다. GitHub `RUNNER_TEMP`는 macOS/Rust의 임시 폴더와 다를 수 있으므로 사용자 DB 접근 방지 guard를 완화하지 않고 시험 경로를 OS 임시 폴더에 맞춘다. 산출물/로그 staging은 계속 `RUNNER_TEMP`를 사용한다. native Keychain 상호작용 시험 등 ignored 항목은 통과로 세지 않는다.
 
 Mac publish가 Windows보다 먼저 도착하면 대기 루프나 자동 재시도 없이 실패한다. Windows 성공과 Mac asset 부재를 읽기 전용 확인한 뒤 같은 exact builder SHA에서 `gh run rerun <run-id> --failed --repo innohyun/onlineclass-windows-builder`로 실패 job을 재실행할 수 있다. publish는 현재 재실행 attempt로 이름을 다시 만들지 않고 성공한 build job의 `artifact_name` output을 사용하므로 원래 검증한 artifact를 받는다. 빌드 artifact는 7일간 남으며 만료 시 새 전체 빌드가 필요하다.
 
