@@ -45,6 +45,6 @@ Windows asset은 이름만 존재해서는 준비 완료가 아니다. Mac publi
 
 ## 웹 다운로드 전달
 
-GitHub 공개 asset의 크기/digest와 직접 재다운로드한 bytes를 비교한다. Windows manifest updater는 기존 Mac 항목을 보존할 뿐 갱신하지 않으므로 Mac DMG mirror와 `platforms.macos` source/builder/version/hash를 공개 receipt에 맞춰 별도로 갱신한다.
+GitHub 공개 asset의 크기/digest와 직접 재다운로드한 bytes를 비교한다. Windows와 Mac 공개가 모두 끝난 뒤 manifest updater를 실행하면 Windows manifest와 Mac 공개 receipt의 source/builder/version/tag를 교차 검증하고, EXE·DMG를 직접 재다운로드해 hash/size를 확인한 다음 두 mirror와 `platforms.windows|macos`를 한 번에 갱신한다. Mac asset이나 receipt가 아직 없으면 통합 manifest를 갱신하지 않는다.
 
 설정/홈 버전 판정·다운로드·튜토리얼의 desktop/mobile Playwright, 관련 회귀와 specs/isolation gate 후 clean `main == origin/main`에서 reviewed V3 Pages-only 배포를 수행한다. 고유/default/`t` 세 origin의 manifest·두 설치기·변경 UI asset SHA-256까지 같아야 웹 전달 완료다. Worker·D1/R2·cron·사용자 DB·기존 revision은 변경하지 않는다.

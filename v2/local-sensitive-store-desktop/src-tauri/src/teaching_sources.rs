@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
-use tiny_http::{Header, Method, Request, ResponseBox};
+use tiny_http::{Method, Request, ResponseBox};
 
 const ROOT_DIR: &str = "teaching-sources";
 const MAX_FILE_BYTES: u64 = 500 * 1024 * 1024;
@@ -705,12 +705,6 @@ pub(crate) fn mcp_chunks(store: &SqliteStore, tenant: &str, owner: &str, input: 
     Ok(json!({"chunks":chunks,"complete":true,"totalChars":total_chars}))
 }
 
-fn headers(response: &mut tiny_http::Response<std::io::Cursor<Vec<u8>>>, origin: &str) {
-    for (name,value) in [("Cache-Control","no-store"),("Access-Control-Allow-Origin",origin),("Access-Control-Allow-Headers","Content-Type, X-OnlineClass-Local-Browser-Token"),("Access-Control-Allow-Methods","GET, POST, PUT, PATCH, OPTIONS"),("Access-Control-Allow-Private-Network","true")] {
-        if let Ok(header)=Header::from_bytes(name.as_bytes(),value.as_bytes()){response.add_header(header);}
-    }
-}
-
 pub(crate) fn handle_http_request(request: &mut Request, store: &SqliteStore, browser_links: &BrowserLinkStore, origin: &str) -> Result<Option<ResponseBox>, String> {
     let url = parse_request_url(request)?;
     let path = url.path().to_string();
@@ -739,9 +733,7 @@ pub(crate) fn handle_http_request(request: &mut Request, store: &SqliteStore, br
             _ => return Ok(Some(json_response(404,json!({"ok":false,"error":"not_found"}),origin).boxed())),
         }
     };
-    let mut response = json_response(200,json!({"ok":true,"data":result}),origin);
-    headers(&mut response,origin);
-    Ok(Some(response.boxed()))
+    Ok(Some(json_response(200,json!({"ok":true,"data":result}),origin).boxed()))
 }
 
 pub(crate) fn resolve_local_path(store: &SqliteStore, relative: &str) -> Result<PathBuf,String> {
@@ -768,5 +760,14 @@ mod tests {
         let folder=actor_folder("teacher@example.test");
         assert_eq!(folder.len(),32);
         assert!(!folder.contains("teacher"));
+    }
+    #[test]
+    fn shared_json_response_emits_one_complete_cors_policy() {
+        let response=json_response(200,json!({"ok":true}),"https://t.classaimate.com");
+        let origins=response.headers().iter().filter(|header|header.field.equiv("Access-Control-Allow-Origin")).collect::<Vec<_>>();
+        assert_eq!(origins.len(),1);
+        assert_eq!(origins[0].value.as_str(),"https://t.classaimate.com");
+        let methods=response.headers().iter().find(|header|header.field.equiv("Access-Control-Allow-Methods")).expect("CORS methods");
+        assert!(methods.value.as_str().split(',').any(|method|method.trim()=="PATCH"));
     }
 }

@@ -65,7 +65,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-09-13.4-teaching-sources-backup";
+pub(crate) const SERVICE_VERSION: &str = "2026-09-14.1-teaching-sources-cors";
 const WORK_MEETING_ROOT_PAGE_ID: &str = "classaimate:work-meeting-minutes";
 const WORK_MEETING_ROOT_TITLE: &str = "업무 회의록";
 const WORK_MEETING_ROOT_INTRO: &str = "모바일에서 확정한 업무 회의록이 자동으로 들어옵니다.";
@@ -4806,7 +4806,7 @@ fn json_response(status: u16, payload: Value, origin: &str) -> Response<std::io:
             "Access-Control-Allow-Headers",
             "Content-Type, Authorization, X-OnlineClass-Local-Store-Key, X-OnlineClass-Local-Browser-Token",
         ),
-        ("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS"),
+        ("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS"),
         ("Access-Control-Allow-Private-Network", "true"),
     ] {
         if let Ok(header) = Header::from_bytes(name.as_bytes(), value.as_bytes()) {

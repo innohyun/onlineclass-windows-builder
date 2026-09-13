@@ -2,6 +2,12 @@
 
 Windows and macOS Apple Silicon desktop packaging for the loopback SQLite service used by tenant records in `local_sqlite` mode.
 
+## 0.2.87 release notes
+
+- Fixes the teaching-source loopback API so every response emits exactly one `Access-Control-Allow-Origin` value. This restores list, registration, metadata update, and reindex requests from `https://t.classaimate.com` without changing the existing browser-token authority.
+- Keeps `PATCH` in the shared CORS preflight policy and reports local connection failures as actionable Korean guidance instead of exposing `local_store_unavailable`.
+- Aligns the teaching-source library with the canonical dark teacher shell, including explicit high-contrast cards, form controls, states, and action buttons. Native service revision: `2026-09-14.1-teaching-sources-cors`.
+
 ## 0.2.86 source release notes
 
 - Adds native-only capability `lesson_observations_delete_v1` for atomic deletion of 1–200 exact observation records after revision CAS validation.
