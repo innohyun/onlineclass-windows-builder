@@ -40,6 +40,7 @@ pub(crate) struct LocalSyncState {
     pub(crate) conflict_unreviewed_count: i64,
     pub(crate) conflict_lifetime_count: i64,
     pub(crate) change_sequence: i64,
+    pub(crate) tracking_repair_sequence: i64,
 }
 
 #[derive(Clone, Debug)]

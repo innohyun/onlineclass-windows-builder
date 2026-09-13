@@ -466,7 +466,7 @@ impl DeviceSyncManager {
             backup::save_pending_publication(&self.store, &session.tenant_id, None)?;
             return Ok(());
         }
-        backup::restore_generation(
+        let applied = backup::restore_generation(
             &self.store,
             &session.tenant_id,
             &manifest_path,
@@ -474,7 +474,13 @@ impl DeviceSyncManager {
             &status,
             recovery_generation.is_some(),
         )?;
-        backup::mark_sync_applied_content(&self.store, &session.tenant_id, &content_sha256)?;
+        // A retained provenance head is not the source projection. Keep the last
+        // known local baseline; normal dirty publication transfers unsent history.
+        // Replacing it with the source root would force endless alternate snapshots.
+        if applied["retainedObservationProjections"].as_i64().unwrap_or(0) == 0
+            && crate::observation_sync_status::status(&self.store, &session.tenant_id)["state"] == "clear" {
+            backup::mark_sync_applied_content(&self.store, &session.tenant_id, &content_sha256)?;
+        }
         if source_device_id != session.device_id {
             let acknowledged = self.post_ack(session, credential, generation, &artifact_root)?;
             backup::remember_ack(&self.store, &session.tenant_id, generation, &session.device_id, &artifact_root)?;
@@ -513,7 +519,8 @@ impl DeviceSyncManager {
         }
         let state = backup::local_sync_state(&self.store, &session.tenant_id)?;
         let now = now_ms();
-        let publish_due = force_publish || backup::pending_publication(&self.store, &session.tenant_id)?.is_some()
+        let publish_due = force_publish || state.tracking_repair_sequence > 0
+            || backup::pending_publication(&self.store, &session.tenant_id)?.is_some()
             || (state.first_dirty_at_ms > 0
                 && (now.saturating_sub(state.last_dirty_at_ms) >= IDLE_PUBLISH_MS
                     || now.saturating_sub(state.first_dirty_at_ms) >= MAX_DIRTY_MS));
@@ -528,7 +535,7 @@ impl DeviceSyncManager {
                         self.apply_checkpoint(&session, &credential, checkpoint)?;
                     }
                     let rebased = backup::local_sync_state(&self.store, &session.tenant_id)?;
-                    if rebased.first_dirty_at_ms > 0 {
+                    if rebased.first_dirty_at_ms > 0 || rebased.tracking_repair_sequence > 0 {
                         self.publish(
                             &session,
                             &credential,
@@ -638,13 +645,14 @@ impl DeviceSyncManager {
             "oneDriveConfigured": backup_status.as_ref().ok().and_then(|value| value.get("configured")).and_then(Value::as_bool).unwrap_or(false),
             "backupError": backup_status.err(),
             "oneDriveEvidence": crate::onedrive_evidence::status(evidence_root.as_deref(), state.latest_generation),
+            "observationEvidence": crate::observation_sync_status::status(&self.store, &session.tenant_id),
             "syncPhase": phase,
             "recoveryRequired": recovery_required,
             "appliedGeneration": state.applied_generation,
             "publishedGeneration": state.published_generation,
             "latestGeneration": state.latest_generation,
             "latestStatus": state.latest_status,
-            "hasUnsyncedChanges": state.first_dirty_at_ms > 0,
+            "hasUnsyncedChanges": state.first_dirty_at_ms > 0 || state.tracking_repair_sequence > 0,
             "firstDirtyAtMs": state.first_dirty_at_ms,
             "lastDirtyAtMs": state.last_dirty_at_ms,
             "lastCheckedAtMs": state.last_checked_at_ms,
@@ -784,9 +792,9 @@ impl DeviceSyncManager {
                     backup::highest_local_generation(&manager.store, &session.tenant_id)
                         .map(|generation| generation > state.applied_generation)
                         .unwrap_or(false);
-                let publish_due = state.first_dirty_at_ms > 0
+                let publish_due = state.tracking_repair_sequence > 0 || (state.first_dirty_at_ms > 0
                     && (current.saturating_sub(state.last_dirty_at_ms) >= IDLE_PUBLISH_MS
-                        || current.saturating_sub(state.first_dirty_at_ms) >= MAX_DIRTY_MS);
+                        || current.saturating_sub(state.first_dirty_at_ms) >= MAX_DIRTY_MS));
                 let safety_due = state.last_checked_at_ms == 0
                     || current.saturating_sub(state.last_checked_at_ms) >= SAFETY_CHECK_MS;
                 if resumed || safety_due { let _ = manager.reconcile_observation_receipts(); }

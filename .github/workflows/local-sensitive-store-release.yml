@@ -256,7 +256,7 @@ jobs:
           $currentLaunch = Start-GuiShortcut $shortcut.File.FullName $shortcut.Target
           $desktopProcess = $currentLaunch.Process
           $installedTarget = $currentLaunch.Path
-          Wait-LocalServiceVersion '2026-09-12.1-local-sync-safety'
+          Wait-LocalServiceVersion '2026-09-13.1-observation-sync-prevention'
           if ($quickShortcut.Target -and ([IO.Path]::GetFullPath($quickShortcut.Target) -ine [IO.Path]::GetFullPath($installedTarget))) { throw "Quick observation shortcut resolves to an unexpected GUI executable." }
           $backgroundProcessId = $desktopProcess.Id
           for ($cycle = 1; $cycle -le 10; $cycle++) {
@@ -294,42 +294,6 @@ jobs:
         working-directory: .
         env:
           GH_TOKEN: ${{ github.token }}
-          BUILDER_REPO: ${{ github.repository }}
+          SOURCE_COMMIT_INPUT: ${{ inputs.source_commit }}
           RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
-        run: |
-          $repoRoot = (Resolve-Path .).Path
-          $source = Get-Content "builder-source.json" -Raw | ConvertFrom-Json
-          $packageJson = Get-Content "v2/local-sensitive-store-desktop/package.json" -Raw | ConvertFrom-Json
-          $releaseTag = $env:RELEASE_TAG_INPUT
-          if (-not $releaseTag) { $releaseTag = "local-sensitive-store-v$($packageJson.version)" }
-          $asset = Get-ChildItem -Path "v2/local-sensitive-store-desktop/src-tauri/target/release/bundle/nsis" -Filter "*.exe" -Recurse | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-          if (-not $asset) { throw "NSIS installer not found." }
-          $fileName = "OnlineClass-Local-Sensitive-Store-Setup.exe"
-          $stagedAsset = Join-Path $env:RUNNER_TEMP $fileName
-          Copy-Item $asset.FullName $stagedAsset -Force
-          $hash = (Get-FileHash -Algorithm SHA256 $stagedAsset).Hash.ToLowerInvariant()
-          $builderCommit = (git -C $repoRoot rev-parse HEAD).Trim()
-          $downloadUrl = "https://github.com/$($env:BUILDER_REPO)/releases/download/$releaseTag/$fileName"
-          $manifest = [ordered]@{
-            name = "ClassAiMate 교사 데스크"
-            version = [string]$packageJson.version
-            platform = "windows"
-            fileName = $fileName
-            downloadUrl = $downloadUrl
-            status = "available"
-            available = $true
-            sha256 = $hash
-            releasedAt = (Get-Date).ToUniversalTime().ToString("o")
-            sourceRepo = [string]$source.sourceRepo
-            sourceCommit = [string]$source.sourceCommit
-            builderRepo = [string]$env:BUILDER_REPO
-            builderCommit = $builderCommit
-            releaseTag = $releaseTag
-          }
-          $manifestPath = Join-Path $env:RUNNER_TEMP "local-sensitive-store-latest.json"
-          $manifest | ConvertTo-Json -Depth 8 | Set-Content -Path $manifestPath -Encoding UTF8
-          gh release view $releaseTag *> $null
-          if ($LASTEXITCODE -ne 0) {
-            gh release create $releaseTag --target $builderCommit --title "ClassAiMate 교사 데스크 $($packageJson.version)" --notes "ClassAiMate 교사 데스크 Windows 설치본입니다. 원본 커밋: $($source.sourceCommit)"
-          }
-          gh release upload $releaseTag $stagedAsset $manifestPath --clobber
+        run: node v2/tools/desktop-release/windows-release-publish.mjs

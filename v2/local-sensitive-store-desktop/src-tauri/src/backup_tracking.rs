@@ -1,6 +1,14 @@
 use super::*;
 use rusqlite::OptionalExtension;
 
+#[cfg(test)]
+#[path = "backup_tracking_seed_tests.rs"]
+mod seed_tests;
+
+// Bump when the backed table/key/column catalog expands; the coverage test pins
+// each seed version so a new table cannot silently inherit a completed old seed.
+const SYNC_RECORD_SEED_VERSION: i64 = 2;
+
 pub(crate) fn syncable_tables() -> impl Iterator<Item = &'static BackupTable> {
     BACKUP_TABLES
         .iter()
@@ -70,7 +78,11 @@ pub(crate) fn install_sync_tracking(conn: &Connection) -> Result<(), String> {
     )
     .map_err(|e| format!("db_sync_tracking_schema_failed:{e}"))?;
 
-    for column in ["change_sequence", "seed_version"] {
+    for column in [
+        "change_sequence",
+        "seed_version",
+        "tracking_repair_sequence",
+    ] {
         let present = conn
             .prepare("PRAGMA table_info(local_store_device_sync_state)")
             .map_err(|e| format!("db_sync_columns_failed:{e}"))?
@@ -193,69 +205,88 @@ pub(crate) fn install_sync_tracking(conn: &Connection) -> Result<(), String> {
 }
 
 pub(crate) fn seed_sync_records(store: &SqliteStore, tenant_id: &str) -> Result<(), String> {
-    let conn = store
+    let mut conn = store
         .conn
         .lock()
         .map_err(|_| "db_lock_failed".to_string())?;
-    let seeded = conn
-        .query_row(
-            "SELECT seed_version FROM local_store_device_sync_state WHERE tenant_id=?1",
+    let read_seed = |conn: &Connection| {
+        conn.query_row(
+            "SELECT seed_version, applying FROM local_store_device_sync_state WHERE tenant_id=?1",
             params![tenant_id],
-            |row| row.get::<_, i64>(0),
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
         )
         .optional()
-        .map_err(|e| format!("db_sync_seed_version_failed:{e}"))?
-        .unwrap_or(0);
-    if seeded == 1 {
+        .map(|state| state.unwrap_or((0, 0)))
+        .map_err(|e| format!("db_sync_seed_version_failed:{e}"))
+    };
+    // Completed status reads must not acquire a write transaction or mutate rows.
+    if read_seed(&conn)?.0 >= SYNC_RECORD_SEED_VERSION {
         return Ok(());
+    }
+    let transaction = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| format!("db_sync_seed_begin_failed:{e}"))?;
+    let (seeded, applying) = read_seed(&transaction)?;
+    if seeded >= SYNC_RECORD_SEED_VERSION {
+        return Ok(());
+    }
+    if applying != 0 {
+        return Err("db_sync_seed_applying".into());
     }
     let timestamp = now_ms();
     let mut inserted = 0i64;
     for table in syncable_tables() {
-        if !table_exists(&conn, table.name)? {
+        if !table_exists(&transaction, table.name)? {
             continue;
         }
         let key = record_key_expression(table.name, table);
         let sql = format!(
-            "INSERT OR IGNORE INTO local_store_device_sync_records (
+            "INSERT INTO local_store_device_sync_records (
                tenant_id, table_name, record_key, dirty_base_generation,
                record_version, changed_generation, tombstone, changed_at_ms
              )
              SELECT tenant_id, '{name}', {key},
                COALESCE((SELECT applied_generation FROM local_store_device_sync_state WHERE tenant_id = ?1), 0),
                1, 0, 0, ?2
-             FROM {name} WHERE tenant_id = ?1",
+             FROM {name} WHERE tenant_id = ?1
+             ON CONFLICT(tenant_id, table_name, record_key) DO NOTHING",
             name = table.name,
         );
-        inserted += conn
+        inserted += transaction
             .execute(&sql, params![tenant_id, timestamp])
             .map_err(|e| format!("db_sync_tracking_seed_failed:{}:{e}", table.name))?
             as i64;
     }
     if inserted > 0 {
-        conn.execute(
-            "INSERT INTO local_store_device_sync_state (tenant_id, first_dirty_at_ms, last_dirty_at_ms)
-             VALUES (?1, ?2, ?2)
+        transaction.execute(
+            "INSERT INTO local_store_device_sync_state (
+               tenant_id, first_dirty_at_ms, last_dirty_at_ms, change_sequence, tracking_repair_sequence)
+             VALUES (?1, ?2, ?2, 1, 1)
              ON CONFLICT(tenant_id) DO UPDATE SET
                first_dirty_at_ms = COALESCE(first_dirty_at_ms, ?2),
                last_dirty_at_ms = ?2,
-               change_sequence = change_sequence + 1",
+               change_sequence = change_sequence + 1,
+               tracking_repair_sequence = change_sequence + 1",
             params![tenant_id, timestamp],
         )
         .map_err(|e| format!("db_sync_tracking_seed_state_failed:{e}"))?;
     } else {
-        conn.execute(
-            "INSERT OR IGNORE INTO local_store_device_sync_state (tenant_id) VALUES (?1)",
-            params![tenant_id],
-        )
-        .map_err(|e| format!("db_sync_tracking_state_failed:{e}"))?;
+        transaction
+            .execute(
+                "INSERT OR IGNORE INTO local_store_device_sync_state (tenant_id) VALUES (?1)",
+                params![tenant_id],
+            )
+            .map_err(|e| format!("db_sync_tracking_state_failed:{e}"))?;
     }
-    conn.execute(
-        "UPDATE local_store_device_sync_state SET seed_version=1 WHERE tenant_id=?1",
-        params![tenant_id],
-    )
-    .map_err(|e| format!("db_sync_seed_version_failed:{e}"))?;
-    Ok(())
+    transaction
+        .execute(
+            "UPDATE local_store_device_sync_state SET seed_version=?2 WHERE tenant_id=?1",
+            params![tenant_id, SYNC_RECORD_SEED_VERSION],
+        )
+        .map_err(|e| format!("db_sync_seed_version_failed:{e}"))?;
+    transaction
+        .commit()
+        .map_err(|e| format!("db_sync_seed_commit_failed:{e}"))
 }
 
 pub(super) fn sync_manifest(
@@ -313,7 +344,7 @@ pub(crate) fn local_sync_state(
                 (SELECT COUNT(*) FROM local_store_device_sync_conflicts c WHERE c.tenant_id = s.tenant_id),
                 (SELECT COUNT(*) FROM local_store_device_sync_conflicts c WHERE c.tenant_id = s.tenant_id AND c.reviewed_at_ms IS NULL),
                 COALESCE((SELECT lifetime_count FROM local_store_device_sync_conflict_stats c WHERE c.tenant_id = s.tenant_id), 0),
-                change_sequence
+                change_sequence, tracking_repair_sequence
          FROM local_store_device_sync_state s WHERE tenant_id = ?1",
         params![tenant_id],
         |row| Ok(LocalSyncState {
@@ -331,6 +362,7 @@ pub(crate) fn local_sync_state(
             conflict_unreviewed_count: row.get(11)?,
             conflict_lifetime_count: row.get(12)?,
             change_sequence: row.get(13)?,
+            tracking_repair_sequence: row.get(14)?,
         }),
     )
     .optional().map(|state| state.unwrap_or_default())
@@ -534,6 +566,8 @@ pub(crate) fn mark_sync_published(
            latest_generation = MAX(latest_generation, excluded.latest_generation),
            latest_status = excluded.latest_status,
            last_content_sha256 = CASE WHEN excluded.last_content_sha256 = '' THEN last_content_sha256 ELSE excluded.last_content_sha256 END,
+           tracking_repair_sequence = CASE WHEN tracking_repair_sequence > 0 AND ?7 >= tracking_repair_sequence
+             THEN 0 ELSE tracking_repair_sequence END,
            first_dirty_at_ms = CASE WHEN ?6 = 0 AND change_sequence = ?7 THEN NULL ELSE first_dirty_at_ms END,
            last_dirty_at_ms = CASE WHEN ?6 = 0 AND change_sequence = ?7 THEN NULL ELSE last_dirty_at_ms END,
            last_success_at_ms = excluded.last_success_at_ms,
@@ -577,14 +611,14 @@ pub(crate) fn mark_sync_unchanged(
     let transaction = conn
         .unchecked_transaction()
         .map_err(|e| format!("db_sync_unchanged_transaction_failed:{e}"))?;
-    let sequence: i64 = transaction
+    let (sequence, repair_sequence): (i64, i64) = transaction
         .query_row(
-            "SELECT change_sequence FROM local_store_device_sync_state WHERE tenant_id=?1",
+            "SELECT change_sequence, tracking_repair_sequence FROM local_store_device_sync_state WHERE tenant_id=?1",
             params![tenant_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .map_err(|e| format!("db_sync_sequence_failed:{e}"))?;
-    if sequence != captured_sequence {
+    if sequence != captured_sequence || repair_sequence > 0 {
         return Ok(());
     }
     transaction

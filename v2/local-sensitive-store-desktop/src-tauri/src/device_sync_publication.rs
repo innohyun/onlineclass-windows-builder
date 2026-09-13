@@ -10,11 +10,15 @@ impl DeviceSyncManager {
         snapshot_version: i64,
     ) -> Result<(), String> {
         self.store.restore_ready(&session.tenant_id)?;
+        backup::seed_sync_records(&self.store, &session.tenant_id)?;
+        let repair_sequence = backup::local_sync_state(&self.store, &session.tenant_id)?.tracking_repair_sequence;
         let pending = backup::pending_publication(&self.store, &session.tenant_id)?;
         let tenant_dir = backup::configured_tenant_dir(&self.store, &session.tenant_id)?;
         let reusable = pending.as_ref().filter(|pending| {
             pending.get("deviceId").and_then(Value::as_str) == Some(session.device_id.as_str())
                 && pending.get("baseGeneration").and_then(Value::as_i64) == Some(base_generation)
+                && (repair_sequence == 0 || pending.pointer("/snapshot/capturedSequence")
+                    .and_then(Value::as_i64).is_some_and(|sequence| sequence >= repair_sequence))
                 && pending
                     .pointer("/snapshot/snapshotVersion")
                     .and_then(Value::as_i64)
@@ -49,7 +53,8 @@ impl DeviceSyncManager {
             backup::seed_sync_records(&self.store, &session.tenant_id)?;
             let state = backup::local_sync_state(&self.store, &session.tenant_id)?;
             let content = backup::tenant_content_sha256(&self.store, &session.tenant_id)?;
-            if !state.last_content_sha256.is_empty() && state.last_content_sha256 == content {
+            if state.tracking_repair_sequence == 0
+                && !state.last_content_sha256.is_empty() && state.last_content_sha256 == content {
                 backup::mark_sync_unchanged(
                     &self.store,
                     &session.tenant_id,

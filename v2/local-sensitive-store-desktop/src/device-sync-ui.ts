@@ -21,6 +21,10 @@ export type DeviceSyncStatus = {
   waitingForOneDrive?: boolean;
   syncPhase?: string;
   recoveryRequired?: boolean;
+  observationEvidence?: {
+    state: "unknown" | "clear" | "conflict";
+    conflictedRecordCount: number | null;
+  };
   oneDriveEvidence?: {
     state: "unknown" | "pending" | "in_sync" | "error" | "unsupported";
     checkedAtMs: number;
@@ -76,9 +80,18 @@ function formatDateTime(ms?: number) {
 
 function verificationLabel(status: DeviceSyncStatus) {
   if (!Number(status.latestGeneration || 0)) return "초기 상태";
-  if (status.latestStatus === "verified") return "다른 기기 확인됨";
+  if (status.latestStatus === "verified") return "다른 기기 전달 확인됨";
   if (status.latestStatus === "announced") return "검증 대기";
   return status.latestStatus || "확인 중";
+}
+
+function observationBranchCount(status: DeviceSyncStatus): number | null {
+  const evidence = status.observationEvidence;
+  const count = evidence?.conflictedRecordCount;
+  if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) return null;
+  if (evidence?.state === "clear" && count === 0) return 0;
+  if (evidence?.state === "conflict" && count > 0) return count;
+  return null;
 }
 
 function oneDriveDownloadFailureMessage(value: string) {
@@ -119,6 +132,8 @@ export function deviceSyncErrorMessage(error?: string, recoveryRequired?: boolea
   if (value.includes("restore_recovery_required") && recoveryRequired === false) return "이전 동기화 시도에서 복원 파일을 확인하지 못했습니다. 현재 미완료 복구 작업은 없습니다. 지금 동기화로 다시 확인할 수 있습니다.";
   if (value.includes("restore_recovery_required")) return "중단된 복원을 안전하게 마치지 못했습니다. 원본과 복구 파일을 보존하고 이 학급의 변경·동기화를 중단했습니다. 파일을 삭제하거나 복원을 반복하지 말고 복구 상태를 확인해 주세요.";
   if (value === "lesson_plan_binding_revision_conflict") return "같은 수업 연결 버전의 값이 달라 충돌 자료를 보관하고 세대 적용·기기 확인을 중단했습니다. 웹에서 최신 수업 연결을 확인해 주세요.";
+  if (/^observation_evidence_restore_(invalid|conflict)(?::|$)/u.test(value)) return "관찰 기록과 증빙 원장의 정합성을 확인하지 못해 백업 게시 또는 수신 적용을 중단했습니다. 원문과 기존 백업은 유지됩니다. 반복 복원이나 원장 삭제 없이 누락·불일치를 확인해야 합니다.";
+  if (value.startsWith("backup_sync_tracking_incomplete:")) return "자료 일부가 동기화 목록에 포함되지 않아 새 백업 게시를 중단했습니다. 기존 자료와 백업은 유지됩니다. 동기화 목록 보강 상태를 확인해야 합니다.";
   if (isOneDriveDownloadPending(value)) return ONE_DRIVE_DOWNLOAD_PENDING_MESSAGE;
   const downloadFailure = oneDriveDownloadFailureMessage(value);
   if (downloadFailure) return downloadFailure;
@@ -192,6 +207,11 @@ export function renderDeviceSyncStatus(status: DeviceSyncStatus | null) {
   } else if (status.waitingForOneDrive) {
     setBadge("OneDrive 다운로드 대기", "warning");
     setText("deviceSyncStatus", ONE_DRIVE_DOWNLOAD_PENDING_MESSAGE);
+  } else if ((observationBranchCount(status) ?? 0) > 0) {
+    setBadge(`관찰 이력 분기 ${observationBranchCount(status)}건`, "warning");
+    const delivery = status.latestStatus === "verified" ? "다른 기기의 보관본 전달·적용은 확인되었습니다."
+      : status.latestStatus === "announced" ? "다른 기기의 전달·적용 확인을 대기 중입니다." : "기기 전달 상태는 별도로 확인합니다.";
+    setText("deviceSyncStatus", `${delivery} 이 확인은 현재 기록 내용의 일치를 뜻하지 않습니다. 관찰 이력이 여러 갈래여서 양쪽 이력을 보존하고 있습니다. 관찰 상세에서 확인할 수 있으며 자동으로 한쪽을 선택하지 않습니다.${status.hasUnsyncedChanges ? " 최근 변경 내용은 게시 대기 중입니다." : ""}`);
   } else if (status.hasUnsyncedChanges) {
     setBadge("변경 내용 대기", "warning");
     setText("deviceSyncStatus", "이 PC의 최근 변경 내용을 잠시 모은 뒤 자동으로 새 세대에 반영합니다.");
@@ -204,11 +224,15 @@ export function renderDeviceSyncStatus(status: DeviceSyncStatus | null) {
       : evidence?.state === "error" ? "OneDrive 파일 상태를 확인하지 못했습니다."
       : "OneDrive 업로드 완료 여부는 아직 확인되지 않았습니다.";
     setText("deviceSyncStatus", `로컬 보관본 생성과 서버 세대 게시가 완료되었습니다. ${detail} 다른 기기가 검증·적용 후 확인하면 검증 완료로 바뀝니다.`);
+  } else if (observationBranchCount(status) === null) {
+    setBadge("관찰 분기 확인 필요", "warning");
+    setText("deviceSyncStatus", "이 PC의 관찰 이력 분기 상태를 확인하지 못했습니다. 구버전 앱의 필드 누락이나 자료 확인 오류를 분기 없음으로 처리하지 않습니다. 기기 전달 확인과 현재 기록 내용의 일치 여부는 별도입니다.");
   } else {
     setBadge("최신 상태", "ok");
-    setText("deviceSyncStatus", status.lastSuccessAtMs
+    const delivery = status.lastSuccessAtMs
       ? `${formatDateTime(status.lastSuccessAtMs)}에 자료와 보관본의 최신 상태를 확인했습니다. 충돌 건수는 누적 보관 기록입니다.`
-      : "이 PC는 확인된 최신 세대까지 반영했습니다. 서버의 다른 기기 확인과 OneDrive 파일 전달 상태는 별도로 판단합니다. 충돌 건수는 누적 보관 기록입니다.");
+      : "이 PC는 확인된 최신 세대까지 반영했습니다. 서버의 다른 기기 확인과 OneDrive 파일 전달 상태는 별도로 판단합니다. 충돌 건수는 누적 보관 기록입니다.";
+    setText("deviceSyncStatus", `${delivery} 이 PC의 관찰 분기 집계는 0건이며, 증빙 검증과 다른 기기의 현재 내용 일치는 별도입니다.`);
   }
   updateActionState();
 }

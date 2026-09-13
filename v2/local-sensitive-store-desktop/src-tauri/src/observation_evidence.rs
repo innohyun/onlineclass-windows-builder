@@ -800,6 +800,18 @@ fn verify_record(conn: &Connection, dir: &Path, tenant: &str, doc: &str) -> Resu
 
 /// A restore may add history, but cannot replace known provenance or select an older head.
 pub(crate) fn check_restore(conn: &Connection, tenant: &str) -> Result<(), String> {
+    check_attached_evidence(conn, tenant, "restore")
+}
+
+// Run the same provenance validation before sealing a captured backup, not only
+// after another device has downloaded it. Neither path repairs source records.
+pub(crate) fn check_captured_backup(conn: &Connection, tenant: &str) -> Result<(), String> {
+    check_attached_evidence(conn, tenant, "backup")
+}
+
+fn check_attached_evidence(conn: &Connection, tenant: &str, source: &str) -> Result<(), String> {
+    // The schema name is internal, never supplied by a request or a manifest.
+    debug_assert!(matches!(source, "restore" | "backup"));
     for (table, key) in [
         ("observation_evidence_revisions", "revision_id"),
         ("observation_evidence_batches", "receipt_id"),
@@ -809,7 +821,7 @@ pub(crate) fn check_restore(conn: &Connection, tenant: &str) -> Result<(), Strin
     ] {
         let exists: bool = conn
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM restore.sqlite_master WHERE type='table' AND name=?1)",
+                &format!("SELECT EXISTS(SELECT 1 FROM {source}.sqlite_master WHERE type='table' AND name=?1)"),
                 params![table],
                 |r| r.get(0),
             )
@@ -817,7 +829,7 @@ pub(crate) fn check_restore(conn: &Connection, tenant: &str) -> Result<(), Strin
         if !exists {
             continue;
         }
-        let sql=format!("SELECT EXISTS(SELECT 1 FROM main.{table} m JOIN restore.{table} r ON r.tenant_id=m.tenant_id AND r.{key}=m.{key} WHERE m.tenant_id=?1 AND m.payload_json<>r.payload_json)");
+        let sql=format!("SELECT EXISTS(SELECT 1 FROM main.{table} m JOIN {source}.{table} r ON r.tenant_id=m.tenant_id AND r.{key}=m.{key} WHERE m.tenant_id=?1 AND m.payload_json<>r.payload_json)");
         if conn
             .query_row(&sql, params![tenant], |r| r.get::<_, bool>(0))
             .map_err(db)?
@@ -825,9 +837,13 @@ pub(crate) fn check_restore(conn: &Connection, tenant: &str) -> Result<(), Strin
             return Err("observation_evidence_restore_conflict".into());
         }
     }
-    let exists:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM restore.sqlite_master WHERE type='table' AND name='observation_evidence_revisions')",[],|r|r.get(0)).map_err(db)?;
+    let exists:bool=conn.query_row(&format!("SELECT EXISTS(SELECT 1 FROM {source}.sqlite_master WHERE type='table' AND name='observation_evidence_revisions')"),[],|r|r.get(0)).map_err(db)?;
+    if !exists {
+        let evidence:bool=conn.query_row(&format!("SELECT EXISTS(SELECT 1 FROM {source}.lesson_observations WHERE tenant_id=?1 AND json_extract(payload_json,'$.evidenceVersion')=1)"),params![tenant],|r|r.get(0)).map_err(db)?;
+        if evidence { return Err("observation_evidence_restore_invalid".into()); }
+    }
     if exists {
-        let mut stmt=conn.prepare("SELECT payload_json,revision_hash FROM restore.observation_evidence_revisions WHERE tenant_id=?1").map_err(db)?;
+        let mut stmt=conn.prepare(&format!("SELECT payload_json,revision_hash FROM {source}.observation_evidence_revisions WHERE tenant_id=?1")).map_err(db)?;
         let rows = stmt
             .query_map(params![tenant], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
@@ -841,18 +857,18 @@ pub(crate) fn check_restore(conn: &Connection, tenant: &str) -> Result<(), Strin
                 return Err("observation_evidence_restore_conflict".into());
             }
         }
-        let conflict:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM main.observation_evidence_revisions m JOIN restore.observation_evidence_revisions r ON r.tenant_id=m.tenant_id AND r.revision_id=m.revision_id WHERE m.tenant_id=?1 AND (m.payload_json<>r.payload_json OR m.revision_hash<>r.revision_hash))",params![tenant],|r|r.get(0)).map_err(db)?;
+        let conflict:bool=conn.query_row(&format!("SELECT EXISTS(SELECT 1 FROM main.observation_evidence_revisions m JOIN {source}.observation_evidence_revisions r ON r.tenant_id=m.tenant_id AND r.revision_id=m.revision_id WHERE m.tenant_id=?1 AND (m.payload_json<>r.payload_json OR m.revision_hash<>r.revision_hash))"),params![tenant],|r|r.get(0)).map_err(db)?;
         if conflict {
             return Err("observation_evidence_restore_conflict".into());
         }
-        let mut statement=conn.prepare("SELECT payload_json FROM restore.lesson_observations WHERE tenant_id=?1 AND json_extract(payload_json,'$.evidenceVersion')=1").map_err(db)?;
+        let mut statement=conn.prepare(&format!("SELECT payload_json FROM {source}.lesson_observations WHERE tenant_id=?1 AND json_extract(payload_json,'$.evidenceVersion')=1")).map_err(db)?;
         let rows = statement
             .query_map(params![tenant], |r| r.get::<_, String>(0))
             .map_err(db)?;
         for raw in rows {
             let mut record: Value = serde_json::from_str(&raw.map_err(db)?)
                 .map_err(|_| "observation_evidence_restore_invalid")?;
-            let revision=conn.query_row("SELECT payload_json,revision_hash FROM restore.observation_evidence_revisions WHERE tenant_id=?1 AND revision_id=?2",params![tenant,record["revisionId"].as_str().unwrap_or_default()],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional().map_err(db)?.ok_or("observation_evidence_restore_invalid")?;
+            let revision=conn.query_row(&format!("SELECT payload_json,revision_hash FROM {source}.observation_evidence_revisions WHERE tenant_id=?1 AND revision_id=?2"),params![tenant,record["revisionId"].as_str().unwrap_or_default()],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional().map_err(db)?.ok_or("observation_evidence_restore_invalid")?;
             let envelope: Value = serde_json::from_str(&revision.0)
                 .map_err(|_| "observation_evidence_restore_invalid")?;
             if record["revisionHash"] != revision.1 {

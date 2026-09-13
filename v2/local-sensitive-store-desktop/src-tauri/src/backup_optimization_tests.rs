@@ -1,5 +1,70 @@
 use super::*;
 
+#[test]
+#[ignore = "requires isolated recovery copies and CAM_RECOVERY_VALIDATION_ROOT"]
+fn prepared_recovery_tracking_is_complete_in_actual_sync_manifest() -> Result<(), &'static str> {
+    use sha2::Digest;
+    let root = std::env::var_os("CAM_RECOVERY_VALIDATION_ROOT").ok_or("prepared_root_required")?;
+    let root = fs::canonicalize(root).map_err(|_| "prepared_root_unavailable")?;
+    let open = |name: &str| -> Result<Connection, &'static str> {
+        let file = root.join(name);
+        let metadata = fs::symlink_metadata(&file).map_err(|_| "prepared_file_missing")?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() { return Err("prepared_file_invalid"); }
+        let file = fs::canonicalize(file).map_err(|_| "prepared_file_unavailable")?;
+        if file.parent() != Some(root.as_path()) { return Err("prepared_file_outside_root"); }
+        let conn = Connection::open_with_flags(file, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|_| "prepared_readonly_open_failed")?;
+        if !conn.is_readonly(rusqlite::DatabaseName::Main).map_err(|_| "prepared_readonly_check_failed")? {
+            return Err("prepared_file_not_readonly");
+        }
+        conn.execute_batch("PRAGMA query_only=ON; BEGIN").map_err(|_| "prepared_read_transaction_failed")?;
+        Ok(conn)
+    };
+    let before = open("windows-before-v4.sqlite")?;
+    let after = open("windows-rehearsal-v4.sqlite")?;
+    let tenant: String = before.query_row("SELECT tenant_id FROM lesson_observations o WHERE json_extract(payload_json,'$.evidenceVersion')=1 AND NOT EXISTS(SELECT 1 FROM observation_evidence_revisions r WHERE r.tenant_id=o.tenant_id AND r.revision_id=json_extract(o.payload_json,'$.revisionId'))", [], |row| row.get(0))
+        .map_err(|_| "prepared_orphan_missing")?;
+    let before_sync = sync_manifest(&before, &tenant, 370).map_err(|_| "prepared_before_manifest_failed")?;
+    let after_sync = sync_manifest(&after, &tenant, 370).map_err(|_| "prepared_after_manifest_failed")?;
+    let before_records = before_sync["records"].as_array().ok_or("prepared_before_records_missing")?;
+    let after_records = after_sync["records"].as_array().ok_or("prepared_after_records_missing")?;
+    let mut before_missing = 0usize;
+    let mut added_tracking = 0usize;
+    for table in syncable_tables().filter(|table| table.name.starts_with("observation_evidence_")) {
+        let expression = record_key_expression(table.name, table);
+        let sql = format!("SELECT {expression} FROM {} WHERE tenant_id=?1", table.name);
+        for (conn, records, is_before) in [(&before, before_records, true), (&after, after_records, false)] {
+            let mut query = conn.prepare(&sql).map_err(|_| "prepared_key_query_failed")?;
+            let rows = query.query_map(params![tenant], |row| row.get::<_, String>(0))
+                .map_err(|_| "prepared_key_read_failed")?;
+            for raw in rows {
+                let key: Value = serde_json::from_str(&raw.map_err(|_| "prepared_key_read_failed")?)
+                    .map_err(|_| "prepared_key_invalid")?;
+                let entry = records.iter().find(|record| record["table"] == table.name && record["recordKey"] == key);
+                if is_before {
+                    if entry.is_none_or(|record| record["tombstone"] != false) { before_missing += 1; }
+                } else {
+                    let entry = entry.ok_or("prepared_evidence_tracking_still_missing")?;
+                    if entry["tombstone"] != false { return Err("prepared_evidence_tracking_tombstoned"); }
+                    if !before_records.iter().any(|record| record["table"] == table.name && record["recordKey"] == key) {
+                        if entry["changedGeneration"] != 370 || entry["dirtyBaseGeneration"] != 369 || entry["recordVersion"] != 1 {
+                            return Err("prepared_new_tracking_authority_invalid");
+                        }
+                        added_tracking += 1;
+                    }
+                }
+            }
+        }
+    }
+    if before_missing != 854 || added_tracking != 856 { return Err("prepared_tracking_scope_changed"); }
+    let before_hash = database_content_hasher(&before, &tenant, before_records)
+        .map_err(|_| "prepared_before_content_failed")?.finalize();
+    let after_hash = database_content_hasher(&after, &tenant, after_records)
+        .map_err(|_| "prepared_after_content_failed")?.finalize();
+    if before_hash == after_hash { return Err("prepared_content_root_did_not_change"); }
+    Ok(())
+}
+
 fn fixture() -> (PathBuf, SqliteStore) {
     let root = std::env::temp_dir().join(format!(
         "classaimate-backup-optimization-{}",

@@ -1,0 +1,101 @@
+name: ClassAiMate Apple Silicon Mac release
+on:
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: Exact private source commit mirrored into this builder; Windows release must exist before publication.
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: classaimate-local-store-macos-release
+  cancel-in-progress: false
+env:
+  SOURCE_COMMIT_INPUT: ${{ inputs.source_commit }}
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 90
+    outputs:
+      artifact_name: ${{ steps.artifact_name.outputs.name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: v2/local-sensitive-store-desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Validate source and runner
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          node v2/tools/desktop-release/mac-release-workflow.mjs preflight
+          echo "ONLINECLASS_LOCAL_STORE_DIR=$(mktemp -d "$RUNNER_TEMP/classaimate-macos-store.XXXXXX")" >> "$GITHUB_ENV"
+      - name: Install locked frontend dependencies
+        working-directory: v2/local-sensitive-store-desktop
+        run: npm ci
+      - name: Existing Node Mac packaging gate
+        working-directory: v2
+        run: node --test tests/local-sensitive-store-macos-packaging.test.mjs
+      - name: Isolated Rust regression (native Keychain interaction tests remain ignored)
+        working-directory: v2/local-sensitive-store-desktop
+        run: |
+          set -euo pipefail
+          cargo test --locked --release --manifest-path src-tauri/Cargo.toml --lib -- --test-threads=1 2>&1 | tee "$RUNNER_TEMP/classaimate-macos-rust.log"
+      - name: Build and strictly validate the Apple Silicon app and DMG
+        working-directory: v2/local-sensitive-store-desktop
+        run: |
+          set -euo pipefail
+          node scripts/build-installer-mac.mjs 2>&1 | tee "$RUNNER_TEMP/classaimate-macos-build.log"
+      - name: Stage checked DMG and public provenance receipt
+        id: stage
+        run: node v2/tools/desktop-release/mac-release-workflow.mjs stage
+      - name: Keep the original build artifact identity for failed-job retries
+        id: artifact_name
+        env:
+          ARTIFACT_NAME: macos-release-${{ github.sha }}-${{ github.run_attempt }}
+        run: echo "name=$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.artifact_name.outputs.name }}
+          path: ${{ steps.stage.outputs.stage_dir }}
+          if-no-files-found: error
+          retention-days: 7
+      - name: Preserve failure logs (never user DB or credentials)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-failure-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/classaimate-macos-rust.log
+            ${{ runner.temp }}/classaimate-macos-build.log
+          if-no-files-found: warn
+          retention-days: 7
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}
+          path: ${{ runner.temp }}/macos-release
+      - name: Revalidate Windows source/tag and publish new Mac assets only
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAC_RELEASE_STAGE_DIR: ${{ runner.temp }}/macos-release
+        run: node v2/tools/desktop-release/mac-release-workflow.mjs publish

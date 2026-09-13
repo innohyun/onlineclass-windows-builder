@@ -7,6 +7,9 @@ use rusqlite::params;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tiny_http::{Response, Server};
 
+#[path = "device_sync_observation_tests.rs"]
+mod observation;
+
 struct Cloud {
     checkpoint: Mutex<Option<Value>>,
     ack_count: AtomicUsize,

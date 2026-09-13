@@ -804,6 +804,7 @@ pub(super) fn restore_generation(
         return Err(format!("restore_db_attach_failed:{error}"));
     }
     let mut archive_result = json!({});
+    let mut retained_observation_projections = 0i64;
     let result = (|| -> Result<(i64, i64, Vec<PathBuf>), String> {
         if archive_binding_conflicts(&mut conn, tenant_id, &applicable, generation, state.applied_generation)? {
             return Err("lesson_plan_binding_revision_conflict".into());
@@ -941,10 +942,16 @@ pub(super) fn restore_generation(
                     keys = table.key_columns.join(", "),
                     merge_guard = merge_guard,
                 );
-                imported += transaction
+                let changed = transaction
                     .execute(&sql, params_from_iter(values))
-                    .map_err(|e| format!("restore_sync_merge_failed:{}:{e}", table.name))?
-                    as i64;
+                    .map_err(|e| format!("restore_sync_merge_failed:{}:{e}", table.name))?;
+                if table.name == "lesson_observations" && changed == 0 {
+                    // The provenance guard retained the local head. Do not claim
+                    // its record version is the incoming head or discard its dirty edit.
+                    retained_observation_projections += 1;
+                    continue;
+                }
+                imported += changed as i64;
             }
             upsert_sync_record(&transaction, tenant_id, record)?;
         }
@@ -1021,6 +1028,7 @@ pub(super) fn restore_generation(
         "generation": generation,
         "imported": imported,
         "conflicts": conflicts,
+        "retainedObservationProjections": retained_observation_projections,
         "archives": archive_result,
         "safetyBackup": safety_backup,
     }))

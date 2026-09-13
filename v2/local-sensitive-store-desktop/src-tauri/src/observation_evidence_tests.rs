@@ -307,3 +307,180 @@ fn detects_missing_and_tampered_batch_commitments() {
         .unwrap()
         .contains(&json!("batch_missing")));
 }
+
+#[test]
+fn normal_evidence_generation_round_trip() {
+    let f = Fixture::new();
+    crate::shared_archive::with_test_root(&f.dir.join("archives"), || {
+        let tenant = "tenant-a";
+        let source = SqliteStore::open(f.dir.join("source/store.sqlite")).unwrap();
+        let target = SqliteStore::open(f.dir.join("target/store.sqlite")).unwrap();
+        let backup_root = f.dir.join("transport");
+        for store in [&source, &target] {
+            crate::backup::set_folder(store, tenant.into(), backup_root.to_string_lossy().into()).unwrap();
+        }
+        let first = source.evidence_save(tenant, vec![input("one"), input("two")], "initial").unwrap();
+        let mut correction = input("one");
+        correction["expectedRevisionId"] = first[0]["revisionId"].clone();
+        correction["correctionReason"] = json!("합성 시험 정정");
+        correction["note"] = json!("합성 시험 정정 기록");
+        let corrected = source.evidence_save(tenant, vec![correction], "correction").unwrap();
+        let snapshot = crate::backup::run_with_kind(&source, tenant.into(), "auto_sync", Some(1)).unwrap();
+        assert_eq!(snapshot["ok"], true);
+        assert_eq!(snapshot["snapshotVersion"], 5);
+        let manifest_path = Path::new(snapshot["manifestPath"].as_str().unwrap());
+        let result = crate::backup::restore_generation(&target, tenant, manifest_path, 1, "announced", false).unwrap();
+        assert_eq!(result["applied"], true);
+        {
+            let conn = target.conn.lock().unwrap();
+            assert_eq!(read_record(&conn, tenant, "one").unwrap(), Some(corrected[0].clone()));
+            assert_eq!(read_record(&conn, tenant, "two").unwrap(), Some(first[1].clone()));
+            assert_eq!(revisions(&conn, tenant, "one").unwrap().len(), 2);
+            assert_eq!(revisions(&conn, tenant, "two").unwrap().len(), 1);
+            assert_eq!(conn.query_row("SELECT COUNT(*) FROM local_store_restore_journal", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        }
+        assert_eq!(crate::backup::local_sync_state(&target, tenant).unwrap().applied_generation, 1);
+        target.restore_ready(tenant).unwrap();
+        let replay = crate::backup::restore_generation(&target, tenant, manifest_path, 1, "announced", false).unwrap();
+        assert_eq!(replay["applied"], false);
+    });
+}
+
+#[test]
+fn legacy_projection_import_without_ledger_cannot_be_backed_up_or_restored() {
+    let f = Fixture::new();
+    crate::shared_archive::with_test_root(&f.dir.join("archives"), || {
+        let tenant = "tenant-a";
+        let legacy = input("legacy");
+        let projection = {
+            let conn = f.store.conn.lock().unwrap();
+            conn.execute("INSERT INTO lesson_observations VALUES(?1,'legacy','2026-09-08',0,'S1',?2,1)",
+                params![tenant, legacy.to_string()]).unwrap();
+            ensure_schema(&conn, &f.dir).unwrap();
+            read_record(&conn, tenant, "legacy").unwrap().unwrap()
+        };
+        assert_eq!(projection["evidenceBaseline"], "legacy_unverified");
+        let source_path = f.dir.join("source/store.sqlite");
+        {
+            let old_import = SqliteStore::open(source_path.clone()).unwrap();
+            // Model the pre-evidence helper's projection-only import, using only
+            // a legitimately generated synthetic baseline and no original files.
+            old_import.conn.lock().unwrap().execute("INSERT INTO lesson_observations VALUES(?1,'legacy','2026-09-08',0,'S1',?2,?3)",
+                params![tenant, projection.to_string(), projection["updatedAtMs"].as_i64().unwrap()]).unwrap();
+        }
+        let source = SqliteStore::open(source_path).unwrap();
+        assert_eq!(source.conn.lock().unwrap().query_row("SELECT COUNT(*) FROM observation_evidence_revisions", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        let target = SqliteStore::open(f.dir.join("target/store.sqlite")).unwrap();
+        let sentinel = target.evidence_save(tenant, vec![input("sentinel")], "sentinel").unwrap();
+        let backup_root = f.dir.join("transport");
+        for store in [&source, &target] {
+            crate::backup::set_folder(store, tenant.into(), backup_root.to_string_lossy().into()).unwrap();
+        }
+        let snapshot = crate::backup::run_with_kind(&source, tenant.into(), "auto_sync", Some(1));
+        assert_eq!(snapshot.unwrap_err(), "observation_evidence_restore_invalid");
+        {
+            let conn = target.conn.lock().unwrap();
+            // Historical orphan DBs must still fail the same restore validator;
+            // the new capture guard no longer creates such snapshots for the test.
+            conn.execute("ATTACH DATABASE ?1 AS restore", params![source.db_path.to_string_lossy().to_string()]).unwrap();
+            assert_eq!(check_restore(&conn, tenant).unwrap_err(), "observation_evidence_restore_invalid");
+            conn.execute_batch("DETACH DATABASE restore").unwrap();
+            assert_eq!(read_record(&conn, tenant, "sentinel").unwrap(), Some(sentinel[0].clone()));
+            assert_eq!(read_record(&conn, tenant, "legacy").unwrap(), None);
+            assert_eq!(conn.query_row("SELECT COUNT(*) FROM local_store_restore_journal", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        }
+        assert_eq!(crate::backup::local_sync_state(&target, tenant).unwrap().applied_generation, 0);
+        target.restore_ready(tenant).unwrap();
+    });
+}
+
+#[test]
+#[ignore = "requires explicitly prepared, isolated recovery copies and CAM_RECOVERY_VALIDATION_ROOT"]
+fn prepared_recovery_copies_pass_actual_restore_validation() -> Result<(), &'static str> {
+    // This opt-in diagnostic never opens SqliteStore, migrates a source, or reads
+    // the application's data directory. Only memory receives a fresh schema.
+    fn attached_copy(root: &Path, name: &str) -> Result<Connection, &'static str> {
+        let file = root.join(name);
+        let metadata = fs::symlink_metadata(&file).map_err(|_| "prepared_copy_missing")?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            return Err("prepared_copy_not_regular_file");
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            if metadata.file_attributes() & 0x400 != 0 {
+                return Err("prepared_copy_reparse_point");
+            }
+        }
+        let file = fs::canonicalize(file).map_err(|_| "prepared_copy_unavailable")?;
+        if file.parent() != Some(root) {
+            return Err("prepared_copy_outside_case_root");
+        }
+        let mut uri = url::Url::from_file_path(&file).map_err(|_| "prepared_copy_uri_invalid")?;
+        uri.query_pairs_mut().append_pair("mode", "ro");
+        let conn = Connection::open_with_flags(
+            ":memory:",
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
+                | rusqlite::OpenFlags::SQLITE_OPEN_CREATE
+                | rusqlite::OpenFlags::SQLITE_OPEN_URI
+                | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(|_| "validation_memory_open_failed")?;
+        conn.execute_batch(&schema(""))
+            .map_err(|_| "validation_memory_schema_failed")?;
+        conn.execute("ATTACH DATABASE ?1 AS restore", params![uri.as_str()])
+            .map_err(|_| "prepared_copy_attach_failed")?;
+        if !conn
+            .is_readonly(rusqlite::DatabaseName::Attached("restore"))
+            .map_err(|_| "prepared_copy_readonly_check_failed")?
+        {
+            return Err("prepared_copy_not_readonly");
+        }
+        conn.execute_batch("PRAGMA query_only=ON; BEGIN")
+            .map_err(|_| "validation_read_transaction_failed")?;
+        Ok(conn)
+    }
+
+    let root = std::env::var_os("CAM_RECOVERY_VALIDATION_ROOT")
+        .ok_or("prepared_recovery_root_required")?;
+    let root = std::path::PathBuf::from(root);
+    if !root.is_absolute() {
+        return Err("prepared_recovery_root_must_be_absolute");
+    }
+    let root = fs::canonicalize(root).map_err(|_| "prepared_recovery_root_unavailable")?;
+    let before = attached_copy(&root, "windows-before-v4.sqlite")?;
+    let tenants = {
+        let mut query = before.prepare(
+            "SELECT o.tenant_id FROM restore.lesson_observations o
+             LEFT JOIN restore.observation_evidence_revisions r
+               ON r.tenant_id=o.tenant_id
+              AND r.revision_id=json_extract(o.payload_json,'$.revisionId')
+             WHERE json_extract(o.payload_json,'$.evidenceVersion')=1
+               AND r.revision_id IS NULL",
+        ).map_err(|_| "prepared_orphan_query_failed")?;
+        let rows = query.query_map([], |row| row.get::<_, String>(0))
+            .map_err(|_| "prepared_orphan_query_failed")?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|_| "prepared_orphan_read_failed")?
+    };
+    if tenants.len() != 1 || tenants[0].is_empty() {
+        return Err("prepared_orphan_scope_changed");
+    }
+    let tenant = &tenants[0];
+    if !matches!(check_restore(&before, tenant), Err(error) if error == "observation_evidence_restore_invalid") {
+        return Err("prepared_before_did_not_reproduce_expected_rejection");
+    }
+    let after = attached_copy(&root, "windows-rehearsal-v4.sqlite")?;
+    let count_sql = "SELECT COUNT(*) FROM restore.lesson_observations
+                     WHERE tenant_id=?1 AND json_extract(payload_json,'$.evidenceVersion')=1";
+    let before_count: i64 = before.query_row(count_sql, params![tenant], |row| row.get(0))
+        .map_err(|_| "prepared_before_count_failed")?;
+    let after_count: i64 = after.query_row(count_sql, params![tenant], |row| row.get(0))
+        .map_err(|_| "prepared_after_count_failed")?;
+    if before_count < 1 || before_count != after_count {
+        return Err("prepared_projection_count_changed");
+    }
+    check_restore(&after, tenant).map_err(|_| "prepared_recovery_still_rejected")?;
+    // Fixed error codes only: never format a row, tenant, revision, or raw error.
+    Ok(())
+}

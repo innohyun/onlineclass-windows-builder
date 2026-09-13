@@ -56,6 +56,8 @@ pub(super) fn export(
                 "INSERT INTO backup.{0} ({columns}) SELECT {columns} FROM main.{0} WHERE tenant_id=?1", table.name), params![tenant_id])
                 .map_err(|e| format!("backup_table_copy_failed:{}:{e}", table.name))?;
         }
+        crate::observation_evidence::check_captured_backup(&transaction, tenant_id)?;
+        check_tracking_coverage(&transaction, tenant_id)?;
         let media = media_rows_from(&transaction, tenant_id)?;
         let mut media_stamps = HashMap::new();
         for row in &media {
@@ -85,6 +87,22 @@ pub(super) fn export(
     let captured = result?;
     detached.map_err(|e| format!("backup_db_detach_failed:{e}"))?;
     Ok(captured)
+}
+
+fn check_tracking_coverage(conn: &Connection, tenant: &str) -> Result<(), String> {
+    for table in syncable_tables() {
+        if !table_exists(conn, table.name)? { continue; }
+        let name = table.name;
+        let key = record_key_expression(name, table);
+        let missing: bool = conn.query_row(&format!(
+            "SELECT EXISTS(SELECT 1 FROM main.{name} WHERE tenant_id=?1 AND NOT EXISTS (
+              SELECT 1 FROM local_store_device_sync_records r WHERE r.tenant_id={name}.tenant_id
+              AND r.table_name='{name}' AND r.record_key={key} AND r.tombstone=0))"),
+            params![tenant], |row| row.get(0))
+            .map_err(|e| format!("backup_sync_tracking_check_failed:{e}"))?;
+        if missing { return Err(format!("backup_sync_tracking_incomplete:{name}")); }
+    }
+    Ok(())
 }
 
 pub(super) fn file_stamp(path: &Path) -> Result<(u64, std::time::SystemTime), String> {
