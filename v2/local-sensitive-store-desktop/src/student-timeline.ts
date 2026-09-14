@@ -358,5 +358,5 @@ export function initStudentTimeline(options: StudentTimelineOptions) {
     element("homeBackupText").textContent = "어제 오후 5:58";
   }
 
-  return { open: loadStudents, refresh: loadStudents };
+  return { open: loadStudents, refresh: loadStudents, getSelectedStudent: selectedStudent };
 }

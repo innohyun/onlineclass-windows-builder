@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 const MAX_PAGE_SIZE: i64 = 100;
+const ACTIVE_OBSERVATION_FILTER: &str = "COALESCE(json_extract(payload_json,'$.recordState'),'active') <> 'archived' AND COALESCE(json_extract(payload_json,'$.archivedAtMs'),0) <= 0";
 const WORK_NOTE_ATTACHMENT_EXPRESSION: &str =
     "EXISTS (SELECT 1 FROM work_note_attachments a WHERE a.tenant_id = work_note_pages.tenant_id AND a.page_id = work_note_pages.page_id)";
 const WORK_NOTE_PAYLOAD_EXPRESSION: &str = r#"json_object(
@@ -310,6 +311,9 @@ fn build_union_query(input: &LocalDataSearchInput) -> Result<(String, Vec<SqlVal
             continue;
         }
         let mut where_parts = vec!["tenant_id = ?".to_string()];
+        if source.key == "observations" {
+            where_parts.push(ACTIVE_OBSERVATION_FILTER.to_string());
+        }
         values.push(SqlValue::Text(tenant_id.clone()));
         if !student_id.is_empty() {
             where_parts.push(format!("{} = ?", source.student_column));
@@ -435,10 +439,11 @@ impl SqliteStore {
         {
             values.push(SqlValue::Text(tenant_id.clone()));
             statements.push(format!(
-                "SELECT CAST({student} AS TEXT) AS student_id, COALESCE(NULLIF(CAST(json_extract(payload_json, '$.studentName') AS TEXT), ''), NULLIF(CAST(json_extract(payload_json, '$.displayName') AS TEXT), ''), NULLIF(CAST(json_extract(payload_json, '$.name') AS TEXT), ''), '') AS student_name, {sort} AS sort_ms FROM {table} WHERE tenant_id = ? AND trim(CAST({student} AS TEXT)) <> ''",
+                "SELECT CAST({student} AS TEXT) AS student_id, COALESCE(NULLIF(CAST(json_extract(payload_json, '$.studentName') AS TEXT), ''), NULLIF(CAST(json_extract(payload_json, '$.displayName') AS TEXT), ''), NULLIF(CAST(json_extract(payload_json, '$.name') AS TEXT), ''), '') AS student_name, {sort} AS sort_ms FROM {table} WHERE tenant_id = ? AND trim(CAST({student} AS TEXT)) <> '' {active}",
                 student = source.student_column,
                 sort = source.sort_column,
                 table = source.table,
+                active = if source.key == "observations" { format!("AND {ACTIVE_OBSERVATION_FILTER}") } else { String::new() },
             ));
         }
         let union_sql = statements.join(" UNION ALL ");
@@ -696,6 +701,33 @@ mod tests {
             offset: 0,
             limit: 40,
         }
+    }
+
+    #[test]
+    fn archived_observations_leave_explorer_and_student_counts_but_remain_in_canonical_reads() {
+        let (directory, store) = test_store();
+        let records = store.evidence_save("tenant-a", vec![json!({
+            "tenantId":"tenant-a","docId":"active","date":"2026-09-11","period":1,
+            "studentCode":"S01","studentName":"합성 학생","note":"활성 관찰"
+        }), json!({
+            "tenantId":"tenant-a","docId":"archived","date":"2026-09-11","period":1,
+            "studentCode":"S01","studentName":"합성 학생","note":"보관 관찰"
+        })], "initial").unwrap();
+        let mut archived = records[1].clone();
+        archived["expectedRevisionId"] = archived["revisionId"].clone();
+        archived["recordState"] = json!("archived");
+        archived["correctionReason"] = json!("합성 보관 회귀");
+        store.evidence_save("tenant-a",vec![archived],"archive").unwrap();
+        let result = store.search_local_data(input("tenant-a")).unwrap();
+        assert_eq!(result["total"],1);
+        assert_eq!(result["records"][0]["payload"]["docId"],"active");
+        let students = store.list_local_students(LocalStudentListInput {
+            tenant_id:"tenant-a".into(),query:String::new(),offset:0,limit:200,
+        }).unwrap();
+        assert_eq!(students["students"][0]["recordCount"],1);
+        assert_eq!(store.list_observations("tenant-a".into(),String::new(),String::new(),String::new(),0,String::new()).unwrap().len(),2);
+        drop(store);
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

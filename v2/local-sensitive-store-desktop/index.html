@@ -220,7 +220,7 @@
           <section class="app-view data-explorer-view" data-app-view="data" aria-labelledby="dataExplorerTitle" hidden>
             <div class="data-explorer-heading">
               <div><h1 id="dataExplorerTitle">자료 탐색</h1><p>이 PC에 저장된 자료를 웹 접속 없이 바로 확인합니다.</p></div>
-              <button class="icon-button data-refresh-button" id="dataExplorerRefresh" type="button" aria-label="자료 새로고침"><i class="fa-solid fa-rotate" aria-hidden="true"></i></button>
+              <div class="duplicates-entry-actions"><button class="duplicates-entry" id="dataExplorerDuplicates" type="button">중복 자료 정리</button><button class="icon-button data-refresh-button" id="dataExplorerRefresh" type="button" aria-label="자료 새로고침"><i class="fa-solid fa-rotate" aria-hidden="true"></i></button></div>
             </div>
 
             <form class="data-search-form" id="dataExplorerSearchForm" role="search">
@@ -306,7 +306,7 @@
           </section>
 
           <section class="app-view student-timeline-view" data-app-view="students" aria-labelledby="studentViewTitle" hidden>
-            <div class="student-view-heading"><h1 id="studentViewTitle">학생별 보기</h1><p>학생 한 명의 저장 기록을 시간순으로 모아봅니다.</p></div>
+            <div class="student-view-heading"><h1 id="studentViewTitle">학생별 보기</h1><p>학생 한 명의 저장 기록을 시간순으로 모아봅니다.</p><button class="duplicates-entry" id="studentTimelineDuplicates" type="button">중복 자료 정리</button></div>
 
             <div class="student-timeline-controls">
               <form class="student-timeline-search" id="studentTimelineSearchForm" role="search">

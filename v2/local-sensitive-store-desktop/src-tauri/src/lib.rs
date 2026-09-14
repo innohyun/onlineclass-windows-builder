@@ -10,6 +10,7 @@ mod cloud_sync;
 mod canonical_write_transactions;
 mod onedrive_download;
 mod data_explorer;
+mod record_duplicates;
 mod device_sync;
 mod device_sync_credential;
 mod desktop_activation;
@@ -65,7 +66,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-09-14.1-teaching-sources-cors";
+pub(crate) const SERVICE_VERSION: &str = "2026-09-14.2-local-record-duplicates";
 const WORK_MEETING_ROOT_PAGE_ID: &str = "classaimate:work-meeting-minutes";
 const WORK_MEETING_ROOT_TITLE: &str = "업무 회의록";
 const WORK_MEETING_ROOT_INTRO: &str = "모바일에서 확정한 업무 회의록이 자동으로 들어옵니다.";
@@ -7450,6 +7451,10 @@ pub fn run() {
             list_local_data_section,
             data_explorer::list_local_students,
             data_explorer::search_local_data,
+            record_duplicates::scan_record_duplicates,
+            record_duplicates::apply_record_duplicates,
+            record_duplicates::list_record_duplicate_history,
+            record_duplicates::undo_record_duplicate_cleanup,
             data_explorer::open_local_data_attachment,
             data_explorer::open_local_data_directory,
             local_workspaces::get_local_workspace_tree,

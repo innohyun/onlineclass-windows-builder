@@ -763,7 +763,7 @@ fn revisions(conn: &Connection, tenant: &str, doc: &str) -> Result<Vec<Value>, S
     }
     Ok(out)
 }
-fn verify_record(conn: &Connection, dir: &Path, tenant: &str, doc: &str) -> Result<Value, String> {
+pub(crate) fn verify_record(conn: &Connection, dir: &Path, tenant: &str, doc: &str) -> Result<Value, String> {
     let all = revisions(conn, tenant, doc)?;
     let mut errors = Vec::new();
     let gap:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM observation_evidence_reconciliation WHERE tenant_id=?1 AND json_array_length(payload_json,'$.missing')>0)",params![tenant],|r|r.get(0)).map_err(db)?;

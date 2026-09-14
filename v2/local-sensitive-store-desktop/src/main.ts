@@ -20,8 +20,7 @@ import "./quick-observation.css";
 import { initSharedArchive } from "./shared-archive";
 import { initHomeDashboard, loadHomeOverview, renderHomeStatus } from "./home-dashboard";
 import { createDeviceAuthorizationController, type DeviceAuthorizationResult } from "./device-authorization";
-import { initDataExplorer } from "./data-explorer";
-import { initStudentTimeline } from "./student-timeline";
+import { initRecordBrowsers } from "./record-browsers";
 import { confirmBackupRestore } from "./backup-restore-confirmation";
 import { initBackupRestorePreview } from "./backup-restore-preview";
 import { initSharedArchivePreview } from "./shared-archive-preview";
@@ -1210,9 +1209,8 @@ const quickObservation = initQuickObservation({
 });
 initArchiveBoardExplorer();
 initWorkNoteReader();
-const dataExplorer = initDataExplorer({ getTenantId: currentBackupTenantId });
+const { dataExplorer, studentTimeline } = initRecordBrowsers(currentBackupTenantId);
 initDeviceSyncConflicts({ getTenantId: currentBackupTenantId });
-const studentTimeline = initStudentTimeline({ getTenantId: currentBackupTenantId });
 const localWorkspaces = initLocalWorkspaces({ getTenantId: currentBackupTenantId });
 const backupStorage = initBackupStorage({
   getTenantId: currentBackupTenantId,
