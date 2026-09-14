@@ -17,7 +17,7 @@ pub(crate) mod receipt_verification;
 #[path = "classaimate_mcp_student_drafts.rs"]
 pub(crate) mod student_drafts;
 
-const OPERATIONS: [&str; 10] = [
+const OPERATIONS: [&str; 11] = [
     "student_record_save_drafts",
     "counseling_record_save_draft",
     "counseling_record_prepare_create",
