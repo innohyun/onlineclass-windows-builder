@@ -289,7 +289,8 @@ fn pending_restore_blocks_cleanup_before_any_observation_write() {
 fn cleanup_and_undo_round_trip_through_existing_backup_and_device_sync_tracking() {
     let f = Fixture::new();
     crate::shared_archive::with_test_root(&f.dir.join("archives"), || {
-        let source = f.store();
+        let source_store = SqliteStore::open(f.dir.join("source/store.sqlite")).unwrap();
+        let source = &source_store;
         let target = SqliteStore::open(f.dir.join("target/store.sqlite")).unwrap();
         let folder = f.dir.join("transport");
         for store in [source,&target] {
