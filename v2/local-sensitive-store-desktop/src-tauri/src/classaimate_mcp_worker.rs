@@ -1,5 +1,5 @@
 use crate::{
-    classaimate_mcp_observations, classaimate_mcp_write_jobs, device_sync::DeviceSyncManager,
+    classaimate_mcp_life_records, classaimate_mcp_observations, classaimate_mcp_write_jobs, device_sync::DeviceSyncManager,
     local_workspaces, teaching_sources, SqliteStore, SERVICE_VERSION,
 };
 use serde_json::{json, Value};
@@ -30,6 +30,8 @@ const CAPABILITIES: &[&str] = &[
     "classaimate_public_mcp_operations_v1",
     "lesson_observations_mcp_v1",
     "lesson_observations_delete_v1",
+    "life_records_mcp_v1",
+    "life_records_delete_v1",
     "observation_evidence_v1",
     "classaimate_mcp_native_worker_v1",
     "classaimate_mcp_material_assets_v1",
@@ -319,6 +321,7 @@ fn read_local(store: &SqliteStore, tenant: &str, owner: &str, frame: &Value) -> 
             "student_record_save_drafts" => workspace == "student_record",
             "counseling_record_save_draft" | "counseling_record_prepare_create" => workspace == "counseling_record",
             "lesson_observations_manage" => workspace == "lesson_observations",
+            "life_records_manage" => workspace == "life_records",
             "lesson_material_apply_snapshot" => workspace == "lesson_materials",
             "work_notes_save_draft" | "materials_save_draft" | "materials_update_draft"
             | "materials_restructure_page" | "materials_apply_images" =>
@@ -353,6 +356,14 @@ fn read_local(store: &SqliteStore, tenant: &str, owner: &str, frame: &Value) -> 
             "cursor",
             "limit",
         ],
+        ("life_records", "life_records_list") => &[
+            "fromDate",
+            "toDate",
+            "studentCodes",
+            "docIds",
+            "cursor",
+            "limit",
+        ],
         ("work_materials" | "lesson_materials" | "student_learning_materials", "search") => {
             &["query", "limit"]
         }
@@ -368,6 +379,12 @@ fn read_local(store: &SqliteStore, tenant: &str, owner: &str, frame: &Value) -> 
     body["tenantId"] = json!(tenant);
     if workspace == "lesson_observations" {
         let result = classaimate_mcp_observations::list(store, &body)?;
+        return Ok(
+            json!({"records":result["records"],"complete":result["complete"],"nextCursor":result["nextCursor"]}),
+        );
+    }
+    if workspace == "life_records" {
+        let result = classaimate_mcp_life_records::list(store, &body)?;
         return Ok(
             json!({"records":result["records"],"complete":result["complete"],"nextCursor":result["nextCursor"]}),
         );

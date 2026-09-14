@@ -230,13 +230,13 @@ pub(crate) fn read_only(
             .map_err(|_| conflict())?;
         }
         result
-    } else if operation == "lesson_observations_manage" {
+    } else if matches!(operation, "lesson_observations_manage" | "life_records_manage") {
         verify_observation_receipt(&conn, tenant, &envelope)?;
         envelope.clone()
     } else {
         return Err("MCP_LOCAL_RECEIPT_UNSUPPORTED".into());
     };
-    let record = if operation == "lesson_observations_manage" {
+    let record = if matches!(operation, "lesson_observations_manage" | "life_records_manage") {
         &result["mutationId"]
     } else {
         &envelope["verification"]["locator"]["recordId"]
@@ -246,6 +246,7 @@ pub(crate) fn read_only(
         "counseling_record_save_draft" => "teacher-counseling-mcp-draft",
         "counseling_record_prepare_create" => "teacher-counseling-session",
         "lesson_observations_manage" => "lesson-observations",
+        "life_records_manage" => "life-records",
         _ => "work-note-page",
     };
     if !read_id(&local_ref, 350)

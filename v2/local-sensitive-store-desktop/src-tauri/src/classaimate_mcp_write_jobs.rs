@@ -26,6 +26,7 @@ const OPERATIONS: [&str; 10] = [
     "materials_update_draft",
     "materials_restructure_page",
     "lesson_observations_manage",
+    "life_records_manage",
     "materials_apply_images",
     "lesson_material_apply_snapshot",
 ];
@@ -743,10 +744,13 @@ pub(crate) fn verified_replay(store: &SqliteStore, input: &Value) -> Result<Opti
             if operation == "lesson_observations_manage" {
                 crate::classaimate_mcp_observations::verify_replay(&conn, &tenant, &decode(result.clone())?)?;
             }
+            if operation == "life_records_manage" {
+                crate::classaimate_mcp_life_records::verify_replay(&conn, &tenant, &decode(result.clone())?)?;
+            }
             if operation == "materials_apply_images" {
                 material_assets::verify(&conn, &store.data_dir, &tenant, &decode(result.clone())?)?;
             }
-            if !["materials_apply_images", "lesson_observations_manage"].contains(&operation) {
+            if !["materials_apply_images", "lesson_observations_manage", "life_records_manage"].contains(&operation) {
                 verify_nonimage_readback(&TransactionStore { conn: &conn }, &tenant, operation, &input["data"])?;
             }
             return Ok(Some(json!({"replayed":true,"result":decode(result)?,"localRef":local_ref})));
@@ -785,6 +789,9 @@ pub(crate) fn apply_with_assets(store: &SqliteStore, input: &Value, assets: &Has
         .ok_or_else(|| "classaimate_mcp_write_job_invalid".to_string())?;
     if operation == "lesson_observations_manage" {
         return crate::classaimate_mcp_observations::apply(store, input);
+    }
+    if operation == "life_records_manage" {
+        return crate::classaimate_mcp_life_records::apply(store, input);
     }
     if operation == "materials_apply_images" {
         return material_assets::apply(store, input, assets);
