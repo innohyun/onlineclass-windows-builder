@@ -21,6 +21,7 @@ mod student_selection;
 
 const API_PATH: &str = "/api/v3/classaimate-mcp/device";
 const MAX_FRAME: usize = 768 * 1024;
+const MAX_TEACHING_SOURCE_PAGE_RESULT_FRAME: usize = 10 * 1024 * 1024;
 const MAX_ASSET: usize = 20 * 1024 * 1024;
 const MAX_ASSETS: usize = 100 * 1024 * 1024;
 const TICK: Duration = Duration::from_secs(15);
@@ -40,6 +41,7 @@ const CAPABILITIES: &[&str] = &[
     "classaimate_mcp_student_drafts_read_v1",
     "classaimate_mcp_student_selection_v1",
     "classaimate_mcp_teaching_sources_v1",
+    "classaimate_mcp_teaching_source_pages_v1",
 ];
 static STARTED: AtomicBool = AtomicBool::new(false);
 static STATE: Mutex<(&str, &str, i64)> = Mutex::new(("waiting_connection", "", 0));
@@ -295,13 +297,23 @@ fn open_socket(
 }
 
 fn send(socket: &mut WebSocket<MaybeTlsStream<TcpStream>>, frame: Value) -> Result<(), String> {
+    let limit = outgoing_frame_limit(&frame);
     let value = serde_json::to_string(&frame).map_err(|_| "MCP_WORKER_JSON_INVALID".to_string())?;
-    if value.len() > MAX_FRAME {
+    if value.len() > limit {
         return Err("MCP_WORKER_RESULT_TOO_LARGE".to_string());
     }
     socket
         .send(Message::Text(value.into()))
         .map_err(|_| "MCP_WORKER_DISCONNECTED".to_string())
+}
+
+fn outgoing_frame_limit(frame: &Value) -> usize {
+    let page_result=frame["type"]=="local_read_result" && frame["status"]=="ok"
+        && frame["result"].as_object().is_some_and(|result|result.len()==3
+            && result.keys().all(|key|["pages","complete","totalImageBytes"].contains(&key.as_str())))
+        && frame["result"]["pages"].is_array() && frame["result"]["complete"].is_boolean()
+        && frame["result"]["totalImageBytes"].as_u64().is_some_and(|bytes|bytes<=6*1024*1024);
+    if page_result { MAX_TEACHING_SOURCE_PAGE_RESULT_FRAME } else { MAX_FRAME }
 }
 
 fn read_local(store: &SqliteStore, tenant: &str, owner: &str, frame: &Value) -> Result<Value, String> {
@@ -335,15 +347,17 @@ fn read_local(store: &SqliteStore, tenant: &str, owner: &str, frame: &Value) -> 
         let allowed: &[&str] = match operation {
             "matches" => &["lessons", "query", "subjectCode", "sourceTypes", "limit", "offset", "expectedSnapshotDigest"],
             "chunks" => &["refs", "maxChars"],
+            "pages" => &["refs"],
             _ => return Err("INVALID_LOCAL_READ_REQUEST".to_string()),
         };
         if input.keys().any(|key| !allowed.contains(&key.as_str())) {
             return Err("INVALID_LOCAL_READ_REQUEST".to_string());
         }
-        return if operation == "matches" {
-            teaching_sources::mcp_matches(store, tenant, owner, &frame["input"])
-        } else {
-            teaching_sources::mcp_chunks(store, tenant, owner, &frame["input"])
+        return match operation {
+            "matches" => teaching_sources::mcp_matches(store, tenant, owner, &frame["input"]),
+            "chunks" => teaching_sources::mcp_chunks(store, tenant, owner, &frame["input"]),
+            "pages" => teaching_sources::mcp_pages(store, tenant, owner, &frame["input"], frame["deadlineAt"].as_i64().ok_or("INVALID_LOCAL_READ_REQUEST")?),
+            _ => Err("INVALID_LOCAL_READ_REQUEST".to_string()),
         };
     }
     let allowed: &[&str] = match (workspace, operation) {
@@ -410,9 +424,10 @@ fn read_local(store: &SqliteStore, tenant: &str, owner: &str, frame: &Value) -> 
 fn read_frame_for_owner(store: &SqliteStore, tenant: &str, owner: &str, frame: &Value, now: i64) -> Option<Value> {
     let request_id = frame["requestId"].as_str()?;
     let deadline = frame["deadlineAt"].as_i64()?;
+    let deadline_limit = if frame["workspace"] == "teaching_sources" && frame["operation"] == "pages" { 31_000 } else { 13_000 };
     if !id(request_id)
         || deadline <= now
-        || deadline > now + 13_000
+        || deadline > now + deadline_limit
         || frame["type"] != "local_read_request"
     {
         return None;
@@ -423,10 +438,18 @@ fn read_frame_for_owner(store: &SqliteStore, tenant: &str, owner: &str, frame: &
         }
         Err(error) => {
             let not_found = error == "local_workspace_page_not_found";
-            let code = if ["teaching_source_stale","teaching_source_file_sha_conflict","teaching_source_file_missing","teaching_source_not_found","teaching_source_path_invalid"].contains(&error.as_str()) {
+            let code = if ["teaching_source_stale","teaching_source_sparse_page_invalid","teaching_source_file_sha_conflict","teaching_source_file_missing","teaching_source_not_found","teaching_source_path_invalid"].contains(&error.as_str()) {
                     "MCP_TEACHING_SOURCE_STALE"
+                } else if error=="teaching_source_reindex_required" {
+                    "MCP_TEACHING_SOURCE_REINDEX_REQUIRED"
+                } else if error=="teaching_source_page_deadline_exceeded" {
+                    "MCP_RELAY_TIMEOUT"
                 } else if error=="teaching_source_max_chars_exceeded" {
                     "MCP_TEACHING_SOURCE_MAX_CHARS_EXCEEDED"
+                } else if error=="teaching_source_page_too_large" {
+                    "MCP_TEACHING_SOURCE_PAGE_TOO_LARGE"
+                } else if error=="teaching_source_page_render_failed" {
+                    "MCP_TEACHING_SOURCE_PAGE_RENDER_FAILED"
                 } else if not_found { "local_workspace_page_not_found" }
                 else if ["MCP_LOCAL_RECEIPT_CONFLICT", "MCP_LOCAL_RECEIPT_UNSUPPORTED", "MCP_LOCAL_RECEIPT_READ_FAILED", "MCP_STUDENT_DRAFT_READ_FAILED", "INVALID_LOCAL_READ_REQUEST",
                     "MCP_STUDENT_SELECTION_INVALID", "MCP_STUDENT_SELECTION_READ_FAILED", "MCP_STUDENT_SELECTION_TOO_LARGE",
@@ -437,7 +460,7 @@ fn read_frame_for_owner(store: &SqliteStore, tenant: &str, owner: &str, frame: &
                 "errorCode":code})
         }
     };
-    if response.to_string().len() <= MAX_FRAME {
+    if response.to_string().len() <= outgoing_frame_limit(&response) {
         Some(response)
     } else {
         Some(

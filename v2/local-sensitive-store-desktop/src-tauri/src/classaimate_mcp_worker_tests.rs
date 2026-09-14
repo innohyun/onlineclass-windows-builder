@@ -57,6 +57,17 @@ fn device_identity_changes_invalidate_worker_and_errors_are_safe() {
 }
 
 #[test]
+fn only_successful_teaching_source_page_results_receive_the_large_frame_budget() {
+    let pages=json!({"type":"local_read_result","requestId":"pages-a","status":"ok",
+        "result":{"pages":[],"complete":true,"totalImageBytes":0}});
+    assert_eq!(outgoing_frame_limit(&pages),MAX_TEACHING_SOURCE_PAGE_RESULT_FRAME);
+    assert_eq!(outgoing_frame_limit(&json!({"type":"local_read_result","requestId":"read-a","status":"ok",
+        "result":{"records":[],"complete":true}})),MAX_FRAME);
+    assert_eq!(outgoing_frame_limit(&json!({"type":"local_read_result","requestId":"pages-a","status":"error",
+        "result":{"pages":[],"complete":true,"totalImageBytes":0}})),MAX_FRAME);
+}
+
+#[test]
 fn readback_failures_never_report_rollback_when_commit_exists_or_cannot_be_checked() {
     for error in [
         "IMAGE_INTEGRITY_FAILED",

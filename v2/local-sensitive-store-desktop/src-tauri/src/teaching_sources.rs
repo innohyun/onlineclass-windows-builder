@@ -1,11 +1,16 @@
 use crate::{json_response, parse_request_url, query, BrowserLinkStore, SqliteStore};
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::Utc;
 use fs2::available_space;
+use hayro::hayro_interpret::InterpreterSettings;
+use hayro::hayro_syntax::{page::Page, Pdf};
+use hayro::vello_cpu::color::palette::css::WHITE;
+use hayro::{render, RenderCache, RenderSettings};
 use rand::{distributions::Alphanumeric, Rng};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
@@ -17,7 +22,14 @@ const MAX_JSON_BYTES: u64 = 12 * 1024 * 1024;
 const MAX_CHUNKS_PER_BATCH: usize = 200;
 const MAX_MCP_MATCHES: usize = 20;
 const MAX_MCP_CHUNKS: usize = 20;
+const MAX_MCP_PAGES: usize = 4;
 const MAX_CHUNK_TEXT: usize = 3_000;
+const SPARSE_PDF_EXTRACTOR: &str = "browser-worker-v3-sparse-pages";
+const MAX_SPARSE_PAGE_LOCATOR_TEXT: usize = 1_200;
+const MAX_PAGE_IMAGE_BYTES: usize = 1_500 * 1024;
+const MAX_TOTAL_PAGE_IMAGE_BYTES: usize = 6_000 * 1024;
+const MAX_PAGE_RENDER_DIMENSION: usize = 5_000;
+const MAX_PAGE_RENDER_PIXELS: usize = 16_000_000;
 
 pub(crate) fn ensure_schema(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
@@ -252,15 +264,22 @@ fn source_row(store: &SqliteStore, owner: &str, source: &str) -> Result<Option<V
     let conn = store.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
     conn.query_row(
         "SELECT source_id,source_type,grade,semester_scope,subject_code,title,publisher,original_file_name,content_type,byte_size,sha256,extraction_status,extractor_version,page_count,revision,created_at_ms,updated_at_ms,origin_tenant_id,lifecycle_status FROM teaching_sources WHERE owner_uid=?1 AND source_id=?2",
-        params![owner, source], |row| Ok(json!({
-            "sourceId":row.get::<_,String>(0)?,"sourceType":row.get::<_,String>(1)?,"grade":row.get::<_,String>(2)?,
-            "semesterScope":row.get::<_,String>(3)?,"subjectCode":row.get::<_,String>(4)?,"title":row.get::<_,String>(5)?,
-            "publisher":row.get::<_,String>(6)?,"originalFileName":row.get::<_,String>(7)?,"contentType":row.get::<_,String>(8)?,
-            "byteSize":row.get::<_,i64>(9)?,"sha256":row.get::<_,Option<String>>(10)?,"extractionStatus":row.get::<_,String>(11)?,
-            "extractorVersion":row.get::<_,Option<String>>(12)?,"pageCount":row.get::<_,Option<i64>>(13)?,"revision":row.get::<_,i64>(14)?,
-            "createdAt":row.get::<_,i64>(15)?,"updatedAt":row.get::<_,i64>(16)?,"originTenantId":row.get::<_,String>(17)?,
-            "lifecycleStatus":row.get::<_,String>(18)?,"backupState":"onedrive_included"
-        }))
+        params![owner, source], |row| {
+            let content_type=row.get::<_,String>(8)?;
+            let extraction_status=row.get::<_,String>(11)?;
+            let extractor_version=row.get::<_,Option<String>>(12)?;
+            let reindex_required=content_type=="application/pdf" && extraction_status=="ready"
+                && extractor_version.as_deref()!=Some(SPARSE_PDF_EXTRACTOR);
+            Ok(json!({
+                "sourceId":row.get::<_,String>(0)?,"sourceType":row.get::<_,String>(1)?,"grade":row.get::<_,String>(2)?,
+                "semesterScope":row.get::<_,String>(3)?,"subjectCode":row.get::<_,String>(4)?,"title":row.get::<_,String>(5)?,
+                "publisher":row.get::<_,String>(6)?,"originalFileName":row.get::<_,String>(7)?,"contentType":content_type,
+                "byteSize":row.get::<_,i64>(9)?,"sha256":row.get::<_,Option<String>>(10)?,"extractionStatus":extraction_status,
+                "extractorVersion":extractor_version,"pageCount":row.get::<_,Option<i64>>(13)?,"revision":row.get::<_,i64>(14)?,
+                "createdAt":row.get::<_,i64>(15)?,"updatedAt":row.get::<_,i64>(16)?,"originTenantId":row.get::<_,String>(17)?,
+                "lifecycleStatus":row.get::<_,String>(18)?,"backupState":"onedrive_included","reindexRequired":reindex_required
+            }))
+        }
     ).optional().map_err(|e| format!("db_teaching_source_read_failed:{e}"))
 }
 
@@ -280,7 +299,7 @@ fn mark_backup_dirty(store:&SqliteStore,owner:&str)->Result<(),String>{
     crate::backup::mark_external_sync_dirty(store,&tenant)
 }
 
-fn verify_managed_file(store:&SqliteStore,tenant:&str,owner:&str,source:&str,expected_sha:&str)->Result<(),String>{
+fn verified_managed_file_path(store:&SqliteStore,tenant:&str,owner:&str,source:&str,expected_sha:&str)->Result<PathBuf,String>{
     let row=store.conn.lock().map_err(|_|"db_lock_failed".to_string())?.query_row(
         "SELECT local_path,sha256,byte_size FROM teaching_sources WHERE owner_uid=?1 AND source_id=?2",
         params![owner,source],|row|Ok((row.get::<_,Option<String>>(0)?,row.get::<_,Option<String>>(1)?,row.get::<_,i64>(2)?)))
@@ -289,11 +308,33 @@ fn verify_managed_file(store:&SqliteStore,tenant:&str,owner:&str,source:&str,exp
     let relative=row.0.ok_or("teaching_source_file_missing")?;
     let _access=store.media_access(tenant)?;
     let path=resolve_local_path(store,&relative)?;
-    let mut file=File::open(path).map_err(|_|"teaching_source_file_missing".to_string())?;
+    let mut file=File::open(&path).map_err(|_|"teaching_source_file_missing".to_string())?;
     let mut hash=Sha256::new();let mut size=0_i64;let mut buffer=[0_u8;64*1024];
     loop{let read=file.read(&mut buffer).map_err(|_|"teaching_source_file_verify_failed".to_string())?;if read==0{break;}size+=read as i64;hash.update(&buffer[..read]);}
     if size!=row.2||format!("{:x}",hash.finalize())!=expected_sha{return Err("teaching_source_file_sha_conflict".into());}
-    Ok(())
+    Ok(path)
+}
+
+fn verify_managed_file(store:&SqliteStore,tenant:&str,owner:&str,source:&str,expected_sha:&str)->Result<(),String>{
+    verified_managed_file_path(store,tenant,owner,source,expected_sha).map(|_|())
+}
+
+fn read_verified_managed_file(store:&SqliteStore,tenant:&str,owner:&str,source:&str,expected_sha:&str)->Result<Vec<u8>,String>{
+    let row=store.conn.lock().map_err(|_|"db_lock_failed".to_string())?.query_row(
+        "SELECT local_path,sha256,byte_size FROM teaching_sources WHERE owner_uid=?1 AND source_id=?2",
+        params![owner,source],|row|Ok((row.get::<_,Option<String>>(0)?,row.get::<_,Option<String>>(1)?,row.get::<_,i64>(2)?)))
+        .optional().map_err(|e|format!("db_teaching_source_file_verify_read_failed:{e}"))?.ok_or("teaching_source_not_found")?;
+    if row.1.as_deref()!=Some(expected_sha) || row.2<0 || row.2 as u64>MAX_FILE_BYTES{return Err("teaching_source_file_sha_conflict".into());}
+    let relative=row.0.ok_or("teaching_source_file_missing")?;
+    let _access=store.media_access(tenant)?;
+    let path=resolve_local_path(store,&relative)?;
+    let file=File::open(path).map_err(|_|"teaching_source_file_missing".to_string())?;
+    let mut bytes=Vec::with_capacity((row.2 as usize).min(8*1024*1024));
+    file.take(MAX_FILE_BYTES+1).read_to_end(&mut bytes).map_err(|_|"teaching_source_file_verify_failed".to_string())?;
+    if bytes.len() as i64!=row.2 || bytes.len() as u64>MAX_FILE_BYTES || format!("{:x}",Sha256::digest(&bytes))!=expected_sha {
+        return Err("teaching_source_file_sha_conflict".into());
+    }
+    Ok(bytes)
 }
 
 fn create_source(store: &SqliteStore, tenant: &str, owner: &str, body: &Value) -> Result<Value, String> {
@@ -411,6 +452,7 @@ fn save_chunks(store: &SqliteStore, tenant: &str, owner: &str, source: &str, bod
     verify_managed_file(store,tenant,owner,&source_id,expected_sha)?;
     let subject = source_row["subjectCode"].as_str().unwrap_or("").to_string();
     let title = source_row["title"].as_str().unwrap_or("").to_string();
+    let is_pdf = source_row["contentType"] == "application/pdf";
     let now = Utc::now().timestamp_millis();
     let mut conn = store.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
     let tx = conn.transaction().map_err(|e| format!("db_teaching_source_transaction_failed:{e}"))?;
@@ -432,6 +474,13 @@ fn save_chunks(store: &SqliteStore, tenant: &str, owner: &str, source: &str, bod
         let topic = optional_text(raw, "topic", 300)?;
         let chunk_text = optional_text(raw, "text", MAX_CHUNK_TEXT)?;
         if chunk_text.is_empty() { return Err("teaching_source_chunk_text_invalid".into()); }
+        if is_pdf {
+            let page=sparse_page_number(&chunk_id).ok_or("teaching_source_sparse_page_invalid")?;
+            if page_start!=Some(page) || page_end!=Some(page) || ordinal!=page-1
+                || chunk_text.chars().count()>MAX_SPARSE_PAGE_LOCATOR_TEXT {
+                return Err("teaching_source_sparse_page_invalid".into());
+            }
+        }
         let digest = format!("{:x}", Sha256::digest(chunk_text.as_bytes()));
         tx.execute("INSERT INTO teaching_source_chunks (owner_uid,source_id,chunk_id,ordinal,page_start,page_end,unit,topic,text,text_sha256,created_at_ms,updated_at_ms) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?11)",
             params![owner,source_id,chunk_id,ordinal,page_start,page_end,unit,topic,chunk_text,digest,now])
@@ -460,11 +509,17 @@ fn finalize_source(store: &SqliteStore, tenant: &str, owner: &str, source: &str,
     let now = Utc::now().timestamp_millis();
     let mut conn = store.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
     let tx = conn.transaction().map_err(|e| format!("db_teaching_source_transaction_failed:{e}"))?;
-    let current = tx.query_row("SELECT s.revision,s.sha256,h.backup_tenant_id FROM teaching_sources s JOIN teaching_source_actor_homes h ON h.owner_uid=s.owner_uid WHERE s.owner_uid=?1 AND s.source_id=?2",params![owner,source_id],|row|Ok((row.get::<_,i64>(0)?,row.get::<_,Option<String>>(1)?,row.get::<_,String>(2)?))).optional().map_err(|e|format!("db_teaching_source_finalize_read_failed:{e}"))?.ok_or("teaching_source_not_found")?;
+    let current = tx.query_row("SELECT s.revision,s.sha256,h.backup_tenant_id,s.content_type FROM teaching_sources s JOIN teaching_source_actor_homes h ON h.owner_uid=s.owner_uid WHERE s.owner_uid=?1 AND s.source_id=?2",params![owner,source_id],|row|Ok((row.get::<_,i64>(0)?,row.get::<_,Option<String>>(1)?,row.get::<_,String>(2)?,row.get::<_,String>(3)?))).optional().map_err(|e|format!("db_teaching_source_finalize_read_failed:{e}"))?.ok_or("teaching_source_not_found")?;
     if current.0 != expected || current.1.as_deref() != Some(expected_sha) { return Err("teaching_source_revision_conflict".into()); }
     let chunks: i64 = tx.query_row("SELECT COUNT(*) FROM teaching_source_chunks WHERE owner_uid=?1 AND source_id=?2", params![owner,source_id], |row| row.get(0))
         .map_err(|e| format!("db_teaching_source_chunk_count_failed:{e}"))?;
     if status == "ready" && chunks == 0 { return Err("teaching_source_ready_requires_chunks".into()); }
+    if status=="ready" && current.3=="application/pdf" {
+        let pages=page_count.filter(|count|*count>0).ok_or("teaching_source_sparse_page_invalid")?;
+        if extractor!=SPARSE_PDF_EXTRACTOR{return Err("teaching_source_reindex_required".into());}
+        let invalid: i64=tx.query_row("SELECT COUNT(*) FROM teaching_source_chunks WHERE owner_uid=?1 AND source_id=?2 AND NOT (length(chunk_id)=11 AND substr(chunk_id,1,5)='page-' AND substr(chunk_id,6) NOT GLOB '*[^0-9]*' AND page_start=page_end AND page_start=CAST(substr(chunk_id,6) AS INTEGER) AND page_start BETWEEN 1 AND ?3 AND ordinal=page_start-1 AND length(text) BETWEEN 1 AND ?4)",params![owner,source_id,pages,MAX_SPARSE_PAGE_LOCATOR_TEXT as i64],|row|row.get(0)).map_err(|e|format!("db_teaching_source_sparse_page_check_failed:{e}"))?;
+        if invalid!=0{return Err("teaching_source_sparse_page_invalid".into());}
+    }
     let updated = tx.execute("UPDATE teaching_sources SET extraction_status=?1,extractor_version=?2,page_count=?3,revision=revision+1,updated_at_ms=?4 WHERE owner_uid=?5 AND source_id=?6 AND revision=?7 AND sha256=?8 AND local_path IS NOT NULL",
         params![status,extractor,page_count,now,owner,source_id,expected,expected_sha]).map_err(|e| format!("db_teaching_source_finalize_failed:{e}"))?;
     if updated != 1 { return Err("teaching_source_revision_conflict".into()); }
@@ -567,6 +622,11 @@ fn fts_query(raw: &str) -> Option<String> {
     if tokens.is_empty() { None } else { Some(tokens.join(" OR ")) }
 }
 
+fn sparse_page_number(value: &str) -> Option<i64> {
+    (value.len() == 11 && value.starts_with("page-") && value[5..].bytes().all(|byte| byte.is_ascii_digit()))
+        .then(|| value[5..].parse::<i64>().ok()).flatten().filter(|page| *page > 0)
+}
+
 pub(crate) fn mcp_matches(store: &SqliteStore, tenant: &str, owner: &str, input: &Value) -> Result<Value, String> {
     let lessons = input.get("lessons").and_then(Value::as_array).cloned().unwrap_or_default();
     if lessons.is_empty() || lessons.len() > 100 { return Err("INVALID_LOCAL_READ_REQUEST".into()); }
@@ -596,7 +656,7 @@ pub(crate) fn mcp_matches(store: &SqliteStore, tenant: &str, owner: &str, input:
         let curriculum_status=lesson.get("curriculumStatus").and_then(Value::as_str).unwrap_or("unlinked");
         if !(2000..=2200).contains(&year) || ![1,2].contains(&semester) || item.is_empty() || curriculum_status=="unlinked" { continue; }
         if curriculum_status=="qualified" && (!(["class","grade_draft","grade_published"].contains(&kind)) || scope_id.is_empty() || authority_revision<1) { return Err("INVALID_LOCAL_READ_REQUEST".into()); }
-        let mut statement = conn.prepare("SELECT s.source_id,s.title,s.source_type,s.grade,s.semester_scope,s.subject_code,s.publisher,s.revision,s.sha256,c.chunk_id,c.page_start,c.page_end,c.unit,c.topic,c.revision,l.curriculum_source_revision,l.teaching_source_revision,l.subject_code_snapshot,l.unit_snapshot,l.title_snapshot,l.revision,substr(COALESCE(c.text,''),1,900),l.chunk_id FROM curriculum_source_links l JOIN teaching_sources s ON s.owner_uid=l.owner_uid AND s.source_id=l.source_id LEFT JOIN teaching_source_chunks c ON c.owner_uid=l.owner_uid AND c.source_id=l.source_id AND c.chunk_id=l.chunk_id WHERE l.tenant_id=?1 AND l.owner_uid=?2 AND l.school_year=?3 AND l.semester=?4 AND l.curriculum_item_id=?7 AND (?8='orphaned' OR (l.curriculum_source_kind=?5 AND l.curriculum_source_scope_id=?6)) AND s.extraction_status='ready' AND s.lifecycle_status='active' ORDER BY s.updated_at_ms DESC,s.source_id LIMIT 100")
+        let mut statement = conn.prepare("SELECT s.source_id,s.title,s.source_type,s.grade,s.semester_scope,s.subject_code,s.publisher,s.revision,s.sha256,c.chunk_id,c.page_start,c.page_end,c.unit,c.topic,c.revision,l.curriculum_source_revision,l.teaching_source_revision,l.subject_code_snapshot,l.unit_snapshot,l.title_snapshot,l.revision,substr(COALESCE(c.text,''),1,900),l.chunk_id,s.content_type,s.extractor_version FROM curriculum_source_links l JOIN teaching_sources s ON s.owner_uid=l.owner_uid AND s.source_id=l.source_id LEFT JOIN teaching_source_chunks c ON c.owner_uid=l.owner_uid AND c.source_id=l.source_id AND c.chunk_id=l.chunk_id WHERE l.tenant_id=?1 AND l.owner_uid=?2 AND l.school_year=?3 AND l.semester=?4 AND l.curriculum_item_id=?7 AND (?8='orphaned' OR (l.curriculum_source_kind=?5 AND l.curriculum_source_scope_id=?6)) AND (s.content_type<>'application/pdf' OR (s.extractor_version='browser-worker-v3-sparse-pages' AND ((l.chunk_id='' AND c.chunk_id IS NULL) OR (length(c.chunk_id)=11 AND substr(c.chunk_id,1,5)='page-' AND substr(c.chunk_id,6) NOT GLOB '*[^0-9]*' AND c.page_start=c.page_end AND c.page_start=CAST(substr(c.chunk_id,6) AS INTEGER) AND c.page_start BETWEEN 1 AND s.page_count AND c.ordinal=c.page_start-1 AND length(c.text) BETWEEN 1 AND 1200)))) AND s.extraction_status='ready' AND s.lifecycle_status='active' ORDER BY s.updated_at_ms DESC,s.source_id LIMIT 100")
             .map_err(|e| format!("db_teaching_source_exact_prepare_failed:{e}"))?;
         let subject_snapshot=lesson.get("subjectCode").and_then(Value::as_str).unwrap_or("");
         let unit_snapshot=lesson.get("unit").and_then(Value::as_str).unwrap_or("");
@@ -615,7 +675,8 @@ pub(crate) fn mcp_matches(store: &SqliteStore, tenant: &str, owner: &str, input:
             "snippet":row.get::<_,String>(21)?,"matchKind":"exact_curriculum_link","linkStatus":link_status,
             "matchReason":if link_status=="fresh" {"Yearbook 교육과정 항목에 정확히 연결됨"} else {"연결 snapshot이 현재 Yearbook 정본과 달라 진단용으로만 반환됨"},
             "lessonRef":{"dateKey":lesson.get("dateKey").and_then(Value::as_str).unwrap_or(""),"period":lesson.get("period").and_then(Value::as_i64).unwrap_or(0),"revision":lesson.get("revision").and_then(Value::as_i64).unwrap_or(0)},
-             "_lessonIndex":lesson_index,"_linkRevision":row.get::<_,i64>(20)?,"_linkedChunkId":linked_chunk
+             "_lessonIndex":lesson_index,"_linkRevision":row.get::<_,i64>(20)?,"_linkedChunkId":linked_chunk,
+             "contentType":row.get::<_,String>(23)?,"extractorVersion":row.get::<_,Option<String>>(24)?
            }))}).map_err(|e| format!("db_teaching_source_exact_failed:{e}"))?;
         let linked=rows.collect::<Result<Vec<_>,_>>().map_err(|e|format!("db_teaching_source_exact_row_failed:{e}"))?;drop(statement);
         for row in linked {
@@ -629,9 +690,9 @@ pub(crate) fn mcp_matches(store: &SqliteStore, tenant: &str, owner: &str, input:
             fresh_source_links.insert(format!("{lesson_index}:{}", row["sourceRef"].as_str().unwrap_or("")));
             let raw=[lesson.get("unit").and_then(Value::as_str).unwrap_or(""),lesson.get("title").and_then(Value::as_str).unwrap_or(""),lesson.get("curriculumItemLabel").and_then(Value::as_str).unwrap_or(""),input.get("query").and_then(Value::as_str).unwrap_or(""),row.get("title").and_then(Value::as_str).unwrap_or("")].join(" ");
             let Some(search)=fts_query(&raw) else {continue;};let source_ref=row["sourceRef"].as_str().unwrap_or("");let link_revision=row["_linkRevision"].as_i64().unwrap_or(0);
-            let mut source_stmt=conn.prepare("SELECT s.source_id,s.title,s.source_type,s.grade,s.semester_scope,s.subject_code,s.publisher,s.revision,s.sha256,c.chunk_id,c.page_start,c.page_end,c.unit,c.topic,c.revision,snippet(teaching_source_chunks_fts,7,'','', '…',18),bm25(teaching_source_chunks_fts) FROM teaching_source_chunks_fts JOIN teaching_source_chunks c ON c.owner_uid=teaching_source_chunks_fts.owner_uid AND c.source_id=teaching_source_chunks_fts.source_id AND c.chunk_id=teaching_source_chunks_fts.chunk_id JOIN teaching_sources s ON s.owner_uid=c.owner_uid AND s.source_id=c.source_id WHERE teaching_source_chunks_fts MATCH ?1 AND teaching_source_chunks_fts.owner_uid=?2 AND s.source_id=?3 AND (?4='' OR instr(','||?4||',',','||s.source_type||',')>0) AND s.extraction_status='ready' AND s.lifecycle_status='active' ORDER BY bm25(teaching_source_chunks_fts),c.ordinal,c.chunk_id LIMIT 12").map_err(|e|format!("db_teaching_source_linked_fts_prepare_failed:{e}"))?;
+            let mut source_stmt=conn.prepare("SELECT s.source_id,s.title,s.source_type,s.grade,s.semester_scope,s.subject_code,s.publisher,s.revision,s.sha256,c.chunk_id,c.page_start,c.page_end,c.unit,c.topic,c.revision,snippet(teaching_source_chunks_fts,7,'','', '…',18),bm25(teaching_source_chunks_fts),s.content_type,s.extractor_version FROM teaching_source_chunks_fts JOIN teaching_source_chunks c ON c.owner_uid=teaching_source_chunks_fts.owner_uid AND c.source_id=teaching_source_chunks_fts.source_id AND c.chunk_id=teaching_source_chunks_fts.chunk_id JOIN teaching_sources s ON s.owner_uid=c.owner_uid AND s.source_id=c.source_id WHERE teaching_source_chunks_fts MATCH ?1 AND teaching_source_chunks_fts.owner_uid=?2 AND s.source_id=?3 AND (?4='' OR instr(','||?4||',',','||s.source_type||',')>0) AND (s.content_type<>'application/pdf' OR (s.extractor_version='browser-worker-v3-sparse-pages' AND length(c.chunk_id)=11 AND substr(c.chunk_id,1,5)='page-' AND substr(c.chunk_id,6) NOT GLOB '*[^0-9]*' AND c.page_start=c.page_end AND c.page_start=CAST(substr(c.chunk_id,6) AS INTEGER) AND c.page_start BETWEEN 1 AND s.page_count AND c.ordinal=c.page_start-1 AND length(c.text) BETWEEN 1 AND 1200)) AND s.extraction_status='ready' AND s.lifecycle_status='active' ORDER BY bm25(teaching_source_chunks_fts),c.ordinal,c.chunk_id LIMIT 12").map_err(|e|format!("db_teaching_source_linked_fts_prepare_failed:{e}"))?;
             let source_rows=source_stmt.query_map(params![search,owner,source_ref,source_type_filter],|row|Ok(json!({
-              "sourceRef":row.get::<_,String>(0)?,"title":row.get::<_,String>(1)?,"sourceType":row.get::<_,String>(2)?,"grade":row.get::<_,String>(3)?,"semesterScope":row.get::<_,String>(4)?,"subjectCode":row.get::<_,String>(5)?,"publisher":row.get::<_,String>(6)?,"sourceRevision":row.get::<_,i64>(7)?,"fileSha256":row.get::<_,String>(8)?,"chunkRef":row.get::<_,String>(9)?,"pageStart":row.get::<_,Option<i64>>(10)?,"pageEnd":row.get::<_,Option<i64>>(11)?,"unit":row.get::<_,String>(12)?,"topic":row.get::<_,String>(13)?,"chunkRevision":row.get::<_,i64>(14)?,"snippet":row.get::<_,String>(15)?,"_score":row.get::<_,f64>(16)?,"matchKind":"lesson_context_fts","linkStatus":"fresh","matchReason":"정확히 연결된 원자료 안에서 단원·차시·원자료 제목으로 제한 검색함","lessonRef":{"dateKey":lesson.get("dateKey").and_then(Value::as_str).unwrap_or(""),"period":lesson.get("period").and_then(Value::as_i64).unwrap_or(0),"revision":lesson.get("revision").and_then(Value::as_i64).unwrap_or(0)},"_lessonIndex":lesson_index,"_linkRevision":link_revision
+              "sourceRef":row.get::<_,String>(0)?,"title":row.get::<_,String>(1)?,"sourceType":row.get::<_,String>(2)?,"grade":row.get::<_,String>(3)?,"semesterScope":row.get::<_,String>(4)?,"subjectCode":row.get::<_,String>(5)?,"publisher":row.get::<_,String>(6)?,"sourceRevision":row.get::<_,i64>(7)?,"fileSha256":row.get::<_,String>(8)?,"chunkRef":row.get::<_,String>(9)?,"pageStart":row.get::<_,Option<i64>>(10)?,"pageEnd":row.get::<_,Option<i64>>(11)?,"unit":row.get::<_,String>(12)?,"topic":row.get::<_,String>(13)?,"chunkRevision":row.get::<_,i64>(14)?,"snippet":row.get::<_,String>(15)?,"_score":row.get::<_,f64>(16)?,"contentType":row.get::<_,String>(17)?,"extractorVersion":row.get::<_,Option<String>>(18)?,"matchKind":"lesson_context_fts","linkStatus":"fresh","matchReason":"정확히 연결된 원자료 안에서 단원·차시·원자료 제목으로 제한 검색함","lessonRef":{"dateKey":lesson.get("dateKey").and_then(Value::as_str).unwrap_or(""),"period":lesson.get("period").and_then(Value::as_i64).unwrap_or(0),"revision":lesson.get("revision").and_then(Value::as_i64).unwrap_or(0)},"_lessonIndex":lesson_index,"_linkRevision":link_revision
             }))).map_err(|e|format!("db_teaching_source_linked_fts_failed:{e}"))?;
             for source_row in source_rows {let source_row=source_row.map_err(|e|format!("db_teaching_source_linked_fts_row_failed:{e}"))?;let key=format!("{}:{}:{}",lesson_index,source_row["sourceRef"].as_str().unwrap_or(""),source_row["chunkRef"].as_str().unwrap_or(""));if seen.insert(key){results.push(source_row);}}
         }
@@ -646,7 +707,7 @@ pub(crate) fn mcp_matches(store: &SqliteStore, tenant: &str, owner: &str, input:
           [lesson.get("unit").and_then(Value::as_str).unwrap_or(""),lesson.get("title").and_then(Value::as_str).unwrap_or(""),lesson.get("curriculumItemLabel").and_then(Value::as_str).unwrap_or("")].join(" ")
         } else { input.get("query").and_then(Value::as_str).unwrap_or("").to_string() };
         if let Some(search) = fts_query(&raw) {
-            let mut statement = conn.prepare("SELECT s.source_id,s.title,s.source_type,s.grade,s.semester_scope,s.subject_code,s.publisher,s.revision,s.sha256,c.chunk_id,c.page_start,c.page_end,c.unit,c.topic,c.revision,snippet(teaching_source_chunks_fts,7,'','', '…',18),bm25(teaching_source_chunks_fts) FROM teaching_source_chunks_fts JOIN teaching_source_chunks c ON c.owner_uid=teaching_source_chunks_fts.owner_uid AND c.source_id=teaching_source_chunks_fts.source_id AND c.chunk_id=teaching_source_chunks_fts.chunk_id JOIN teaching_sources s ON s.owner_uid=c.owner_uid AND s.source_id=c.source_id WHERE teaching_source_chunks_fts MATCH ?1 AND teaching_source_chunks_fts.owner_uid=?2 AND (?3='' OR s.subject_code=?3) AND s.grade IN (?4,?5) AND s.semester_scope IN (?6,'full_year') AND (?7='' OR instr(','||?7||',',','||s.source_type||',')>0) AND s.extraction_status='ready' AND s.lifecycle_status='active' ORDER BY bm25(teaching_source_chunks_fts),s.updated_at_ms DESC,s.source_id,c.chunk_id LIMIT ?8")
+            let mut statement = conn.prepare("SELECT s.source_id,s.title,s.source_type,s.grade,s.semester_scope,s.subject_code,s.publisher,s.revision,s.sha256,c.chunk_id,c.page_start,c.page_end,c.unit,c.topic,c.revision,snippet(teaching_source_chunks_fts,7,'','', '…',18),bm25(teaching_source_chunks_fts),s.content_type,s.extractor_version FROM teaching_source_chunks_fts JOIN teaching_source_chunks c ON c.owner_uid=teaching_source_chunks_fts.owner_uid AND c.source_id=teaching_source_chunks_fts.source_id AND c.chunk_id=teaching_source_chunks_fts.chunk_id JOIN teaching_sources s ON s.owner_uid=c.owner_uid AND s.source_id=c.source_id WHERE teaching_source_chunks_fts MATCH ?1 AND teaching_source_chunks_fts.owner_uid=?2 AND (?3='' OR s.subject_code=?3) AND s.grade IN (?4,?5) AND s.semester_scope IN (?6,'full_year') AND (?7='' OR instr(','||?7||',',','||s.source_type||',')>0) AND (s.content_type<>'application/pdf' OR (s.extractor_version='browser-worker-v3-sparse-pages' AND length(c.chunk_id)=11 AND substr(c.chunk_id,1,5)='page-' AND substr(c.chunk_id,6) NOT GLOB '*[^0-9]*' AND c.page_start=c.page_end AND c.page_start=CAST(substr(c.chunk_id,6) AS INTEGER) AND c.page_start BETWEEN 1 AND s.page_count AND c.ordinal=c.page_start-1 AND length(c.text) BETWEEN 1 AND 1200)) AND s.extraction_status='ready' AND s.lifecycle_status='active' ORDER BY bm25(teaching_source_chunks_fts),s.updated_at_ms DESC,s.source_id,c.chunk_id LIMIT ?8")
                 .map_err(|e| format!("db_teaching_source_fts_prepare_failed:{e}"))?;
             let rows = statement.query_map(params![search,owner,subject,grade.to_string(),format!("{grade}학년"),lesson.get("semester").and_then(Value::as_i64).unwrap_or(0).to_string(),source_type_filter,100_i64], |row| Ok(json!({
                 "sourceRef":row.get::<_,String>(0)?,"title":row.get::<_,String>(1)?,"sourceType":row.get::<_,String>(2)?,"grade":row.get::<_,String>(3)?,
@@ -655,7 +716,7 @@ pub(crate) fn mcp_matches(store: &SqliteStore, tenant: &str, owner: &str, input:
                 "unit":row.get::<_,String>(12)?,"topic":row.get::<_,String>(13)?,"chunkRevision":row.get::<_,i64>(14)?,"snippet":row.get::<_,String>(15)?,"_score":row.get::<_,f64>(16)?,"matchKind":stage,"linkStatus":"unverified",
                 "matchReason":if stage=="lesson_context_fts" {"같은 교과·학년·학기의 단원·차시 문맥 전문검색"} else {"같은 교과·학년·학기의 사용자 검색어 전문검색"},
                 "lessonRef":{"dateKey":lesson.get("dateKey").and_then(Value::as_str).unwrap_or(""),"period":lesson.get("period").and_then(Value::as_i64).unwrap_or(0),"revision":lesson.get("revision").and_then(Value::as_i64).unwrap_or(0)},
-                "_lessonIndex":lesson_index,"_linkRevision":0
+                "_lessonIndex":lesson_index,"_linkRevision":0,"contentType":row.get::<_,String>(17)?,"extractorVersion":row.get::<_,Option<String>>(18)?
             }))).map_err(|e| format!("db_teaching_source_fts_failed:{e}"))?;
             for row in rows {
                 let row = row.map_err(|e| format!("db_teaching_source_fts_row_failed:{e}"))?;
@@ -685,8 +746,14 @@ pub(crate) fn mcp_chunks(store: &SqliteStore, tenant: &str, owner: &str, input: 
     let mut verified=HashSet::new();
     for item in refs {
         let source=safe_id(item.get("sourceRef").and_then(Value::as_str).unwrap_or(""),160).ok_or("INVALID_LOCAL_READ_REQUEST")?;
+        let chunk=safe_id(item.get("chunkRef").and_then(Value::as_str).unwrap_or(""),160).ok_or("INVALID_LOCAL_READ_REQUEST")?;
+        if chunk.starts_with("page-"){return Err("INVALID_LOCAL_READ_REQUEST".into());}
         let file_sha=item.get("fileSha256").and_then(Value::as_str).filter(|value|value.len()==64&&value.bytes().all(|ch|ch.is_ascii_hexdigit()&&!ch.is_ascii_uppercase())).ok_or("INVALID_LOCAL_READ_REQUEST")?;
-        if verified.insert(format!("{source}:{file_sha}")){verify_managed_file(store,tenant,owner,&source,file_sha)?;}
+        if verified.insert(format!("{source}:{file_sha}")){
+            let metadata=source_row(store,owner,&source)?.ok_or("teaching_source_stale")?;
+            if metadata["reindexRequired"]==true{return Err("teaching_source_reindex_required".into());}
+            verify_managed_file(store,tenant,owner,&source,file_sha)?;
+        }
     }
     let conn = store.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
     let mut chunks = Vec::new();
@@ -697,12 +764,164 @@ pub(crate) fn mcp_chunks(store: &SqliteStore, tenant: &str, owner: &str, input: 
         let source_revision=item.get("sourceRevision").and_then(Value::as_i64).filter(|v|*v>0).ok_or("INVALID_LOCAL_READ_REQUEST")?;
         let chunk_revision=item.get("chunkRevision").and_then(Value::as_i64).filter(|v|*v>0).ok_or("INVALID_LOCAL_READ_REQUEST")?;
         let file_sha=item.get("fileSha256").and_then(Value::as_str).filter(|value|value.len()==64&&value.bytes().all(|ch|ch.is_ascii_hexdigit()&&!ch.is_ascii_uppercase())).ok_or("INVALID_LOCAL_READ_REQUEST")?;
-        let row = conn.query_row("SELECT c.chunk_id,c.ordinal,c.page_start,c.page_end,c.unit,c.topic,c.text,c.text_sha256,c.revision,s.source_id,s.title,s.source_type,s.subject_code,s.publisher,s.revision,s.sha256 FROM teaching_source_chunks c JOIN teaching_sources s ON s.owner_uid=c.owner_uid AND s.source_id=c.source_id WHERE c.owner_uid=?1 AND c.source_id=?2 AND c.chunk_id=?3 AND c.revision=?4 AND s.revision=?5 AND s.sha256=?6 AND s.extraction_status='ready' AND s.lifecycle_status='active'",
+        let row = conn.query_row("SELECT c.chunk_id,c.ordinal,c.page_start,c.page_end,c.unit,c.topic,c.text,c.text_sha256,c.revision,s.source_id,s.title,s.source_type,s.subject_code,s.publisher,s.revision,s.sha256 FROM teaching_source_chunks c JOIN teaching_sources s ON s.owner_uid=c.owner_uid AND s.source_id=c.source_id WHERE c.owner_uid=?1 AND c.source_id=?2 AND c.chunk_id=?3 AND c.revision=?4 AND s.revision=?5 AND s.sha256=?6 AND (s.content_type<>'application/pdf' OR s.extractor_version='browser-worker-v3-sparse-pages') AND s.extraction_status='ready' AND s.lifecycle_status='active'",
             params![owner,source,chunk,chunk_revision,source_revision,file_sha], |row| Ok(json!({"chunkRef":row.get::<_,String>(0)?,"ordinal":row.get::<_,i64>(1)?,"pageStart":row.get::<_,Option<i64>>(2)?,"pageEnd":row.get::<_,Option<i64>>(3)?,"unit":row.get::<_,String>(4)?,"topic":row.get::<_,String>(5)?,"text":row.get::<_,String>(6)?,"textSha256":row.get::<_,String>(7)?,"chunkRevision":row.get::<_,i64>(8)?,"sourceRef":row.get::<_,String>(9)?,"title":row.get::<_,String>(10)?,"sourceType":row.get::<_,String>(11)?,"subjectCode":row.get::<_,String>(12)?,"publisher":row.get::<_,String>(13)?,"sourceRevision":row.get::<_,i64>(14)?,"fileSha256":row.get::<_,String>(15)?})))
             .optional().map_err(|e| format!("db_teaching_source_chunk_read_failed:{e}"))?;
         let row=row.ok_or("teaching_source_stale")?;let count=row["text"].as_str().unwrap_or("").chars().count(); if total_chars+count>max_chars{return Err("teaching_source_max_chars_exceeded".into());} total_chars+=count;chunks.push(row);
     }
     Ok(json!({"chunks":chunks,"complete":true,"totalChars":total_chars}))
+}
+
+fn ensure_page_deadline(deadline_at: i64) -> Result<(), String> {
+    if Utc::now().timestamp_millis() >= deadline_at { Err("teaching_source_page_deadline_exceeded".into()) } else { Ok(()) }
+}
+
+pub(crate) fn mcp_pages(store: &SqliteStore, tenant: &str, owner: &str, input: &Value, deadline_at: i64) -> Result<Value, String> {
+    ensure_page_deadline(deadline_at)?;
+    let refs = input.get("refs").and_then(Value::as_array)
+        .filter(|value| !value.is_empty() && value.len() <= MAX_MCP_PAGES)
+        .ok_or("INVALID_LOCAL_READ_REQUEST")?;
+    let unique = refs.iter().map(|item| format!("{}:{}",
+        item.get("sourceRef").and_then(Value::as_str).unwrap_or(""),
+        item.get("chunkRef").and_then(Value::as_str).unwrap_or(""))).collect::<HashSet<_>>();
+    if unique.len() != refs.len() { return Err("INVALID_LOCAL_READ_REQUEST".into()); }
+
+    let mut rows = Vec::with_capacity(refs.len());
+    {
+        let conn = store.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
+        for item in refs {
+            ensure_page_deadline(deadline_at)?;
+            let object = item.as_object().filter(|value| value.len() == 5
+                && value.keys().all(|key| ["sourceRef","chunkRef","sourceRevision","chunkRevision","fileSha256"].contains(&key.as_str())))
+                .ok_or("INVALID_LOCAL_READ_REQUEST")?;
+            let source = safe_id(object.get("sourceRef").and_then(Value::as_str).unwrap_or(""), 160)
+                .ok_or("INVALID_LOCAL_READ_REQUEST")?;
+            let chunk = safe_id(object.get("chunkRef").and_then(Value::as_str).unwrap_or(""), 160)
+                .filter(|value| value.len() == 11 && value.starts_with("page-") && value[5..].bytes().all(|byte| byte.is_ascii_digit()))
+                .ok_or("INVALID_LOCAL_READ_REQUEST")?;
+            let source_revision = object.get("sourceRevision").and_then(Value::as_i64).filter(|value| *value > 0)
+                .ok_or("INVALID_LOCAL_READ_REQUEST")?;
+            let chunk_revision = object.get("chunkRevision").and_then(Value::as_i64).filter(|value| *value > 0)
+                .ok_or("INVALID_LOCAL_READ_REQUEST")?;
+            let file_sha = object.get("fileSha256").and_then(Value::as_str)
+                .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()))
+                .ok_or("INVALID_LOCAL_READ_REQUEST")?;
+            let row = conn.query_row(
+                "SELECT c.chunk_id,c.revision,c.page_start,c.page_end,s.source_id,s.title,s.source_type,s.subject_code,s.publisher,s.revision,s.sha256,s.content_type,s.page_count,s.extractor_version,c.ordinal,length(c.text) FROM teaching_source_chunks c JOIN teaching_sources s ON s.owner_uid=c.owner_uid AND s.source_id=c.source_id WHERE c.owner_uid=?1 AND c.source_id=?2 AND c.chunk_id=?3 AND c.revision=?4 AND s.revision=?5 AND s.sha256=?6 AND s.extraction_status='ready' AND s.lifecycle_status='active'",
+                params![owner,source,chunk,chunk_revision,source_revision,file_sha], |row| Ok(json!({
+                    "chunkRef":row.get::<_,String>(0)?,"chunkRevision":row.get::<_,i64>(1)?,
+                    "pageStart":row.get::<_,Option<i64>>(2)?,"pageEnd":row.get::<_,Option<i64>>(3)?,
+                    "sourceRef":row.get::<_,String>(4)?,"title":row.get::<_,String>(5)?,
+                    "sourceType":row.get::<_,String>(6)?,"subjectCode":row.get::<_,String>(7)?,
+                    "publisher":row.get::<_,String>(8)?,"sourceRevision":row.get::<_,i64>(9)?,
+                    "fileSha256":row.get::<_,String>(10)?,"contentType":row.get::<_,String>(11)?,
+                    "pageCount":row.get::<_,Option<i64>>(12)?,"extractorVersion":row.get::<_,Option<String>>(13)?,
+                    "ordinal":row.get::<_,i64>(14)?,"textChars":row.get::<_,i64>(15)?
+                }))).optional().map_err(|error| format!("db_teaching_source_page_read_failed:{error}"))?
+                .ok_or("teaching_source_stale")?;
+            if row["contentType"]!="application/pdf" { return Err("teaching_source_stale".into()); }
+            if row["extractorVersion"]!=SPARSE_PDF_EXTRACTOR { return Err("teaching_source_reindex_required".into()); }
+            let page = row["pageStart"].as_i64().filter(|value| *value > 0)
+                .filter(|value| row["pageEnd"].as_i64() == Some(*value))
+                .filter(|value| row["pageCount"].as_i64().is_some_and(|count| *value <= count))
+                .filter(|value| row["ordinal"].as_i64()==Some(*value-1))
+                .filter(|_| row["textChars"].as_i64().is_some_and(|count|count>0&&count<=MAX_SPARSE_PAGE_LOCATOR_TEXT as i64))
+                .ok_or("teaching_source_stale")?;
+            if sparse_page_number(&chunk) != Some(page) { return Err("teaching_source_stale".into()); }
+            rows.push(json!({"pageNumber":page,"chunkRef":row["chunkRef"],"chunkRevision":row["chunkRevision"],
+                "sourceRef":row["sourceRef"],"title":row["title"],"sourceType":row["sourceType"],
+                "subjectCode":row["subjectCode"],"publisher":row["publisher"],"sourceRevision":row["sourceRevision"],
+                "fileSha256":row["fileSha256"],"pageCount":row["pageCount"]}));
+        }
+    }
+
+    let mut grouped: HashMap<String, Vec<usize>> = HashMap::new();
+    for (index, row) in rows.iter().enumerate() {
+        grouped.entry(format!("{}:{}", row["sourceRef"].as_str().unwrap_or(""), row["fileSha256"].as_str().unwrap_or("")))
+            .or_default().push(index);
+    }
+    let mut rendered: Vec<Option<Value>> = vec![None; rows.len()];
+    let mut total_image_bytes = 0usize;
+    for indexes in grouped.values() {
+        ensure_page_deadline(deadline_at)?;
+        let first = &rows[indexes[0]];
+        let source = first["sourceRef"].as_str().ok_or("teaching_source_stale")?;
+        let file_sha = first["fileSha256"].as_str().ok_or("teaching_source_stale")?;
+        let file = read_verified_managed_file(store, tenant, owner, source, file_sha)?;
+        ensure_page_deadline(deadline_at)?;
+        let pdf = Pdf::new(file).map_err(|_| "teaching_source_page_render_failed".to_string())?;
+        ensure_page_deadline(deadline_at)?;
+        if first["pageCount"].as_i64()!=Some(pdf.pages().len() as i64){return Err("teaching_source_stale".into());}
+        let cache = RenderCache::new();
+        let interpreter_settings = InterpreterSettings::default();
+        for index in indexes {
+            ensure_page_deadline(deadline_at)?;
+            let row = &rows[*index];
+            let page_number = row["pageNumber"].as_u64().ok_or("teaching_source_stale")? as usize;
+            let page = pdf.pages().get(page_number - 1).ok_or("teaching_source_stale")?;
+            let (png, width, height, scale) = render_page_image(page, &cache, &interpreter_settings, deadline_at)?;
+            ensure_page_deadline(deadline_at)?;
+            total_image_bytes = total_image_bytes.checked_add(png.len()).ok_or("teaching_source_page_too_large")?;
+            if total_image_bytes > MAX_TOTAL_PAGE_IMAGE_BYTES { return Err("teaching_source_page_too_large".into()); }
+            let image_sha = format!("{:x}", Sha256::digest(&png));
+            rendered[*index] = Some(json!({
+                "chunkRef":row["chunkRef"],"chunkRevision":row["chunkRevision"],
+                "sourceRef":row["sourceRef"],"title":row["title"],"sourceType":row["sourceType"],
+                "subjectCode":row["subjectCode"],"publisher":row["publisher"],"sourceRevision":row["sourceRevision"],
+                "fileSha256":row["fileSha256"],"pageNumber":page_number,"mimeType":"image/png",
+                "byteSize":png.len(),"imageSha256":image_sha,"width":width,"height":height,
+                "imageBase64":BASE64_STANDARD.encode(&png),"renderScale":scale
+            }));
+        }
+    }
+    ensure_page_deadline(deadline_at)?;
+    {
+        let conn=store.conn.lock().map_err(|_|"db_lock_failed".to_string())?;
+        for row in &rows {
+            let current: i64=conn.query_row("SELECT COUNT(*) FROM teaching_source_chunks c JOIN teaching_sources s ON s.owner_uid=c.owner_uid AND s.source_id=c.source_id WHERE c.owner_uid=?1 AND c.source_id=?2 AND c.chunk_id=?3 AND c.revision=?4 AND s.revision=?5 AND s.sha256=?6 AND s.content_type='application/pdf' AND s.extractor_version=?7 AND s.extraction_status='ready' AND s.lifecycle_status='active' AND s.page_count=?8 AND c.page_start=?9 AND c.page_end=?9 AND c.ordinal=?9-1 AND length(c.text) BETWEEN 1 AND ?10",params![owner,row["sourceRef"].as_str().unwrap_or(""),row["chunkRef"].as_str().unwrap_or(""),row["chunkRevision"].as_i64().unwrap_or(0),row["sourceRevision"].as_i64().unwrap_or(0),row["fileSha256"].as_str().unwrap_or(""),SPARSE_PDF_EXTRACTOR,row["pageCount"].as_i64().unwrap_or(0),row["pageNumber"].as_i64().unwrap_or(0),MAX_SPARSE_PAGE_LOCATOR_TEXT as i64],|result|result.get(0)).map_err(|error|format!("db_teaching_source_page_revalidate_failed:{error}"))?;
+            if current!=1{return Err("teaching_source_stale".into());}
+            ensure_page_deadline(deadline_at)?;
+        }
+    }
+    let pages = rendered.into_iter().collect::<Option<Vec<_>>>().ok_or("teaching_source_page_render_failed")?;
+    ensure_page_deadline(deadline_at)?;
+    Ok(json!({"pages":pages,"complete":true,"totalImageBytes":total_image_bytes}))
+}
+
+fn render_page_image<'a>(
+    page: &'a Page<'a>,
+    cache: &RenderCache<'a>,
+    interpreter_settings: &InterpreterSettings,
+    deadline_at: i64,
+) -> Result<(Vec<u8>, usize, usize, f32), String> {
+    let (base_width,base_height)=page.render_dimensions();
+    if !base_width.is_finite()||!base_height.is_finite()||base_width<=0.0||base_height<=0.0 {
+        return Err("teaching_source_page_render_failed".into());
+    }
+    for scale in [1.35_f32, 1.15_f32, 0.95_f32, 0.80_f32] {
+        ensure_page_deadline(deadline_at)?;
+        let scaled_width=(base_width*scale).floor();
+        let scaled_height=(base_height*scale).floor();
+        if !scaled_width.is_finite()||!scaled_height.is_finite()||scaled_width<1.0||scaled_height<1.0
+            || scaled_width>MAX_PAGE_RENDER_DIMENSION as f32||scaled_height>MAX_PAGE_RENDER_DIMENSION as f32 {
+            continue;
+        }
+        let expected_width=scaled_width as usize;
+        let expected_height=scaled_height as usize;
+        if expected_width.checked_mul(expected_height).is_none_or(|pixels|pixels>MAX_PAGE_RENDER_PIXELS){continue;}
+        let pixmap = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| render(
+            page, cache, interpreter_settings,
+            &RenderSettings { x_scale: scale, y_scale: scale, bg_color: WHITE, ..Default::default() },
+        ))).map_err(|_| "teaching_source_page_render_failed".to_string())?;
+        ensure_page_deadline(deadline_at)?;
+        let width = usize::from(pixmap.width());
+        let height = usize::from(pixmap.height());
+        if width != expected_width || height != expected_height { return Err("teaching_source_page_render_failed".into()); }
+        let png = pixmap.into_png().map_err(|_| "teaching_source_page_render_failed".to_string())?;
+        ensure_page_deadline(deadline_at)?;
+        if png.len() <= MAX_PAGE_IMAGE_BYTES { return Ok((png, width, height, scale)); }
+    }
+    Err("teaching_source_page_too_large".into())
 }
 
 pub(crate) fn handle_http_request(request: &mut Request, store: &SqliteStore, browser_links: &BrowserLinkStore, origin: &str) -> Result<Option<ResponseBox>, String> {
@@ -769,5 +988,52 @@ mod tests {
         assert_eq!(origins[0].value.as_str(),"https://t.classaimate.com");
         let methods=response.headers().iter().find(|header|header.field.equiv("Access-Control-Allow-Methods")).expect("CORS methods");
         assert!(methods.value.as_str().split(',').any(|method|method.trim()=="PATCH"));
+    }
+    #[test]
+    fn sparse_pdf_matches_find_lesson_page_and_exclude_legacy_or_malformed_indexes() {
+        let root=std::env::temp_dir().join(format!("classaimate-teaching-source-match-{}",rand::thread_rng().gen::<u64>()));
+        fs::create_dir_all(&root).expect("create teaching source test directory");
+        let store=SqliteStore::open(root.join("store.sqlite")).expect("open teaching source test store");
+        {
+            let conn=store.conn.lock().expect("lock teaching source test store");
+            for (source,extractor,ordinal) in [
+                ("sparse-source",SPARSE_PDF_EXTRACTOR,15_i64),
+                ("legacy-source","browser-worker-v2",15_i64),
+                ("malformed-source",SPARSE_PDF_EXTRACTOR,99_i64),
+            ] {
+                let sha=if source=="sparse-source"{"a".repeat(64)}else if source=="legacy-source"{"b".repeat(64)}else{"c".repeat(64)};
+                conn.execute("INSERT INTO teaching_sources(owner_uid,source_id,origin_tenant_id,source_type,grade,semester_scope,subject_code,title,publisher,original_file_name,content_type,byte_size,sha256,local_path,extraction_status,lifecycle_status,extractor_version,page_count,revision,created_at_ms,updated_at_ms) VALUES('owner-a',?1,'tenant-a','teacher_guide','5','2','사회',?1,'출판사',?1||'.pdf','application/pdf',8,?2,?1||'.pdf','ready','active',?3,140,2,1,1)",params![source,sha,extractor]).expect("insert PDF source");
+                let locator="구석기 시대 사람들의 생활 모습 뗀석기 사냥 채집";
+                conn.execute("INSERT INTO teaching_source_chunks(owner_uid,source_id,chunk_id,ordinal,page_start,page_end,unit,topic,text,text_sha256,revision,created_at_ms,updated_at_ms) VALUES('owner-a',?1,'page-000016',?2,16,16,'','구석기 시대 사람들의 생활 모습',?3,?4,1,1,1)",params![source,ordinal,locator,format!("{:x}",Sha256::digest(locator.as_bytes()))]).expect("insert PDF locator");
+                conn.execute("INSERT INTO teaching_source_chunks_fts(owner_uid,source_id,chunk_id,subject_code,title,unit,topic,text) VALUES('owner-a',?1,'page-000016','사회',?1,'','구석기 시대 사람들의 생활 모습',?2)",params![source,locator]).expect("insert PDF locator FTS");
+            }
+        }
+        let result=mcp_matches(&store,"tenant-a","owner-a",&json!({
+            "lessons":[{"schoolYear":2026,"semester":2,"grade":5,"subjectCode":"사회","unit":"구석기 시대 사람들의 생활 모습","title":"구석기 시대 사람들의 생활 모습","curriculumStatus":"unlinked","dateKey":"2026-09-14","period":3,"revision":1}],
+            "sourceTypes":[],"query":"","limit":20,"offset":0
+        })).expect("match sparse PDF page");
+        let matches=result["matches"].as_array().expect("matches array");
+        assert_eq!(matches.len(),1);
+        assert_eq!(matches[0]["sourceRef"],"sparse-source");
+        assert_eq!(matches[0]["chunkRef"],"page-000016");
+        assert_eq!(matches[0]["contentType"],"application/pdf");
+        assert_eq!(matches[0]["extractorVersion"],SPARSE_PDF_EXTRACTOR);
+        assert_eq!(source_row(&store,"owner-a","legacy-source").unwrap().unwrap()["reindexRequired"],true);
+        drop(store);
+        fs::remove_dir_all(root).expect("remove teaching source test directory");
+    }
+    #[test]
+    fn renders_optional_real_teaching_source_pdf_within_mcp_bounds() {
+        let Ok(path) = std::env::var("CLASSAIMATE_TEACHING_SOURCE_PDF_FIXTURE") else { return; };
+        let bytes = fs::read(path).expect("read teaching source fixture");
+        let pdf = Pdf::new(bytes).expect("parse teaching source fixture");
+        assert_eq!(pdf.pages().len(), 140);
+        let cache = RenderCache::new();
+        let settings = InterpreterSettings::default();
+        let (png, width, height, _) = render_page_image(&pdf.pages()[0], &cache, &settings, i64::MAX)
+            .expect("render bounded teaching source page");
+        assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
+        assert!(!png.is_empty() && png.len() <= MAX_PAGE_IMAGE_BYTES);
+        assert!(width > 0 && width <= 5_000 && height > 0 && height <= 5_000);
     }
 }

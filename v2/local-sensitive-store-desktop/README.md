@@ -2,6 +2,12 @@
 
 Windows and macOS Apple Silicon desktop packaging for the loopback SQLite service used by tenant records in `local_sqlite` mode.
 
+## 0.2.90 release notes
+
+- Stores PDF teaching guides as bounded per-page search locators instead of persistent full-page extraction text, while retaining the actor-owned managed original and OneDrive Backup V5 boundary.
+- Adds native-only capability `classaimate_mcp_teaching_source_pages_v1`. A sealed request can render at most four exact PDF pages to bounded PNG images after source, chunk, revision, MIME, page-range, and file SHA-256 validation.
+- Returns selected page images to GPT as native image content; paths and base64 remain outside the structured result. Native service revision: `2026-09-14.4-teaching-source-pages`.
+
 ## 0.2.87 release notes
 
 - Fixes the teaching-source loopback API so every response emits exactly one `Access-Control-Allow-Origin` value. This restores list, registration, metadata update, and reindex requests from `https://t.classaimate.com` without changing the existing browser-token authority.
