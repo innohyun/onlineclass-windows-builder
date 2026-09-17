@@ -110,6 +110,9 @@ fn verify_existing_archive_at(
         }
     }
     let expected_archive_dir = file_root.join(archive_id);
+    // Resolve only the operator-authorized root, never an untrusted stored
+    // locator. Windows 8.3 and packaged-app roots can have an equivalent name.
+    let canonical_locator_root = locator_root.canonicalize().ok();
     let mut repaired = 0i64;
     for file in document
         .get("files")
@@ -143,7 +146,8 @@ fn verify_existing_archive_at(
         );
         // A rehearsal preserves immutable DB locators while routing all I/O to
         // its copy. Comparing normalized locators never opens the original path.
-        if !stored.is_some_and(|row| row.0 == expected.0 && row.1 == expected.1 && row.2 == expected.2 && row.3 == expected.3 && normalized_locator(&row.4) == normalized_locator(&expected.4)) {
+        let canonical_expected = canonical_locator_root.as_ref().map(|root| root.join(archive_id).join(format!("{ordinal:04}-{}", sanitized_name(original_name))));
+        if !stored.is_some_and(|row| row.0 == expected.0 && row.1 == expected.1 && row.2 == expected.2 && row.3 == expected.3 && (normalized_locator(&row.4) == normalized_locator(&expected.4) || canonical_expected.as_ref().is_some_and(|path| normalized_locator(&row.4) == normalized_locator(&path.to_string_lossy())))) {
             return Err("archive_sync_existing_file_mismatch".to_string());
         }
         let relative = reference_text(file, "bundleRelativePath")?;
@@ -170,7 +174,16 @@ fn normalized_locator(value: &str) -> String {
     // canonicalize the stored locator: rehearsal must never access that path.
     #[cfg(target_os = "macos")]
     if let Some(rest) = path.strip_prefix("/private/var/") { return format!("/var/{rest}"); }
+    #[cfg(windows)]
+    let path = path.to_ascii_lowercase();
     path
+}
+
+#[cfg(all(test, windows))]
+#[test]
+fn archive_locator_normalizes_windows_root_spelling_without_stored_path_io() {
+    assert_eq!(normalized_locator(r"\\?\C:\Users\Runner\Temp\archive"), normalized_locator(r"c:\users\runner\temp\archive"));
+    assert_ne!(normalized_locator(r"C:\Users\Runner\Temp\archive"), normalized_locator(r"C:\Users\Other\Temp\archive"));
 }
 
 #[cfg(all(test, target_os = "macos"))]

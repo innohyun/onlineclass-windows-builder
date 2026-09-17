@@ -82,6 +82,8 @@ fn recovery_tool_archives_rehearse_in_copy_include_wal_and_union_without_global_
     let work = f.root.join("review-archives");
     let global_trap = f.root.join("must-not-create-global");
     crate::shared_archive::with_test_root(&global_trap, || preview("tenant-a",&f.target,&manifest,&work,true)).unwrap();
+    let plan: Plan = serde_json::from_slice(&fs::read(work.join("plan.json")).unwrap()).unwrap();
+    assert_eq!(plan.target, f.target, "preserve the authorized original root spelling, including Windows 8.3 aliases");
     assert!(!global_trap.exists(),"rehearsal must not open global archive storage");
     assert_eq!(fingerprint(&locked_store(&f.target).unwrap()).unwrap(),before);
     let protection = archive_read(&work.join("protection")).unwrap().unwrap();

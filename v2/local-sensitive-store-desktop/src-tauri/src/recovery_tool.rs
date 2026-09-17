@@ -406,6 +406,8 @@ fn preview(
     workspace: &Path,
     current: bool,
 ) -> Result<Value, String> {
+    let locator_root = if target.is_absolute() { target.to_path_buf() }
+        else { std::env::current_dir().map_err(|_|error("recovery_path_missing"))?.join(target) };
     let target = canonical(target)?;
     let school = canonical(school)?;
     let workspace = workspace_path(workspace, &target, &school)?;
@@ -431,7 +433,7 @@ fn preview(
     };
     let protection = json!({"ok":true,"kind":"verified_offline_copy","fingerprint":target_hash});
     let mut rehearsal_body = body(tenant, &frozen);
-    rehearsal_body["recoveryArchiveLocatorRoot"] = json!(target);
+    rehearsal_body["recoveryArchiveLocatorRoot"] = json!(locator_root);
     let restored = backup::recovery_restore(&rehearsal, rehearsal_body, protection)?;
     counts["archives"] = restored["archives"].clone();
     counts["teachingSourceFilesRestored"] = restored["teachingSourcesRestored"].clone();
@@ -442,7 +444,7 @@ fn preview(
     let plan = Plan {
         version: PLAN_VERSION,
         tenant: tenant.into(),
-        target,
+        target: locator_root,
         school_manifest: school,
         school_manifest_sha256: manifest_hash,
         target_fingerprint: target_hash.clone(),
@@ -515,9 +517,11 @@ fn apply(plan_path: &Path) -> Result<Value, String> {
     } else {
         write_new(&started, &expected)?;
     }
+    let mut restore_body = body(&plan.tenant, &frozen);
+    restore_body["recoveryArchiveLocatorRoot"] = json!(plan.target);
     backup::recovery_restore(
         &store,
-        body(&plan.tenant, &frozen),
+        restore_body,
         json!({"ok":true,"kind":"verified_offline_copy","fingerprint":plan.protection_fingerprint}),
     )?;
     let result = json!({"ok":true,"phase":"applied","afterFingerprint":fingerprint(&store)?,"counts":plan.counts});
