@@ -12,6 +12,18 @@ export type DeviceSyncStatus = {
   latestGeneration?: number;
   latestStatus?: string;
   hasUnsyncedChanges?: boolean;
+  pendingLocalChangeCount?: number;
+  artifactIssue?: {
+    generation: number;
+    kind: "missing" | "integrity" | "unavailable";
+    missingFileCount: number;
+    missingFileKinds: string[];
+    firstSeenAtMs: number;
+    lastSeenAtMs: number;
+    retryCount: number;
+    repairAvailable: boolean;
+    prolonged: boolean;
+  } | null;
   lastSuccessAtMs?: number;
   lastError?: string;
   conflictCount?: number;
@@ -42,6 +54,45 @@ let snapshot: DeviceSyncStatus | null = null;
 let syncRun: Promise<void> | null = null;
 let statusRevision = 0;
 const ONE_DRIVE_DOWNLOAD_PENDING_MESSAGE = "최신 세대에 필요한 OneDrive 파일만 다운로드 요청하고 있습니다. 준비되면 무결성을 검증한 뒤 자동으로 반영합니다. 기다리는 동안 현재 로컬 자료는 유지됩니다.";
+
+function pendingLocalChangeLabel(status: DeviceSyncStatus) {
+  const count = status.pendingLocalChangeCount;
+  return typeof count === "number" && Number.isSafeInteger(count) && count >= 0
+    ? `이 PC 미게시 변경 ${count.toLocaleString("ko-KR")}건`
+    : status.hasUnsyncedChanges ? "이 PC 미게시 변경 있음 · 건수 확인 전" : "이 PC 미게시 변경 건수 확인 전";
+}
+
+function artifactIssuePresentation(status: DeviceSyncStatus) {
+  const issue = status.artifactIssue;
+  if (!issue || !["missing", "integrity", "unavailable"].includes(issue.kind)) return null;
+  const generation = Number.isSafeInteger(issue.generation) && issue.generation > 0 ? `${issue.generation}세대` : "최신 세대";
+  const preserved = "현재 로컬 자료와 미게시 변경은 유지됩니다.";
+  if (issue.kind === "integrity") return {
+    label: "파일 무결성 확인 필요", tone: "error" as const,
+    message: `${generation} 파일의 크기·해시 검증을 통과하지 못해 적용과 이 PC 변경 게시를 중단했습니다. ${preserved} 원본과 백업을 보존하고 파일 불일치를 확인해 주세요.`,
+  };
+  if (issue.kind === "unavailable") return {
+    label: "파일 접근 확인 필요", tone: "error" as const,
+    message: `${generation}에 필요한 파일 또는 백업 정보를 확인하지 못해 적용과 이 PC 변경 게시를 보류합니다. OneDrive 앱과 계정·폴더 상태를 확인해 주세요. ${preserved}`,
+  };
+  const count = Number.isSafeInteger(issue.missingFileCount) && issue.missingFileCount > 0 ? ` ${issue.missingFileCount}개` : "";
+  const kinds: Record<string, string> = { database: "DB", apply_index: "적용 정보", metadata: "백업 정보", attachment: "첨부", archive: "보관본" };
+  const labels = [...new Set((Array.isArray(issue.missingFileKinds) ? issue.missingFileKinds : []).map(kind => Object.prototype.hasOwnProperty.call(kinds, kind) ? kinds[kind] : "").filter(Boolean))];
+  const detail = labels.length ? ` (${labels.join("·")})` : "";
+  const repair = issue.repairAvailable
+    ? "동일한 내용의 복구 후보가 있습니다. 자동 재시도 또는 지금 동기화 시 파일을 다시 검증해 복구합니다."
+    : "게시한 기기의 OneDrive 업로드와 이 PC의 계정·백업 폴더를 확인해 주세요.";
+  return {
+    label: issue.prolonged ? "최신 파일 장기 미도착" : "최신 파일 도착 대기", tone: "warning" as const,
+    message: `${generation}에 필요한 파일${count}${detail}가 이 PC에 아직 도착하지 않았습니다. 최신 파일 미도착으로 이 PC 변경 게시도 대기 중입니다. ${issue.prolonged ? "10분 이상·3회 이상 확인했으나 도착하지 않았습니다. " : ""}${repair} ${preserved}`,
+  };
+}
+
+function isOneDriveFileMissing(error?: string) {
+  return String(error || "") === "onedrive_download_pending:file_not_arrived";
+}
+
+const ONE_DRIVE_FILE_MISSING_MESSAGE = "최신 세대에 필요한 파일이 이 PC에 아직 도착하지 않았습니다. 최신 파일 미도착으로 이 PC 변경 게시도 대기 중입니다. 게시한 기기의 OneDrive 업로드와 이 PC의 계정·백업 폴더를 확인해 주세요. 현재 로컬 자료와 미게시 변경은 유지됩니다.";
 
 function isOneDriveDownloadPending(error?: string) {
   return /^(onedrive_download_pending|onedrive_snapshot_pending)(?::|$)/u.test(String(error || ""));
@@ -134,6 +185,7 @@ export function deviceSyncErrorMessage(error?: string, recoveryRequired?: boolea
   if (value === "lesson_plan_binding_revision_conflict") return "같은 수업 연결 버전의 값이 달라 충돌 자료를 보관하고 세대 적용·기기 확인을 중단했습니다. 웹에서 최신 수업 연결을 확인해 주세요.";
   if (/^observation_evidence_restore_(invalid|conflict)(?::|$)/u.test(value)) return "관찰 기록과 증빙 원장의 정합성을 확인하지 못해 백업 게시 또는 수신 적용을 중단했습니다. 원문과 기존 백업은 유지됩니다. 반복 복원이나 원장 삭제 없이 누락·불일치를 확인해야 합니다.";
   if (value.startsWith("backup_sync_tracking_incomplete:")) return "자료 일부가 동기화 목록에 포함되지 않아 새 백업 게시를 중단했습니다. 기존 자료와 백업은 유지됩니다. 동기화 목록 보강 상태를 확인해야 합니다.";
+  if (isOneDriveFileMissing(value)) return ONE_DRIVE_FILE_MISSING_MESSAGE;
   if (isOneDriveDownloadPending(value)) return ONE_DRIVE_DOWNLOAD_PENDING_MESSAGE;
   const downloadFailure = oneDriveDownloadFailureMessage(value);
   if (downloadFailure) return downloadFailure;
@@ -165,6 +217,8 @@ export function renderDeviceSyncStatus(status: DeviceSyncStatus | null) {
   const failure = status?.error || status?.lastError || "";
   if (status && failure.startsWith("restore_recovery_required") && status.recoveryRequired !== false) status = { ...status, recoveryRequired: true };
   snapshot = status;
+  const artifact = status ? artifactIssuePresentation(status) : null;
+  setText("deviceSyncPendingText", status?.connected ? pendingLocalChangeLabel(status) : "PC 연결 후 미게시 변경 확인");
   setText("deviceSyncLatestText", status?.connected ? `${Number(status.latestGeneration || 0)}세대` : "-");
   setText("deviceSyncAppliedText", status?.connected ? `${Number(status.appliedGeneration || 0)}세대` : "-");
   setText("deviceSyncVerifiedText", status?.connected ? verificationLabel(status) : "-");
@@ -177,9 +231,15 @@ export function renderDeviceSyncStatus(status: DeviceSyncStatus | null) {
   } else if (status?.syncPhase === "ack_pending" || failure.startsWith("device_sync_ack_pending:")) {
     setBadge("기기 확인 전송 대기", "warning");
     setText("deviceSyncStatus", "이 PC의 자료 적용은 끝났지만 서버에 기기 확인을 전달하지 못했습니다. 확인 전송을 재시도하며, 아직 검증 완료로 표시하지 않습니다.");
+  } else if (artifact && status?.connected && status.credentialAvailable && status.oneDriveConfigured && !status.backupError) {
+    setBadge(artifact.label, artifact.tone);
+    setText("deviceSyncStatus", artifact.message);
+  } else if (isOneDriveFileMissing(failure) && status?.connected && status.credentialAvailable && status.oneDriveConfigured && !status.backupError) {
+    setBadge("최신 파일 도착 대기", "warning");
+    setText("deviceSyncStatus", ONE_DRIVE_FILE_MISSING_MESSAGE);
   } else if (status?.syncPhase === "snapshot_missing" || failure.startsWith("onedrive_snapshot_pending")) {
     setBadge("OneDrive 보관본 도착 대기", "warning");
-    setText("deviceSyncStatus", "서버에는 최신 세대가 게시되었지만 이 PC의 폴더에는 해당 보관본이 아직 보이지 않습니다. 업로드·수신 지연 또는 계정·폴더 차이를 확인해야 하며 현재 자료는 유지됩니다.");
+    setText("deviceSyncStatus", "서버에는 최신 세대가 게시되었지만 이 PC의 폴더에는 해당 보관본이 아직 보이지 않습니다. 최신 파일 미도착으로 이 PC 변경 게시도 대기 중입니다. 업로드·수신 지연 또는 계정·폴더 차이를 확인해야 하며 현재 자료는 유지됩니다.");
   } else if (status?.ok === false && status.error) {
     const pending = isOneDriveDownloadPending(status.error);
     setBadge(pending ? "OneDrive 다운로드 대기" : "확인 필요", pending ? "warning" : "error");
@@ -256,7 +316,11 @@ export async function runDeviceSyncNow(afterRun: () => Promise<unknown>) {
   syncRun = (async () => {
     try {
       const status = await invoke<DeviceSyncStatus>("run_device_sync_now");
-      if (!status?.ok) throw new Error(status?.error || "device_sync_failed");
+      if (!status?.ok) {
+        if (status?.artifactIssue === undefined) throw new Error(status?.error || "device_sync_failed");
+        renderDeviceSyncStatus({ ...(snapshot || { connected: false }), ...status });
+        return;
+      }
       renderDeviceSyncStatus(status);
       try { await afterRun(); }
       catch {
@@ -265,9 +329,11 @@ export async function runDeviceSyncNow(afterRun: () => Promise<unknown>) {
       }
     } catch (error) {
       const message = String((error as Error)?.message || error || "device_sync_failed");
-      if (message.startsWith("device_sync_ack_pending:") || message.startsWith("restore_recovery_required")) {
+      if (message.startsWith("device_sync_ack_pending:") || message.startsWith("restore_recovery_required")
+        || isOneDriveFileMissing(message) || message.startsWith("backup_artifact_") || snapshot?.artifactIssue) {
         try { snapshot = await invoke<DeviceSyncStatus>("get_device_sync_status"); }
         catch {
+          if (snapshot) snapshot = { ...snapshot, artifactIssue: undefined };
           // A previous successful status cannot establish current recovery safety.
           if (message.startsWith("restore_recovery_required") && snapshot) snapshot = { ...snapshot, recoveryRequired: undefined };
         }

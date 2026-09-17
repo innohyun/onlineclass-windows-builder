@@ -31,6 +31,14 @@ pub(crate) fn storage_paths() -> (PathBuf, PathBuf) {
 
 pub(crate) fn open_db() -> Result<Connection, String> {
     let (path, files) = storage_paths();
+    open_paths(&path, &files)
+}
+
+pub(crate) fn open_db_at(root: &Path) -> Result<Connection, String> {
+    open_paths(&root.join(DB_FILE), &root.join(FILE_DIR))
+}
+
+fn open_paths(path: &Path, files: &Path) -> Result<Connection, String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("archive_dir_create_failed:{e}"))?;
     }

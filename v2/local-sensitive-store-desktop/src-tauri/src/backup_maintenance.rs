@@ -103,6 +103,7 @@ pub(super) fn run_if_due(
     }
     require_pin_context(store, tenant_id, now)?;
     let pins = pinned_sync_generations(store, tenant_id)?;
+    super::artifact_recovery::maintain_cache(store, tenant_id, now, &pins)?;
     let verified_at = latest_verified_v5_created_at(store, tenant_id, &tenant_dir)?;
     crate::backup_v5::prune_snapshots(&tenant_dir, now, &pins)?;
     let (sequence, references) = live_references(store, tenant_id)?;

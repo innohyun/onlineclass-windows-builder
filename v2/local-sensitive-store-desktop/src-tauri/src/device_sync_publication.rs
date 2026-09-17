@@ -91,6 +91,10 @@ impl DeviceSyncManager {
             .get("databaseSha256")
             .and_then(Value::as_str)
             .ok_or("device_sync_snapshot_invalid")?;
+        // A checkpoint is only an announcement. Keep exact recoverable bytes
+        // outside OneDrive before dirty rows can be marked as published.
+        backup::protect_publication(&self.store, &session.tenant_id, &snapshot)?;
+        self.verified_snapshot(&session.tenant_id, base_generation + 1, root, database)?;
         let _access = self.store.media_access(&session.tenant_id)?;
         let checkpoint=self.authorized_post(session,credential,"/checkpoints",json!({
             "baseGeneration":base_generation,"artifactSetSha256":root,"databaseSha256":database,"snapshotVersion":snapshot_version,

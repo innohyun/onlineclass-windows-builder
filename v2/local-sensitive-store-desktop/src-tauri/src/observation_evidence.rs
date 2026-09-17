@@ -626,6 +626,13 @@ impl SqliteStore {
         Ok(json!({"ok":true,"export":audit}))
     }
     pub(crate) fn evidence_resolve(&self, tenant: &str, input: &Value) -> Result<Value, String> {
+        let mut conn = self.conn.lock().map_err(|_| "db_lock_failed")?;
+        let tx = conn.transaction().map_err(db)?;
+        let response = self.evidence_resolve_in_transaction(&tx, tenant, input)?;
+        tx.commit().map_err(db)?;
+        Ok(response)
+    }
+    pub(crate) fn evidence_resolve_in_transaction(&self, tx: &Connection, tenant: &str, input: &Value) -> Result<Value, String> {
         let doc = input["docId"].as_str().ok_or("doc_id_required")?;
         let reason = input["correctionReason"]
             .as_str()
@@ -641,8 +648,6 @@ impl SqliteStore {
         let mut authoritative_input = input.clone();
         authoritative_input["tenantId"] = json!(tenant);
         let request_hash = hash(&authoritative_input);
-        let mut conn = self.conn.lock().map_err(|_| "db_lock_failed")?;
-        let tx = conn.transaction().map_err(db)?;
         let prior=tx.query_row("SELECT request_hash,payload_json FROM observation_evidence_mutations WHERE tenant_id=?1 AND mutation_id=?2",params![tenant,mutation],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional().map_err(db)?;
         if let Some((h, raw)) = prior {
             if h != request_hash {
@@ -723,8 +728,31 @@ impl SqliteStore {
             ],
         )
         .map_err(db)?;
-        tx.commit().map_err(db)?;
         Ok(response)
+    }
+
+    // Only the offline recovery policy calls this, inside its restore transaction.
+    // All selected bytes already passed the immutable source provenance checks.
+    pub(crate) fn evidence_recovery_select(&self, tx: &Connection, tenant: &str, school: &Value) -> Result<(), String> {
+        let doc=school["docId"].as_str().ok_or("doc_id_required")?;
+        let current=read_record(tx,tenant,doc)?.ok_or("observation_revision_conflict")?;
+        if current["revisionId"]==school["revisionId"] {return Ok(());}
+        let branches=heads(&revisions(tx,tenant,doc)?);
+        let mutation=format!("offline-school-recovery-{}",hash(&json!([tenant,doc,current["revisionId"],school["revisionId"]])));
+        if branches.len()>1 {
+            self.evidence_resolve_in_transaction(tx,tenant,&json!({"docId":doc,
+                "expectedHeadIds":branches.iter().map(|v|v["revisionId"].clone()).collect::<Vec<_>>(),
+                "selectedRevisionId":school["revisionId"],"mutationId":mutation,
+                "correctionReason":"검증한 학교 최신본을 우선하는 기기 자료 복구"}))?;
+        } else {
+            // A school ancestor is selected by a new canonical correction; no
+            // immutable revision or old projection is overwritten directly.
+            let mut correction=school.clone();
+            correction["expectedRevisionId"]=current["revisionId"].clone();
+            correction["correctionReason"]=json!("검증한 학교 최신본을 우선하는 기기 자료 복구");
+            self.evidence_save_in_transaction(tx,tenant,vec![correction],&mutation,None)?;
+        }
+        Ok(())
     }
 }
 fn parent_ids(revision: &Value) -> Vec<Value> {

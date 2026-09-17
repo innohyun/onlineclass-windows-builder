@@ -17,7 +17,8 @@ pub(super) fn install_schema(conn: &Connection) -> Result<(), String> {
         acked_root TEXT NOT NULL DEFAULT ''
     );",
     )
-    .map_err(|e| format!("db_sync_runtime_schema_failed:{e}"))
+    .map_err(|e| format!("db_sync_runtime_schema_failed:{e}"))?;
+    super::artifact_recovery::install_schema(conn)
 }
 
 pub(crate) fn pending_publication(

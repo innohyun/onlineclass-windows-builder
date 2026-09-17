@@ -179,6 +179,10 @@ body.is-desktop-shell.is-teacher-home .store-shell {
 
 .desktop-shell-tutorial-card {
   background: white;
+  box-sizing: border-box;
+  max-height: calc(100dvh - 48px);
+  display: flex;
+  flex-direction: column;
   border-radius: 18px;
   box-shadow: 0 24px 80px rgba(2, 6, 23, 0.35);
   color: #172033;
@@ -200,6 +204,8 @@ body.is-desktop-shell.is-teacher-home .store-shell {
   color: #475569;
   line-height: 1.65;
   margin: 0 0 14px;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .desktop-shell-tutorial small {
@@ -210,6 +216,7 @@ body.is-desktop-shell.is-teacher-home .store-shell {
 
 .desktop-shell-tutorial-card > div {
   display: flex;
+  flex-shrink: 0;
   gap: 8px;
   justify-content: flex-end;
   margin-top: 22px;

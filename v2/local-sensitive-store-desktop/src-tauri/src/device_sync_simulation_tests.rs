@@ -319,6 +319,50 @@ fn dirty_delete_is_preserved_and_lost_ack_can_be_replayed() {
 }
 
 #[test]
+fn missing_377_preserves_371_local_edits_until_exact_repair_then_publishes_once() {
+    let mut lab=Lab::new(377);
+    lab.edit(0,1,1,false);
+    lab.edit(1,2,2,false);
+    backup::mark_sync_latest(&lab.stores[1],"qa-lab",377,"announced").unwrap();
+    lab.stores[1].conn.lock().unwrap().execute("UPDATE local_store_device_sync_state SET applied_generation=371 WHERE tenant_id='qa-lab'",[]).unwrap();
+    let next=backup::run_with_kind_version(&lab.stores[0],"qa-lab".into(),"auto_sync",Some(377),5).unwrap();
+    *lab.cloud.checkpoint.lock().unwrap()=Some(json!({"generation":377,"sourceDeviceId":"qa-device-0","status":"announced",
+        "artifactSetSha256":next["artifactSetSha256"],"databaseSha256":next["databaseSha256"],"snapshotVersion":5}));
+    lab.relay(0,1,false);
+    let source=PathBuf::from(next["manifestPath"].as_str().unwrap());
+    let relative=source.strip_prefix(fs::canonicalize(lab.root.join("view-0")).unwrap()).unwrap();
+    let target=lab.root.join("view-1").join(relative).parent().unwrap().join("db/local-sensitive.sqlite");
+    fs::remove_file(&target).unwrap();
+    let rows=lab.rows(1);
+    assert!(lab.apply(1,false).is_err());
+    assert_eq!(lab.rows(1),rows);
+    assert_eq!(backup::local_sync_state(&lab.stores[1],"qa-lab").unwrap().applied_generation,371);
+    assert!(backup::pending_local_change_count(&lab.stores[1],"qa-lab").unwrap()>0);
+    assert_eq!(backup::artifact_issue_status(&lab.stores[1],"qa-lab",377).unwrap()["missingFileKinds"],json!(["database"]));
+    assert_eq!(lab.cloud.ack_count.load(Ordering::SeqCst),0);
+    // Publisher repairs its missing shared copy from its protected local original.
+    backup::protect_publication(&lab.stores[0],"qa-lab",&next).unwrap();
+    fs::remove_file(source.parent().unwrap().join("db/local-sensitive.sqlite")).unwrap();
+    lab.apply(0,false).unwrap();
+    lab.apply(1,true).unwrap();
+    assert_eq!(lab.rows(1).len(),2);
+    assert_eq!(backup::artifact_issue_status(&lab.stores[1],"qa-lab",377).unwrap(),Value::Null);
+    lab.publish(1).unwrap();
+    let generation=checkpoint_generation(lab.cp().as_ref());assert_eq!(generation,378);
+    lab.settle();assert_eq!(checkpoint_generation(lab.cp().as_ref()),generation);
+}
+
+#[test]
+fn publication_cache_failure_keeps_dirty_rows_and_never_announces() {
+    let mut lab=Lab::new(378);lab.edit(0,1,1,false);
+    fs::write(lab.stores[0].data_dir.join("sync-recovery-cache"),b"blocked-directory").unwrap();
+    assert_eq!(lab.publish(0).unwrap_err(),"artifact_recovery_cache_unavailable");
+    assert!(lab.cp().is_none());
+    assert!(backup::pending_local_change_count(&lab.stores[0],"qa-lab").unwrap()>0);
+    assert!(backup::pending_publication(&lab.stores[0],"qa-lab").unwrap().is_some());
+}
+
+#[test]
 #[ignore = "bounded seeded suite is run explicitly by CI/runner"]
 fn seeded_convergence() {
     let number = |name: &str, default: usize| {

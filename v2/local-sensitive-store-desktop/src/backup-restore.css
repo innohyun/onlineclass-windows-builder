@@ -212,6 +212,12 @@
   line-height: 1.45;
 }
 
+.backup-device-sync-primary #deviceSyncPendingText {
+  margin-top: 6px;
+  color: var(--backup-navy);
+  font-weight: 700;
+}
+
 .backup-device-sync-metrics {
   min-width: 0;
   display: grid;

@@ -255,7 +255,20 @@ fn restore_with_prebackup<F>(store: &SqliteStore, body: Value, create_safety_bac
 where
     F: FnOnce(&SqliteStore, String) -> Result<Value, String>,
 {
-    let preview = restore_preview(store, body.clone())?;
+    restore_with_policy(store, body, create_safety_backup, false)
+}
+
+#[path = "backup_recovery_policy.rs"]
+mod recovery_policy;
+pub(crate) use recovery_policy::{recovery_preflight, recovery_restore};
+
+fn restore_with_policy<F>(store: &SqliteStore, body: Value, create_safety_backup: F, school_preferred: bool) -> Result<Value, String>
+where
+    F: FnOnce(&SqliteStore, String) -> Result<Value, String>,
+{
+    let preview = if school_preferred {
+        recovery_policy::verified_preview(&body)?
+    } else { restore_preview(store, body.clone())? };
     let tenant_id = preview.get("tenantId").and_then(|value| value.as_str()).unwrap_or("").to_string();
     let safety_backup = create_safety_backup(store, tenant_id.clone())
         .map_err(|error| format!("pre_restore_backup_failed:{error}"))?;
@@ -289,14 +302,22 @@ where
             &authoritative,
             None,
             None,
-            false,
+            school_preferred,
         )?;
     let mut unjournaled_staging = capture::StagingGuard(staging_root.clone());
+    if school_preferred && (media_missing > 0 || work_note_attachments_missing > 0 || teaching_sources_missing > 0) {
+        return Err("recovery_source_artifacts_incomplete".into());
+    }
     let intent = restore_intent(store, &staging_root, &media_plans)?;
     let _access = crate::restore_journal::access(&store.data_dir)?;
     let mut conn = store.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
     crate::restore_journal::ready(&conn, &tenant_id)?;
-    if let Err(error) = conn.execute("ATTACH DATABASE ?1 AS restore", params![db_path.to_string_lossy().to_string()]) {
+    let attach_path = if school_preferred {
+        let mut uri = url::Url::from_file_path(&db_path).map_err(|_| "recovery_source_path_invalid")?;
+        uri.set_query(Some("mode=ro&immutable=1"));
+        uri.to_string()
+    } else { db_path.to_string_lossy().to_string() };
+    if let Err(error) = conn.execute("ATTACH DATABASE ?1 AS restore", params![attach_path]) {
         let _ = fs::remove_dir_all(&staging_root);
         return Err(format!("restore_db_attach_failed:{error}"));
     }
@@ -306,6 +327,7 @@ where
         {
             let preflight = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
             crate::observation_evidence::check_restore(&preflight, &tenant_id)?;
+            if school_preferred { recovery_policy::check_attached(&preflight, &tenant_id, &authoritative)?; }
             if manual_restore_has_lesson_binding_conflict(&preflight, &tenant_id)? {
                 return Err("lesson_plan_binding_revision_conflict".to_string());
             }
@@ -315,8 +337,11 @@ where
         let transaction = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| format!("restore_transaction_begin_failed:{e}"))?;
         // Recheck after acquiring SQLite's cross-connection writer lock.
         if manual_restore_has_lesson_binding_conflict(&transaction, &tenant_id)? { return Err("lesson_plan_binding_revision_conflict".into()); }
+        if school_preferred { recovery_policy::check_attached(&transaction, &tenant_id, &authoritative)?; }
         check_media_rows(&transaction, &tenant_id, &media_plans)?;
-        archive_result = crate::backup_v4::apply_archives(&manifest_path, &authoritative, &tenant_id)?;
+        archive_result = if school_preferred {
+            recovery_policy::apply_archives(store, &body, &manifest_path, &authoritative, &tenant_id)?
+        } else { crate::backup_v4::apply_archives(&manifest_path, &authoritative, &tenant_id)? };
         crate::restore_journal::apply(&transaction, &store.data_dir, &tenant_id, &intent)?;
         let mut imported = 0i64;
         for table in BACKUP_TABLES {
@@ -335,7 +360,10 @@ where
                 .map(|column| format!("{column} = excluded.{column}"))
                 .collect::<Vec<String>>()
                 .join(", ");
-            let merge_guard = restore_merge_guard(table);
+            let merge_guard = if school_preferred {
+                recovery_policy::archive_losers(&transaction, &tenant_id, table)?;
+                recovery_policy::merge_guard(table)
+            } else { restore_merge_guard(table) };
             let source_guard = if table.name == "lesson_observations" {
                 format!(" AND NOT EXISTS (SELECT 1 FROM main.observation_evidence_deletions d WHERE d.tenant_id=restore.{name}.tenant_id AND d.doc_id=restore.{name}.doc_id)", name=table.name)
             } else { String::new() };
@@ -382,6 +410,7 @@ where
                 params![tenant_id],
             )
             .map_err(|e| format!("restore_work_note_fts_insert_failed:{e}"))?;
+        if school_preferred { recovery_policy::resolve_observations(store,&transaction,&tenant_id)?; }
         crate::restore_journal::receipt(&transaction, &tenant_id, &intent)?;
         transaction.commit().map_err(|e| format!("restore_transaction_commit_failed:{e}"))?;
         Ok(imported)

@@ -405,19 +405,29 @@ impl DeviceSyncManager {
             return Err("device_sync_checkpoint_invalid".to_string());
         }
         let status = checkpoint_status(Some(checkpoint));
-        if generation <= state.applied_generation && source_device_id == session.device_id {
-            return Ok(());
-        }
         if generation <= state.applied_generation
             && backup::acknowledged_locally(&self.store, &session.tenant_id, generation, &session.device_id, &artifact_root)? {
             return Ok(());
         }
-        let snapshot = self.verified_snapshot(
+        let verified = self.verified_snapshot(
             &session.tenant_id,
             artifact_generation,
             &artifact_root,
             &database_sha256,
-        )?;
+        );
+        let snapshot = match verified {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                if backup::repair_checkpoint_artifacts(&self.store, &session.tenant_id, generation,
+                    artifact_generation, &artifact_root, &database_sha256, &error)? {
+                    self.verified_snapshot(&session.tenant_id, artifact_generation, &artifact_root, &database_sha256)?
+                } else { return Err(error); }
+            }
+        };
+        backup::clear_artifact_issue(&self.store, &session.tenant_id)?;
+        if generation <= state.applied_generation && source_device_id == session.device_id {
+            return Ok(());
+        }
         if generation <= state.applied_generation {
             let manifest_path = PathBuf::from(
                 snapshot
@@ -645,6 +655,8 @@ impl DeviceSyncManager {
             "oneDriveConfigured": backup_status.as_ref().ok().and_then(|value| value.get("configured")).and_then(Value::as_bool).unwrap_or(false),
             "backupError": backup_status.err(),
             "oneDriveEvidence": crate::onedrive_evidence::status(evidence_root.as_deref(), state.latest_generation),
+            "artifactIssue": backup::artifact_issue_status(&self.store, &session.tenant_id, state.latest_generation)?,
+            "pendingLocalChangeCount": backup::pending_local_change_count(&self.store, &session.tenant_id)?,
             "observationEvidence": crate::observation_sync_status::status(&self.store, &session.tenant_id),
             "syncPhase": phase,
             "recoveryRequired": recovery_required,

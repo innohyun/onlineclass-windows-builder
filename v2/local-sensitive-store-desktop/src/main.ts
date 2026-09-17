@@ -1089,7 +1089,7 @@ async function restoreSelectedBackup() {
         "error",
       );
     } else {
-      setBackupRestoreMessage(`보호 백업 후 복원 완료: DB 반영 ${numberText(result.imported)}건, 첨부 복원 ${numberText(result.mediaRestored)}개${numeric(result.mediaMissing) ? `, 누락 ${numberText(result.mediaMissing)}개` : ""}.`, "ok");
+      setBackupRestoreMessage(`보호 백업 후 이 PC 복원 완료: DB 반영 ${numberText(result.imported)}건, 첨부 복원 ${numberText(result.mediaRestored)}개${numeric(result.mediaMissing) ? `, 누락 ${numberText(result.mediaMissing)}개` : ""}. 기기 동기화 완료와는 별개입니다. 서버 최신 세대 반영과 이 PC 변경 게시 상태를 확인해 주세요.`, "ok");
       await loadBackupStatus();
       await loadDeviceSyncStatus().catch(() => undefined);
       backupStorage.invalidate();

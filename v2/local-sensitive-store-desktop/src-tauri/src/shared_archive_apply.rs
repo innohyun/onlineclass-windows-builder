@@ -45,6 +45,17 @@ pub(crate) fn verify_existing_archive(
     document: &Value,
     bundle_dir: &Path,
 ) -> Result<i64, String> {
+    verify_existing_archive_at(connection, file_root, file_root, tenant_id, document, bundle_dir)
+}
+
+fn verify_existing_archive_at(
+    connection: &Connection,
+    file_root: &Path,
+    locator_root: &Path,
+    tenant_id: &str,
+    document: &Value,
+    bundle_dir: &Path,
+) -> Result<i64, String> {
     let archive = document
         .get("archive")
         .ok_or_else(|| "archive_sync_document_invalid".to_string())?;
@@ -127,9 +138,12 @@ pub(crate) fn verify_existing_archive(
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string(),
-            target.to_string_lossy().to_string(),
+            locator_root.join(archive_id).join(format!("{ordinal:04}-{}", sanitized_name(original_name))).to_string_lossy().to_string(),
         );
-        if stored != Some(expected) {
+        // A rehearsal preserves immutable DB locators while routing all I/O to
+        // its copy. Comparing normalized locators never opens the original path.
+        let normalize = |value: &str| value.replace('\\', "/").trim_start_matches("//?/").to_string();
+        if !stored.is_some_and(|row| row.0 == expected.0 && row.1 == expected.1 && row.2 == expected.2 && row.3 == expected.3 && normalize(&row.4) == normalize(&expected.4)) {
             return Err("archive_sync_existing_file_mismatch".to_string());
         }
         let relative = reference_text(file, "bundleRelativePath")?;
@@ -364,6 +378,17 @@ pub(crate) fn apply_snapshot_bundles_to(
     tenant_dir: &Path,
     archives: &Value,
 ) -> Result<Value, String> {
+    apply_snapshot_bundles_at(connection, file_root, file_root, tenant_id, tenant_dir, archives)
+}
+
+pub(crate) fn apply_snapshot_bundles_at(
+    connection: &mut Connection,
+    file_root: &Path,
+    locator_root: &Path,
+    tenant_id: &str,
+    tenant_dir: &Path,
+    archives: &Value,
+) -> Result<Value, String> {
     verify_snapshot_bundles(tenant_id, tenant_dir, archives)?;
     let references = archives
         .get("records")
@@ -379,7 +404,7 @@ pub(crate) fn apply_snapshot_bundles_to(
                 .ok_or_else(|| "archive_sync_bundle_path_invalid".to_string())?,
         );
         let document = verify_bundle_reference_at(&bundle_dir, tenant_id, reference)?;
-        match verify_existing_archive(connection, file_root, tenant_id, &document, &bundle_dir)? {
+        match verify_existing_archive_at(connection, file_root, locator_root, tenant_id, &document, &bundle_dir)? {
             -1 => {
                 insert_archive(connection, file_root, tenant_id, &document, &bundle_dir)?;
                 imported += 1;

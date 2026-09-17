@@ -13,6 +13,7 @@ use std::time::Duration;
 
 #[path = "backup_restore.rs"]
 mod restore_runtime;
+pub(crate) use restore_runtime::{recovery_preflight, recovery_restore};
 #[cfg(test)]
 #[path = "backup_optimization_tests.rs"]
 mod optimization_tests;
@@ -313,6 +314,10 @@ pub(crate) use tracking::*;
 #[path = "backup_runtime.rs"]
 mod runtime;
 pub(crate) use runtime::*;
+#[path = "backup_artifact_recovery.rs"]
+mod artifact_recovery;
+pub(crate) use artifact_recovery::{artifact_issue_status, pending_local_change_count,
+    clear_artifact_issue, repair_checkpoint_artifacts, protect_publication};
 #[path = "backup_capture.rs"]
 mod capture;
 #[path = "backup_maintenance.rs"]

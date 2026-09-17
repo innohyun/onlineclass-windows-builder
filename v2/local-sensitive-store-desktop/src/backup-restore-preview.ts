@@ -110,8 +110,26 @@ export function initBackupRestorePreview() {
       ok: true, connected: true, credentialAvailable: true, oneDriveConfigured: true,
       latestGeneration: 290, appliedGeneration: previewState === "onedrive-synced" ? 290 : 254,
       latestStatus: "verified",
+      pendingLocalChangeCount: previewState === "onedrive-synced" ? 0 : 42,
+      hasUnsyncedChanges: previewState !== "onedrive-synced",
+      observationEvidence: { state: "clear", conflictedRecordCount: 0 },
       lastError: previewState === "onedrive-download-pending" ? "onedrive_download_pending:hydrating"
         : previewState === "onedrive-download-failed" ? "onedrive_download_failed:0x8007017C" : undefined,
+    });
+  }
+  if (["artifact-missing", "artifact-prolonged", "artifact-repair", "artifact-integrity", "artifact-unavailable", "pending-local"].includes(previewState)) {
+    renderDeviceSyncStatus({
+      ok: true, connected: true, credentialAvailable: true, oneDriveConfigured: true,
+      latestGeneration: 377, appliedGeneration: 371, publishedGeneration: 370, latestStatus: "announced",
+      pendingLocalChangeCount: 42, hasUnsyncedChanges: true,
+      observationEvidence: { state: "clear", conflictedRecordCount: 0 },
+      artifactIssue: previewState === "pending-local" ? null : {
+        generation: 377,
+        kind: previewState === "artifact-integrity" ? "integrity" : previewState === "artifact-unavailable" ? "unavailable" : "missing",
+        missingFileCount: previewState === "artifact-unavailable" ? 0 : 1,
+        missingFileKinds: ["database"], firstSeenAtMs: 1, lastSeenAtMs: 600001, retryCount: 3,
+        repairAvailable: previewState === "artifact-repair", prolonged: previewState === "artifact-prolonged",
+      },
     });
   }
 
@@ -145,7 +163,7 @@ export function initBackupRestorePreview() {
         source: `${backup.pc} · ${backup.relation} · ${backup.os}`,
         summary: "선택한 백업의 자료와 첨부파일을 현재 PC에 병합합니다.",
       }).then((confirmed) => {
-        if (confirmed) byId("backupRestoreStatus").textContent = "보호 백업 후 선택한 백업을 안전하게 복원했습니다.";
+        if (confirmed) byId("backupRestoreStatus").textContent = "보호 백업 후 이 PC에 선택한 백업을 복원했습니다. 기기 동기화 완료와는 별개입니다.";
       });
     }
   }, true);

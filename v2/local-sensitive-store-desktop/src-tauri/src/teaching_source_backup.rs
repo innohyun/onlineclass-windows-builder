@@ -356,6 +356,32 @@ pub(crate) fn current_guard(
         .map(|state| state.map(|(revision, hash)| format!("{revision}:{hash}")))
 }
 
+/// Offline school recovery may reuse the canonical restore only when it will
+/// select the school bundle. Ambiguous revision branches require an explicit
+/// domain edit; never silently retain a different local bundle as "school wins".
+pub(crate) fn recovery_preflight(conn: &Connection, tenant: &str) -> Result<(), String> {
+    if !validate_restore(conn, tenant)? { return Ok(()); }
+    let mut statement = conn.prepare("SELECT s.owner_uid,s.source_id,s.revision FROM restore.teaching_sources s JOIN restore.teaching_source_actor_homes h ON h.owner_uid=s.owner_uid WHERE h.backup_tenant_id=?1")
+        .map_err(|_| "recovery_teaching_source_compare_failed")?;
+    let rows = statement.query_map([tenant], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?)))
+        .map_err(|_| "recovery_teaching_source_compare_failed")?;
+    for row in rows {
+        let (owner, source, revision) = row.map_err(|_| "recovery_teaching_source_compare_failed")?;
+        let home: Option<String> = conn.query_row("SELECT backup_tenant_id FROM main.teaching_source_actor_homes WHERE owner_uid=?1",[&owner],|r|r.get(0)).optional().map_err(|_| "recovery_teaching_source_compare_failed")?;
+        if home.is_some_and(|value| value != tenant) { return Err("teaching_source_restore_actor_home_conflict".into()); }
+        let incoming_hash = bundle_sha256(conn,"restore",&owner,&source)?;
+        if let Some((current_revision,current_hash)) = current_state(conn,&owner,&source)? {
+            if current_revision > revision || (current_revision == revision && current_hash != incoming_hash) {
+                return Err("recovery_teaching_source_canonical_resolution_required".into());
+            }
+            if current_hash == incoming_hash { continue; }
+        }
+        let affects_other_tenant: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM main.curriculum_source_links WHERE owner_uid=?1 AND source_id=?2 AND tenant_id<>?3 UNION ALL SELECT 1 FROM restore.curriculum_source_links WHERE owner_uid=?1 AND source_id=?2 AND tenant_id<>?3)",params![owner,source,tenant],|r|r.get(0)).map_err(|_|"recovery_teaching_source_compare_failed")?;
+        if affects_other_tenant { return Err("recovery_teaching_source_other_class_resolution_required".into()); }
+    }
+    Ok(())
+}
+
 pub(crate) fn should_restore_file(
     store: &SqliteStore,
     incoming: &FileRow,

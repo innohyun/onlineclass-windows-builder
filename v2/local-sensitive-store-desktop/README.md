@@ -2,6 +2,27 @@
 
 Windows and macOS Apple Silicon desktop packaging for the loopback SQLite service used by tenant records in `local_sqlite` mode.
 
+## 0.2.91 recovery release
+
+- Repairs absent checkpoint files only from same-tenant sealed candidates with the exact expected size and SHA-256. Existing mismatched files remain untouched; standard artifact-root verification still gates apply and ACK.
+- Keeps publication originals in a device-local recovery cache before announcing a generation. Cache verification failure leaves local edits pending.
+- Shows missing, prolonged missing, integrity, download, and pending-local-change states independently. Manual restore completion does not imply device sync completion.
+- Adds the offline `local-store-recovery` CLI with separate preview/apply, WAL-consistent protection copies, input fingerprints, school-preferred union, conflict preservation, and canonical observation resolution. See the recovery runbook below before use.
+- Native service revision: `2026-09-17.1-sync-artifact-recovery`. Installer release and actual multi-device recovery are tracked separately.
+
+### Offline recovery procedure
+
+The operator CLI is built with `cargo build --locked --bin local-store-recovery` in `src-tauri`. It does not start the desktop, HTTP service, sync worker, or credential flow.
+
+1. Close all participating apps through their trays and preserve each device's current DB and attachments. A rehearsal may target a separate copy while an unrelated installed app is running. A production target requires the local service ports to be closed; SQLite also holds an exclusive writer lock.
+2. Run `local-store-recovery preview --tenant TENANT --target-dir LOCAL_COPY --school-manifest SEALED_MANIFEST --workspace NEW_LOCAL_DIRECTORY`. The new directory must be outside OneDrive. Preview preserves a WAL-consistent `protection` copy, freezes and verifies the source files, and rehearses the transaction separately. `plan.json` contains input fingerprints and per-table counts, not a remote publication instruction.
+3. Older comparison backups omit `--school-current`; their plans cannot be applied. Only use that flag after obtaining the school's latest data and protecting the other devices.
+4. Review the generated plan and run `local-store-recovery apply --plan PLAN_FILE` only against the intended stopped target. Any changed source, target, rehearsal, class, or revision fails closed. Completed receipts are idempotent. An interrupted attempt can resume only before any input changes and with its exact start receipt; pending journal recovery or committed changes without a final receipt require a fresh checked preview.
+5. Ordinary mutable records use the school value, retain local-only keys, and archive replaced rows. Observation history is unioned; branch selection uses the existing revision-checked resolution transaction. Shared archives use an explicit copy-local database/file root, preserve immutable locators, include archive WAL in consistent protection copies, and union verified bundles. Teaching sources use canonical restore only when its revision guards select the school bundle; previous bundles remain in the protection copy. Older school revisions, same-revision divergent bundles, cross-class effects, unsupported tombstones, or binding conflicts return specific blockers. Do not remove references or rewrite revisions to bypass them. A blocked preview is not a completed school-data rehearsal.
+6. Missing checkpoint file repair, normal checkpoint apply, school merge, CAS publication, and each peer's readback/ACK remain distinct steps. Never edit generation, manifest, or commit values to force progress.
+
+The recovery workspace contains private data and must remain local. Its presence, an installer build, or an applied receipt does not prove OneDrive delivery or two-device synchronization.
+
 ## 0.2.90 release notes
 
 - Stores PDF teaching guides as bounded per-page search locators instead of persistent full-page extraction text, while retaining the actor-owned managed original and OneDrive Backup V5 boundary.
