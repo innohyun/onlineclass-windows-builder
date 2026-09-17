@@ -6,6 +6,7 @@ use std::io::{self, Write};
 
 const MAX_METADATA_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_CANDIDATES: usize = 256;
+const MAX_CANDIDATE_SEAL_PROBES: usize = 8;
 
 pub(super) fn install_schema(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
@@ -170,7 +171,7 @@ struct Sealed {
     artifacts: Vec<ArtifactDigest>,
 }
 
-fn sealed(
+fn manifest_seal(
     path: &Path,
     tenant: &str,
     generation: Option<i64>,
@@ -184,14 +185,10 @@ fn sealed(
         .replace('\\', "/");
     checked_path(&base, &rel)?;
     let manifest = metadata_json(path)?;
-    let commit = metadata_json(&path.with_file_name("commit.json"))?;
     if !matches!(manifest["version"].as_i64(), Some(3 | 4 | 5))
         || manifest["tenantId"] != tenant
         || manifest["generation"].as_i64() != generation
         || manifest["artifactSetSha256"] != root
-        || commit["tenantId"] != tenant
-        || commit["generation"].as_i64() != generation
-        || commit["artifactSetSha256"] != root
     {
         return Err("artifact_repair_seal_mismatch".into());
     }
@@ -227,6 +224,76 @@ fn sealed(
         root: base,
         artifacts,
     })
+}
+
+fn verify_commit(seal: &Sealed, commit: &Value) -> Result<(), String> {
+    if commit["tenantId"] != seal.manifest["tenantId"]
+        || commit["generation"].as_i64() != seal.manifest["generation"].as_i64()
+        || commit["artifactSetSha256"] != seal.manifest["artifactSetSha256"]
+    {
+        return Err("artifact_repair_seal_mismatch".into());
+    }
+    Ok(())
+}
+
+fn sealed(
+    path: &Path,
+    tenant: &str,
+    generation: Option<i64>,
+    root: &str,
+) -> Result<Sealed, String> {
+    let seal = manifest_seal(path, tenant, generation, root)?;
+    verify_commit(&seal, &metadata_json(&path.with_file_name("commit.json"))?)?;
+    Ok(seal)
+}
+
+fn candidate_seal(
+    path: &Path,
+    tenant: &str,
+    missing: &[(ArtifactDigest, String)],
+    probes: &mut usize,
+) -> Result<Sealed, String> {
+    let manifest = metadata_json(path)?;
+    let root = manifest["artifactSetSha256"].as_str().ok_or("artifact_repair_seal_invalid")?;
+    let seal = manifest_seal(path, tenant, manifest["generation"].as_i64(), root)?;
+    let commit = path.with_file_name("commit.json");
+    let rel = commit.strip_prefix(&seal.root).map_err(|_| "artifact_repair_path_escape")?
+        .to_string_lossy().replace('\\', "/");
+    let commit = checked_path(&seal.root, &rel)?;
+    let meta = fs::symlink_metadata(&commit).map_err(|_| "artifact_metadata_unavailable")?;
+    if !meta.is_file() || meta.file_type().is_symlink() || meta.len() > MAX_METADATA_BYTES {
+        return Err("artifact_metadata_unavailable".into());
+    }
+    if resident(&commit) {
+        verify_commit(&seal, &metadata_json(&commit)?)?;
+        return Ok(seal);
+    }
+    if *probes >= MAX_CANDIDATE_SEAL_PROBES {
+        return Err("artifact_metadata_unavailable".into());
+    }
+    // Only locally verified bytes matching an authenticated missing digest
+    // may request their seal. Historical DBs/manifests stay offline.
+    if !seal.artifacts.iter().any(|candidate| {
+        missing.iter().any(|(expected, _)| {
+            candidate.size == expected.size && candidate.sha256 == expected.sha256
+        }) && artifact_relative(&seal, candidate).ok()
+            .and_then(|rel| checked_path(&seal.root, &rel).ok())
+            .is_some_and(|path| {
+                if *probes >= MAX_CANDIDATE_SEAL_PROBES || !resident(&path)
+                    || !fs::metadata(&path).is_ok_and(|m| m.len() == candidate.size)
+                {
+                    return false;
+                }
+                // Bound extra full-file hash probes as well as seal requests.
+                *probes += 1;
+                matches_file(&path, candidate)
+            })
+    }) {
+        return Err("artifact_repair_candidate_unavailable".into());
+    }
+    crate::onedrive_download::with_downloads(|| crate::onedrive_download::prepare(&commit))?;
+    verify_commit(&seal, &metadata_json(&commit)?)?;
+    Ok(seal)
 }
 
 fn artifact_relative(s: &Sealed, artifact: &ArtifactDigest) -> Result<String, String> {
@@ -457,12 +524,9 @@ pub(crate) fn repair_checkpoint_artifacts(
         return Ok(false);
     }
     let mut candidates = Vec::new();
+    let mut seal_probes = 0;
     for p in manifests(&cache).into_iter().chain(manifests(&shared)) {
-        let Ok(m) = metadata_json(&p) else { continue };
-        let Some(r) = m["artifactSetSha256"].as_str() else {
-            continue;
-        };
-        if let Ok(s) = sealed(&p, tenant, m["generation"].as_i64(), r) {
+        if let Ok(s) = candidate_seal(&p, tenant, &missing, &mut seal_probes) {
             candidates.push(s);
         }
     }
