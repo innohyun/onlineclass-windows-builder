@@ -256,7 +256,10 @@ jobs:
           $currentLaunch = Start-GuiShortcut $shortcut.File.FullName $shortcut.Target
           $desktopProcess = $currentLaunch.Process
           $installedTarget = $currentLaunch.Path
-          Wait-LocalServiceVersion '2026-09-17.1-sync-artifact-recovery'
+          $serviceSource = Get-Content 'src-tauri/src/lib.rs' -Raw
+          $serviceVersionMatch = [regex]::Match($serviceSource, 'const SERVICE_VERSION: &str = "([^"]+)";')
+          if (-not $serviceVersionMatch.Success) { throw 'Source service version is missing.' }
+          Wait-LocalServiceVersion $serviceVersionMatch.Groups[1].Value
           if ($quickShortcut.Target -and ([IO.Path]::GetFullPath($quickShortcut.Target) -ine [IO.Path]::GetFullPath($installedTarget))) { throw "Quick observation shortcut resolves to an unexpected GUI executable." }
           $backgroundProcessId = $desktopProcess.Id
           for ($cycle = 1; $cycle -le 10; $cycle++) {
