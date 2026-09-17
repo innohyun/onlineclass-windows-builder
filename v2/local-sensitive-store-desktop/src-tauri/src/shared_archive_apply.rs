@@ -38,6 +38,7 @@ fn replace_file_from_bundle(
     Ok(true)
 }
 
+#[cfg(test)]
 pub(crate) fn verify_existing_archive(
     connection: &Connection,
     file_root: &Path,
@@ -142,8 +143,7 @@ fn verify_existing_archive_at(
         );
         // A rehearsal preserves immutable DB locators while routing all I/O to
         // its copy. Comparing normalized locators never opens the original path.
-        let normalize = |value: &str| value.replace('\\', "/").trim_start_matches("//?/").to_string();
-        if !stored.is_some_and(|row| row.0 == expected.0 && row.1 == expected.1 && row.2 == expected.2 && row.3 == expected.3 && normalize(&row.4) == normalize(&expected.4)) {
+        if !stored.is_some_and(|row| row.0 == expected.0 && row.1 == expected.1 && row.2 == expected.2 && row.3 == expected.3 && normalized_locator(&row.4) == normalized_locator(&expected.4)) {
             return Err("archive_sync_existing_file_mismatch".to_string());
         }
         let relative = reference_text(file, "bundleRelativePath")?;
@@ -162,6 +162,23 @@ fn verify_existing_archive_at(
         }
     }
     Ok(repaired)
+}
+
+fn normalized_locator(value: &str) -> String {
+    let path = value.replace('\\', "/").trim_start_matches("//?/").to_string();
+    // macOS exposes /var through the OS-owned /private/var alias. Do not
+    // canonicalize the stored locator: rehearsal must never access that path.
+    #[cfg(target_os = "macos")]
+    if let Some(rest) = path.strip_prefix("/private/var/") { return format!("/var/{rest}"); }
+    path
+}
+
+#[cfg(all(test, target_os = "macos"))]
+#[test]
+fn archive_locator_accepts_only_the_known_var_alias_without_filesystem_access() {
+    assert_eq!(normalized_locator("/private/var/not-created/a"), normalized_locator("/var/not-created/a"));
+    assert_ne!(normalized_locator("/private/var/not-created/a"), normalized_locator("/var/not-created/b"));
+    assert_ne!(normalized_locator("/private/various/a"), normalized_locator("/various/a"));
 }
 
 fn copy_new_archive_files(
