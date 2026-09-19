@@ -36,6 +36,19 @@ pub(super) fn error(frame: &Value, code: &str) -> Value {
         "status":"error","errorCode":code})
 }
 
+pub(super) fn wire_response(frame: &Value, mut response: Value) -> Value {
+    if let Some(correlation) = frame["correlationId"].as_str().filter(|value| id(value)) {
+        response["correlationId"] = json!(correlation);
+    }
+    // Envelope metadata is part of the wire limit. Oversized reads fail alone,
+    // before send() could close the socket and fail unrelated pending requests.
+    match serde_json::to_vec(&response) {
+        Ok(bytes) if bytes.len() <= outgoing_frame_limit(&response) => response,
+        Ok(_) => error(frame, "LOCAL_READ_RESULT_TOO_LARGE"),
+        Err(_) => error(frame, "LOCAL_RESPONSE_SERIALIZE_FAILED"),
+    }
+}
+
 pub(super) fn probe(store: &SqliteStore, tenant: &str) -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_millis(250);
     let _access = crate::restore_journal::access_until(&store.data_dir, deadline)?;
@@ -89,7 +102,7 @@ impl Executor {
             while let Ok(job) = jobs.recv() {
                 if stopping.load(Ordering::SeqCst) { break; }
                 let request_id = job.frame["requestId"].as_str().unwrap_or_default().to_string();
-                let mut outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     if Instant::now() >= job.deadline { return error(&job.frame, "LOCAL_DB_QUERY_TIMEOUT"); }
                     let result = (|| {
                         validate().map_err(|_| "MCP_RELAY_OFFLINE".to_string())?;
@@ -107,15 +120,12 @@ impl Executor {
                         trace(&diagnostic, "query_complete", job.started, response["errorCode"].as_str().unwrap_or("OK"), None);
                         validate().map_err(|_| "MCP_RELAY_OFFLINE".to_string())?;
                         if Instant::now() >= job.deadline { return Err("LOCAL_DB_QUERY_TIMEOUT".to_string()); }
-                        serde_json::to_vec(&response).map_err(|_| "LOCAL_RESPONSE_SERIALIZE_FAILED".to_string())?;
-                        trace(&job.frame, "serialized", job.started, "OK", None);
                         Ok(response)
                     })();
                     result.unwrap_or_else(|code| error(&job.frame, safe_error(&code)))
                 })).unwrap_or_else(|_| error(&job.frame, "LOCAL_DB_QUERY_FAILED"));
-                if let Some(correlation) = job.frame["correlationId"].as_str().filter(|value| id(value)) {
-                    outcome["correlationId"] = json!(correlation);
-                }
+                let outcome = wire_response(&job.frame, outcome);
+                trace(&outcome, "serialized", job.started, outcome["errorCode"].as_str().unwrap_or("OK"), None);
                 if stopping.load(Ordering::SeqCst) || results.send((request_id, outcome)).is_err() { break; }
             }
         });

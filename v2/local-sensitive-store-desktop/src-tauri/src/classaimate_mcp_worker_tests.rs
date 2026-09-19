@@ -151,6 +151,41 @@ fn read_request() -> Value {
         "deadlineAt":chrono::Utc::now().timestamp_millis()+12_000})
 }
 
+#[test]
+fn correlation_envelope_overflow_fails_only_one_read_and_keeps_socket_usable() {
+    let request = json!({"requestId":"large-read","correlationId":"c".repeat(160)});
+    let mut large = json!({"type":"local_read_result","requestId":"large-read","status":"ok",
+        "result":{"markdown":""}});
+    let overhead = serde_json::to_vec(&large).unwrap().len();
+    large["result"]["markdown"] = json!("x".repeat(MAX_FRAME - overhead - 1));
+    assert_eq!(serde_json::to_vec(&large).unwrap().len(), MAX_FRAME - 1);
+    let bounded = reads::wire_response(&request, large);
+    assert_eq!(bounded["errorCode"], "LOCAL_READ_RESULT_TOO_LARGE");
+    assert_eq!(bounded["correlationId"], request["correlationId"]);
+    let next_request = json!({"requestId":"next-read","correlationId":"next-correlation"});
+    let next = reads::wire_response(&next_request, json!({"type":"local_read_result",
+        "requestId":"next-read","status":"ok","result":{"records":[],"complete":true}}));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut socket = tungstenite::accept(stream).unwrap();
+        let first: Value = serde_json::from_str(socket.read().unwrap().to_text().unwrap()).unwrap();
+        assert_eq!(first["requestId"], "large-read");
+        assert_eq!(first["errorCode"], "LOCAL_READ_RESULT_TOO_LARGE");
+        let second: Value = serde_json::from_str(socket.read().unwrap().to_text().unwrap()).unwrap();
+        assert_eq!(second["requestId"], "next-read");
+        assert_eq!(second["status"], "ok");
+    });
+    let stream = TcpStream::connect(address).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let (mut socket, _) = tungstenite::client(format!("ws://{address}"), MaybeTlsStream::Plain(stream)).unwrap();
+    send(&mut socket, bounded).unwrap();
+    send(&mut socket, next).unwrap();
+    server.join().unwrap();
+}
+
 fn executor_response(executor: &mut reads::Executor) -> Value {
     let until = Instant::now() + Duration::from_secs(3);
     loop {
