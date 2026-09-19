@@ -2540,7 +2540,7 @@ checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
 
 [[package]]
 name = "local-sensitive-store-desktop"
-version = "0.2.92"
+version = "0.2.93"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -2565,6 +2565,7 @@ dependencies = [
  "tiny_http",
  "tokio",
  "tungstenite",
+ "unicode-normalization",
  "ureq",
  "url",
  "windows-sys 0.59.0",
@@ -5187,6 +5188,15 @@ name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+
+[[package]]
+name = "unicode-normalization"
+version = "0.1.25"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5fd4f6878c9cb28d874b009da9e8d183b5abc80117c40bbd187a1fde336be6e8"
+dependencies = [
+ "tinyvec",
+]
 
 [[package]]
 name = "unicode-segmentation"

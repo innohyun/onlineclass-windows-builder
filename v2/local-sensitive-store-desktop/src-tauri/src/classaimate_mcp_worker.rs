@@ -18,6 +18,8 @@ use zeroize::Zeroizing;
 
 #[path = "classaimate_mcp_student_selection.rs"]
 mod student_selection;
+#[path = "classaimate_mcp_reads.rs"]
+mod reads;
 
 const API_PATH: &str = "/api/v3/classaimate-mcp/device";
 const MAX_FRAME: usize = 768 * 1024;
@@ -55,7 +57,8 @@ pub(crate) fn status() -> Value {
             .unwrap_or(("unavailable", "MCP_WORKER_UNAVAILABLE", 0));
     let jobs = JOB_DIAGNOSTICS.lock().map(|value| value.clone()).unwrap_or_default();
     json!({"state":state,"errorCode":if error.is_empty(){Value::Null}else{json!(error)},
-        "updatedAt":updated_at,"protocolVersion":1,"capabilities":CAPABILITIES,"recentJobs":jobs})
+        "updatedAt":updated_at,"protocolVersion":1,"capabilities":CAPABILITIES,"recentJobs":jobs,
+        "recentReads":reads::diagnostics()})
 }
 
 fn uncertain_failure_code(error: &str) -> Option<&str> {
@@ -287,10 +290,10 @@ fn open_socket(
         _ => return Err("MCP_WORKER_CONNECT_FAILED".to_string()),
     };
     stream
-        .set_read_timeout(Some(Duration::from_secs(1)))
+        .set_read_timeout(Some(Duration::from_millis(100)))
         .map_err(|_| "MCP_WORKER_CONNECT_FAILED".to_string())?;
     stream
-        .set_write_timeout(Some(Duration::from_secs(5)))
+        .set_write_timeout(Some(Duration::from_secs(1)))
         .map_err(|_| "MCP_WORKER_CONNECT_FAILED".to_string())?;
     send(&mut socket, ready())?;
     Ok(socket)
@@ -384,7 +387,7 @@ fn read_local(store: &SqliteStore, tenant: &str, owner: &str, frame: &Value) -> 
         ("work_materials" | "lesson_materials" | "student_learning_materials", "get_page") => {
             &["pageRef"]
         }
-        _ => return Err("INVALID_LOCAL_READ_REQUEST".to_string()),
+        _ => return Err("LOCAL_HANDLER_NOT_FOUND".to_string()),
     };
     if input.keys().any(|key| !allowed.contains(&key.as_str())) {
         return Err("INVALID_LOCAL_READ_REQUEST".to_string());
@@ -426,12 +429,13 @@ fn read_frame_for_owner(store: &SqliteStore, tenant: &str, owner: &str, frame: &
     let deadline = frame["deadlineAt"].as_i64()?;
     let deadline_limit = if frame["workspace"] == "teaching_sources" && frame["operation"] == "pages" { 31_000 } else { 13_000 };
     if !id(request_id)
-        || deadline <= now
         || deadline > now + deadline_limit
         || frame["type"] != "local_read_request"
     {
         return None;
     }
+    if deadline <= now { return Some(reads::error(frame, "LOCAL_DB_QUERY_TIMEOUT")); }
+    reads::trace(frame, "handler_dispatch", Instant::now(), "START", None);
     let response = match read_local(store, tenant, owner, frame) {
         Ok(result) => {
             json!({"type":"local_read_result","requestId":request_id,"status":"ok","result":result})
@@ -443,7 +447,7 @@ fn read_frame_for_owner(store: &SqliteStore, tenant: &str, owner: &str, frame: &
                 } else if error=="teaching_source_reindex_required" {
                     "MCP_TEACHING_SOURCE_REINDEX_REQUIRED"
                 } else if error=="teaching_source_page_deadline_exceeded" {
-                    "MCP_RELAY_TIMEOUT"
+                    "LOCAL_DB_QUERY_TIMEOUT"
                 } else if error=="teaching_source_max_chars_exceeded" {
                     "MCP_TEACHING_SOURCE_MAX_CHARS_EXCEEDED"
                 } else if error=="teaching_source_page_too_large" {
@@ -455,7 +459,7 @@ fn read_frame_for_owner(store: &SqliteStore, tenant: &str, owner: &str, frame: &
                     "MCP_STUDENT_SELECTION_INVALID", "MCP_STUDENT_SELECTION_READ_FAILED", "MCP_STUDENT_SELECTION_TOO_LARGE",
                     "MCP_STUDENT_WORKSPACE_NOT_FOUND", "MCP_STUDENT_WORKSPACE_SCOPE_MISMATCH"].contains(&error.as_str()) {
                     error.as_str()
-                } else { "LOCAL_READ_FAILED" };
+                } else { reads::safe_error(&error) };
             json!({"type":"local_read_result","requestId":request_id,"status":if not_found {"not_found"} else {"error"},
                 "errorCode":code})
         }
@@ -799,6 +803,8 @@ where
     F: Fn() -> Result<(), String> + Send + Clone + 'static,
 {
     set_state("connecting", "");
+    validate_authority()?;
+    reads::probe(&store, &authority.tenant_id)?;
     let mut socket = open_socket(authority)?;
     set_state("ready", "");
     let (job_tx, job_rx) = mpsc::sync_channel::<String>(1);
@@ -816,7 +822,7 @@ where
             }
             // Catch-up and asset HTTP never block the WebSocket reader/heartbeat.
             if last_poll.elapsed() >= TICK {
-                let result = poll_jobs(&worker_authority, &worker_cancelled);
+                let result = worker_validate().and_then(|_| poll_jobs(&worker_authority, &worker_cancelled));
                 let failed = result.is_err();
                 if done_tx.send(WorkerEvent::Jobs(result)).is_err() || failed {
                     break;
@@ -845,7 +851,7 @@ where
     });
     let mut pending = VecDeque::new();
     let mut queued = HashSet::new();
-    let mut reads = VecDeque::new();
+    let mut read_executor = reads::Executor::new(Arc::clone(&store), authority.clone(), validate_authority.clone());
     let mut last_tick = Instant::now() - TICK;
     let mut last_pong = Instant::now();
     let mut busy = false;
@@ -854,7 +860,6 @@ where
             return Err("MCP_WORKER_DISCONNECTED".to_string());
         }
         if last_tick.elapsed() >= TICK {
-            validate_authority()?;
             send(&mut socket, json!({"type":"ping"}))?;
             last_tick = Instant::now();
         }
@@ -870,25 +875,8 @@ where
                                 pending.push_back(receipt.to_string());
                             }
                         }
-                    } else if let Some(request_id) = frame["requestId"]
-                        .as_str()
-                        .filter(|id| !reads.iter().any(|value| value == id))
-                    {
-                        let request_id = request_id.to_string();
-                        validate_authority()?;
-                        if let Some(response) = read_frame_for_owner(
-                            &store,
-                            &authority.tenant_id,
-                            &authority.actor_id,
-                            &frame,
-                            chrono::Utc::now().timestamp_millis(),
-                        ) {
-                            send(&mut socket, response)?;
-                            reads.push_back(request_id);
-                            if reads.len() > 256 {
-                                reads.pop_front();
-                            }
-                        }
+                    } else if frame["type"] == "local_read_request" {
+                        if let Some(response) = read_executor.submit(frame) { send(&mut socket, response)?; }
                     }
                 }
             }
@@ -897,6 +885,14 @@ where
             Err(tungstenite::Error::Io(error))
                 if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
             Err(_) => return Err("MCP_WORKER_DISCONNECTED".to_string()),
+        }
+        for response in read_executor.drain() {
+            reads::trace(&response, "response_send", Instant::now(), "START", None);
+            send(&mut socket, response.clone()).map_err(|error| {
+                reads::trace(&response, "response_send", Instant::now(), "MCP_RELAY_OFFLINE", None);
+                error
+            })?;
+            reads::trace(&response, "response_sent", Instant::now(), "OK", None);
         }
         while let Ok(event) = done_rx.try_recv() {
             match event {
@@ -961,6 +957,11 @@ pub(crate) fn start(store: Arc<SqliteStore>, manager: Arc<DeviceSyncManager>) {
                         Some("MCP_WORKER_AUTHORITY_REVOKED") => "MCP_WORKER_AUTHORITY_REVOKED",
                         Some("MCP_WORKER_AUTHORITY_CHANGED") => "MCP_WORKER_AUTHORITY_CHANGED",
                         Some("MCP_WORKER_RESPONSE_INVALID") => "MCP_WORKER_RESPONSE_INVALID",
+                        Some("LOCAL_DB_NOT_SELECTED") => "LOCAL_DB_NOT_SELECTED",
+                        Some("LOCAL_DB_LOCKED") => "LOCAL_DB_LOCKED",
+                        Some("LOCAL_DB_QUERY_FAILED") => "LOCAL_DB_QUERY_FAILED",
+                        Some("LOCAL_DB_QUERY_TIMEOUT") => "LOCAL_DB_QUERY_TIMEOUT",
+                        Some("local_store_unavailable") => "local_store_unavailable",
                         _ => "MCP_WORKER_NETWORK_UNAVAILABLE",
                     },
                 );

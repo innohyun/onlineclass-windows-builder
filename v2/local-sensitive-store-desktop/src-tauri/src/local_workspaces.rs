@@ -384,24 +384,12 @@ pub(crate) fn mcp_search(store: &SqliteStore, input: &Value) -> Result<Value, St
         .and_then(Value::as_i64)
         .unwrap_or(MAX_MCP_SEARCH_RESULTS)
         .clamp(1, MAX_MCP_SEARCH_RESULTS);
-    let mut filters = vec!["p.tenant_id=?1".to_string(), membership.to_string()];
-    let mut values = vec![SqlValue::Text(tenant_id.clone())];
-    if !query.is_empty() {
-        let terms = query
-            .split_whitespace()
-            .map(|term| format!("\"{}\"*", term.replace('"', "\"\"")))
-            .collect::<Vec<_>>()
-            .join(" AND ");
-        let pattern = format!("%{}%", query.to_lowercase());
-        filters.push("(p.page_id IN (SELECT page_id FROM work_note_pages_fts WHERE tenant_id=? AND work_note_pages_fts MATCH ?) OR lower(p.title) LIKE ?)".to_string());
-        values.push(SqlValue::Text(tenant_id.clone()));
-        values.push(SqlValue::Text(terms));
-        values.push(SqlValue::Text(pattern));
-    }
+    let filters = vec!["p.tenant_id=?1".to_string(), membership.to_string()];
+    let values = vec![SqlValue::Text(tenant_id.clone())];
     let where_sql = filters.join(" AND ");
     let list_sql = format!(
         r#"{MATERIAL_TREE_CTE}
-      SELECT p.page_id,p.title,p.markdown,p.updated_at_ms
+      SELECT p.page_id,p.title,p.markdown,p.updated_at_ms,p.document_json
       FROM work_note_pages p
       WHERE {where_sql}
       ORDER BY p.updated_at_ms DESC,p.page_id"#
@@ -420,29 +408,27 @@ pub(crate) fn mcp_search(store: &SqliteStore, input: &Value) -> Result<Value, St
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, i64>(3)?,
+                row.get::<_, String>(4)?,
             ))
         })
         .map_err(|error| format!("local_workspace_mcp_search_query_failed:{error}"))?;
-    let search_terms = query
-        .to_lowercase()
-        .split_whitespace()
-        .map(str::to_string)
-        .collect::<Vec<_>>();
     let mut total = 0usize;
     let mut selected = Vec::new();
     for row in rows {
-        let (page_id, title, markdown, updated_at_ms) =
+        let (page_id, title, markdown, updated_at_ms, blocks_json) =
             row.map_err(|error| format!("local_workspace_mcp_search_row_failed:{error}"))?;
-        if search_terms.is_empty() {
+        let blocks: Value = serde_json::from_str(&blocks_json).unwrap_or_else(|_| json!([]));
+        let body = if blocks.as_array().is_some_and(|items| !items.is_empty()) { crate::work_note_search::block_text(&blocks) } else { markdown.clone() };
+        let safe_markdown = mcp_safe_markdown(&body);
+        if query.is_empty() {
             total += 1;
             if selected.len() < limit as usize {
-                selected.push((page_id, title, mcp_safe_markdown(&markdown), updated_at_ms));
+                selected.push((page_id, title, safe_markdown, updated_at_ms));
             }
             continue;
         }
-        let safe_markdown = mcp_safe_markdown(&markdown);
-        let searchable = format!("{}\n{}", title.to_lowercase(), safe_markdown.to_lowercase());
-        if !search_terms.iter().all(|term| searchable.contains(term)) {
+        let searchable = format!("{}\n{}", title, safe_markdown);
+        if !crate::work_note_search::matches_text(&searchable, &query) {
             continue;
         }
         total += 1;
@@ -757,6 +743,21 @@ mod tests {
         assert!(result["pages"][0].get("markdown").is_none());
         drop(store);
         fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn mcp_search_reads_canonical_body_with_nfc_and_korean_infix() {
+        let (directory, store) = test_store();
+        store.upsert_work_note(json!({"tenantId":"tenant-a","pageId":"infix-note","title":"일반 제목","blocks":[{"type":"h1","content":{"type":"heading","content":[{"type":"text","text":"소스코드 Café 한글"}]}}],"markdown":"# 일반 제목"})).unwrap();
+        store.conn.lock().unwrap().execute("DELETE FROM work_note_pages_fts WHERE page_id='infix-note'", []).unwrap();
+        store.conn.lock().unwrap().execute_batch("PRAGMA query_only=ON").unwrap();
+        for query in ["코드", "Cafe\u{301}", "한글"] {
+            let result = mcp_search(&store, &json!({"tenantId":"tenant-a","workspace":"work_materials","query":query})).unwrap();
+            assert_eq!(result["total"], 1, "{query}");
+            assert_eq!(result["pages"][0]["pageId"], "infix-note");
+        }
+        drop(store);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

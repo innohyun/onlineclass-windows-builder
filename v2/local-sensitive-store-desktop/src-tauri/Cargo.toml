@@ -1,6 +1,6 @@
 [package]
 name = "local-sensitive-store-desktop"
-version = "0.2.92"
+version = "0.2.93"
 default-run = "local-sensitive-store-desktop"
 description = "ClassAiMate 교사 데스크 로컬 데이터 저장소"
 authors = ["onlineclass"]
@@ -20,7 +20,7 @@ tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.32", features = ["bundled", "hooks"] }
 tiny_http = "0.12"
 url = "2"
 rand = "0.8"
@@ -37,6 +37,7 @@ hkdf = "0.12"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 zeroize = "1"
 regex = "1"
+unicode-normalization = "0.1"
 fs2 = "0.4"
 rmcp = { version = "=3.0.1", features = ["server", "transport-io"] }
 tokio = { version = "1", features = ["io-std", "macros", "rt-multi-thread"] }

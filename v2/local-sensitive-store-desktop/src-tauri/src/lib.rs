@@ -30,6 +30,7 @@ mod classaimate_mcp_observations;
 mod classaimate_mcp_life_records;
 mod classaimate_mcp_worker;
 mod work_note_attachments;
+mod work_note_search;
 mod work_note_localization;
 mod work_note_reader;
 mod device_sync_conflicts;
@@ -68,7 +69,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-09-17.2-sync-artifact-seal";
+pub(crate) const SERVICE_VERSION: &str = "2026-09-19.1-mcp-local-read-deadlines";
 const WORK_MEETING_ROOT_PAGE_ID: &str = "classaimate:work-meeting-minutes";
 const WORK_MEETING_ROOT_TITLE: &str = "업무 회의록";
 const WORK_MEETING_ROOT_INTRO: &str = "모바일에서 확정한 업무 회의록이 자동으로 들어옵니다.";
@@ -2100,12 +2101,8 @@ impl SqliteStore {
         if tenant.is_empty() { return Err("tenant_id_required".to_string()); }
         let search = normalize(&query, 200);
         let conn = self.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
-        let (sql, values): (&str, Vec<String>) = if search.is_empty() {
-            ("SELECT p.tenant_id,p.page_id,p.parent_id,p.title,p.emoji,p.position,p.properties_json,p.document_json,p.markdown,p.created_at_ms,p.updated_at_ms FROM work_note_pages p WHERE p.tenant_id=?1 ORDER BY COALESCE(p.parent_id,''),p.position,p.page_id", vec![tenant])
-        } else {
-            let terms = search.split_whitespace().map(|term| format!("\"{}\"*", term.replace('"', "\"\""))).collect::<Vec<_>>().join(" AND ");
-            ("SELECT p.tenant_id,p.page_id,p.parent_id,p.title,p.emoji,p.position,p.properties_json,p.document_json,p.markdown,p.created_at_ms,p.updated_at_ms FROM work_note_pages_fts f JOIN work_note_pages p ON p.tenant_id=f.tenant_id AND p.page_id=f.page_id WHERE f.tenant_id=?1 AND work_note_pages_fts MATCH ?2 ORDER BY rank,p.updated_at_ms DESC LIMIT 100", vec![tenant, terms])
-        };
+        let sql = if search.is_empty() { "SELECT p.tenant_id,p.page_id,p.parent_id,p.title,p.emoji,p.position,p.properties_json,p.document_json,p.markdown,p.created_at_ms,p.updated_at_ms FROM work_note_pages p WHERE p.tenant_id=?1 ORDER BY COALESCE(p.parent_id,''),p.position,p.page_id" } else { "SELECT p.tenant_id,p.page_id,p.parent_id,p.title,p.emoji,p.position,p.properties_json,p.document_json,p.markdown,p.created_at_ms,p.updated_at_ms FROM work_note_pages p WHERE p.tenant_id=?1 ORDER BY p.updated_at_ms DESC,p.page_id" };
+        let values = vec![tenant];
         let mut statement = conn.prepare(sql).map_err(|e| format!("db_work_note_query_prepare_failed:{e}"))?;
         let rows = statement.query_map(params_from_iter(values.iter()), |row| {
             let properties_raw: String = row.get(6)?;
@@ -2121,7 +2118,11 @@ impl SqliteStore {
             }))
         }).map_err(|e| format!("db_work_note_query_failed:{e}"))?;
         let mut records = Vec::new();
-        for row in rows { records.push(row.map_err(|e| format!("db_work_note_row_failed:{e}"))?); }
+        for row in rows {
+            let record = row.map_err(|e| format!("db_work_note_row_failed:{e}"))?;
+            if search.is_empty() || work_note_search::matches(&record, &search) { records.push(record); }
+            if !search.is_empty() && records.len() >= 100 { break; }
+        }
         Ok(records)
     }
 

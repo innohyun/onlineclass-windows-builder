@@ -35,6 +35,15 @@ impl Drop for AccessGuard {
 // Lock order: media access guard -> SQLite mutex/transaction. Reentrant only on
 // this thread; the file lock also serializes independent SqliteStore connections.
 pub(crate) fn access(root: &Path) -> Result<AccessGuard, String> {
+    access_with_deadline(root, None)
+}
+
+// MCP reads must never wait for a restore longer than their response budget.
+pub(crate) fn access_until(root: &Path, deadline: std::time::Instant) -> Result<AccessGuard, String> {
+    access_with_deadline(root, Some(deadline))
+}
+
+fn access_with_deadline(root: &Path, deadline: Option<std::time::Instant>) -> Result<AccessGuard, String> {
     let root = fs::canonicalize(root).map_err(|_| "restore_root_unavailable")?;
     if DEPTH.with(|depth| {
         let mut depth = depth.borrow_mut();
@@ -54,7 +63,21 @@ pub(crate) fn access(root: &Path) -> Result<AccessGuard, String> {
         .write(true)
         .open(root.join(".restore-access.lock"))
         .map_err(|_| "restore_access_lock_failed")?;
-    fs2::FileExt::lock_exclusive(&file).map_err(|_| "restore_access_lock_failed")?;
+    if let Some(deadline) = deadline {
+        loop {
+            match fs2::FileExt::try_lock_exclusive(&file) {
+                Ok(()) => break,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+                    || error.raw_os_error() == Some(33) => {
+                    if std::time::Instant::now() >= deadline { return Err("LOCAL_DB_LOCKED".into()); }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(_) => return Err("restore_access_lock_failed".into()),
+            }
+        }
+    } else {
+        fs2::FileExt::lock_exclusive(&file).map_err(|_| "restore_access_lock_failed")?;
+    }
     DEPTH.with(|depth| {
         depth.borrow_mut().insert(root.clone(), 1);
     });

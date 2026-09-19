@@ -127,7 +127,7 @@ fn local_failure_reports_preserve_fixed_cause_without_claiming_rollback_or_leaki
     assert_eq!(local_reported_failure_code("private student /path secret", "local_apply", Ok(false)), "MCP_LOCAL_APPLY_UNKNOWN");
 }
 
-fn test_store() -> (std::path::PathBuf, SqliteStore) {
+pub(super) fn test_store() -> (std::path::PathBuf, SqliteStore) {
     let directory = std::env::temp_dir().join(format!(
         "classaimate-native-worker-{}",
         crate::random_url_token()
@@ -149,6 +149,128 @@ fn read_request() -> Value {
     json!({"type":"local_read_request","requestId":"trace-22","workspace":"lesson_observations",
         "operation":"observations_list","input":{"date":"2026-09-08","period":1,"subject":"수학","limit":200},
         "deadlineAt":chrono::Utc::now().timestamp_millis()+12_000})
+}
+
+fn executor_response(executor: &mut reads::Executor) -> Value {
+    let until = Instant::now() + Duration::from_secs(3);
+    loop {
+        let ready = executor.drain();
+        if let Some(response) = ready.first() { return response.clone(); }
+        assert!(Instant::now() < until, "read must terminate before relay timeout");
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn all_read_families_use_the_deadline_executor_and_selected_database() {
+    let (directory, store) = test_store();
+    let store = Arc::new(store);
+    let mut executor = reads::Executor::new(Arc::clone(&store), authority("http://localhost".into()), || Ok(()));
+    let cases = [
+        ("life_records", "life_records_list", json!({"fromDate":"2026-09-14","toDate":"2026-09-17","limit":20}), "ok"),
+        ("work_materials", "search", json!({"query":"코드","limit":10}), "ok"),
+        ("lesson_materials", "search", json!({"query":"고려","limit":10}), "ok"),
+        ("lesson_materials", "get_page", json!({"pageRef":"missing-page"}), "not_found"),
+        ("teaching_sources", "matches", json!({"lessons":[{"schoolYear":2026,"semester":2,
+            "curriculumSourceKind":"class","curriculumSourceScopeId":"scope-a","curriculumSourceRevision":1,
+            "curriculumItemId":"lesson-a","curriculumStatus":"qualified"}],"limit":10}), "ok"),
+        ("student_record", "student_drafts_get", json!({"scope":{"recordType":"behavior",
+            "fromDate":"2026-09-14","toDate":"2026-09-17"},"students":[{"studentCode":"STU01","studentAlias":"학생-01"}]}), "ok"),
+    ];
+    // Hold the ordinary UI connection while every domain executes actual SQLite reads.
+    let guard = store.conn.lock().unwrap();
+    for (index, (workspace, operation, input, expected)) in cases.into_iter().enumerate() {
+        let frame = json!({"type":"local_read_request","requestId":format!("family-{index}"),"correlationId":"parent-families",
+            "workspace":workspace,"operation":operation,"input":input,"deadlineAt":chrono::Utc::now().timestamp_millis()+12_000});
+        assert!(executor.submit(frame).is_none());
+        let response = executor_response(&mut executor);
+        assert_eq!(response["status"], expected, "{workspace}/{operation}: {response}");
+        assert_eq!(response["correlationId"], "parent-families");
+    }
+    drop(guard); drop(executor);
+    for _ in 0..100 { if Arc::strong_count(&store) == 1 { break; } thread::sleep(Duration::from_millis(10)); }
+    drop(store); std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn native_reads_use_selected_sqlite_even_while_ui_connection_mutex_is_busy() {
+    let (directory, store) = test_store();
+    seed_observations(&store);
+    let store = Arc::new(store);
+    let held = store.conn.lock().unwrap();
+    let owner = authority("http://127.0.0.1:1".into());
+    let mut executor = reads::Executor::new(Arc::clone(&store), owner.clone(), || Ok(()));
+    for index in 0..5 {
+        let mut frame = read_request();
+        frame["requestId"] = json!(format!("read-{index}"));
+        frame["correlationId"] = json!("trace-all-five");
+        assert!(executor.submit(frame).is_none());
+        let result = executor_response(&mut executor);
+        assert_eq!(result["status"], "ok");
+        assert_eq!(result["correlationId"], "trace-all-five");
+        assert_eq!(result["result"]["records"].as_array().unwrap().len(), 22);
+    }
+    drop(executor);
+    let mut reconnect = reads::Executor::new(Arc::clone(&store), owner, || Ok(()));
+    reconnect.submit(read_request());
+    assert_eq!(executor_response(&mut reconnect)["status"], "ok");
+    drop(reconnect);
+    drop(held);
+    drop(store);
+    // Executor threads close their own read-only handles after cancellation.
+    for _ in 0..100 {
+        if std::fs::remove_dir_all(&directory).is_ok() { return; }
+        thread::sleep(Duration::from_millis(10));
+    }
+    panic!("reader did not release selected DB");
+}
+
+#[test]
+fn restore_lock_unknown_handler_and_expired_request_return_explicit_errors() {
+    let (directory, store) = test_store();
+    let store = Arc::new(store);
+    let mut executor = reads::Executor::new(Arc::clone(&store), authority("http://127.0.0.1:1".into()), || Ok(()));
+    let guard = crate::restore_journal::access(&store.data_dir).unwrap();
+    executor.submit(read_request());
+    assert_eq!(executor_response(&mut executor)["errorCode"], "LOCAL_DB_LOCKED");
+    drop(guard);
+    let mut unknown = read_request();
+    unknown["requestId"] = json!("unknown-handler");
+    unknown["operation"] = json!("not_registered");
+    executor.submit(unknown);
+    assert_eq!(executor_response(&mut executor)["errorCode"], "LOCAL_HANDLER_NOT_FOUND");
+    let mut expired = read_request();
+    expired["requestId"] = json!("expired-read");
+    expired["deadlineAt"] = json!(0);
+    assert_eq!(executor.submit(expired).unwrap()["errorCode"], "LOCAL_DB_QUERY_TIMEOUT");
+    drop(executor); drop(store);
+    for _ in 0..100 {
+        if std::fs::remove_dir_all(&directory).is_ok() { return; }
+        thread::sleep(Duration::from_millis(10));
+    }
+    panic!("reader did not stop");
+}
+
+#[test]
+fn stuck_authority_does_not_block_sender_and_late_results_do_not_complete_twice() {
+    let (directory, store) = test_store();
+    let store = Arc::new(store);
+    let mut executor = reads::Executor::new(Arc::clone(&store), authority("http://127.0.0.1:1".into()), || {
+        thread::sleep(Duration::from_millis(350)); Ok(())
+    });
+    let mut frame = read_request();
+    frame["deadlineAt"] = json!(chrono::Utc::now().timestamp_millis()+1_550);
+    assert!(executor.submit(frame.clone()).is_none());
+    assert!(executor.submit(frame).is_none());
+    assert_eq!(executor_response(&mut executor)["errorCode"], "LOCAL_DB_QUERY_TIMEOUT");
+    thread::sleep(Duration::from_millis(800));
+    assert!(executor.drain().is_empty());
+    drop(executor); drop(store);
+    for _ in 0..100 {
+        if std::fs::remove_dir_all(&directory).is_ok() { return; }
+        thread::sleep(Duration::from_millis(10));
+    }
+    panic!("cancelled reader did not stop");
 }
 
 #[test]
@@ -188,7 +310,7 @@ fn native_read_uses_same_canonical_22_records_and_refuses_cross_tenant_input() {
     );
     injected = request.clone();
     injected["deadlineAt"] = json!(1);
-    assert!(read_frame(&store, "tenant-a", &injected, 2).is_none());
+    assert_eq!(read_frame(&store, "tenant-a", &injected, 2).unwrap()["errorCode"], "LOCAL_DB_QUERY_TIMEOUT");
     injected = request;
     injected["operation"] = json!("execute_sql");
     assert_eq!(
