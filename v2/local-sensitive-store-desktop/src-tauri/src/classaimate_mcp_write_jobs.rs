@@ -17,8 +17,9 @@ pub(crate) mod receipt_verification;
 #[path = "classaimate_mcp_student_drafts.rs"]
 pub(crate) mod student_drafts;
 
-const OPERATIONS: [&str; 11] = [
+const OPERATIONS: [&str; 12] = [
     "student_record_save_drafts",
+    "student_record_traits_save",
     "counseling_record_save_draft",
     "counseling_record_prepare_create",
     "work_notes_save_draft",
@@ -173,6 +174,10 @@ fn exact_student_batch(store: &TransactionStore<'_>, tenant: &str, data: &Value)
     if values.len() != expected.len() {
         return Err("DRAFT_CONFLICT".to_string());
     }
+    let saved_set: String = conn.query_row("SELECT payload_json FROM student_record_draft_sets WHERE tenant_id=?1 AND draft_set_id=?2", params![tenant,draft_set_id], |row| row.get(0)).map_err(|_| "LOCAL_STORE_WRITE_FAILED")?;
+    let saved_set = decode(saved_set)?;
+    if saved_set["inputSnapshot"] != data["inputSnapshot"]
+        || (!saved_set["scope"].is_null() && saved_set["scope"] != data["scope"]) { return Err("DRAFT_CONFLICT".into()); }
     let scope = data.get("scope").unwrap_or(&Value::Null);
     for source in expected {
         let code = source
@@ -195,6 +200,8 @@ fn exact_student_batch(store: &TransactionStore<'_>, tenant: &str, data: &Value)
             || value.get("status").and_then(Value::as_str) != Some("draft")
             || value.get("sourceLabel").and_then(Value::as_str) != Some("내 ChatGPT")
             || value.get("teacherReviewRequired").and_then(Value::as_bool) != Some(true)
+            || value["studentAlias"] != source["studentAlias"]
+            || value.get("reviewNotes").unwrap_or(&json!([])) != source.get("reviewNotes").unwrap_or(&json!([]))
         {
             return Err("DRAFT_CONFLICT".to_string());
         }
@@ -215,6 +222,13 @@ fn save_student(store: &TransactionStore<'_>, tenant: &str, data: &Value) -> Res
     if rows.is_empty() || rows.len() > 30 {
         return Err("classaimate_mcp_write_job_invalid".to_string());
     }
+    if let Some(snapshot) = data.get("inputSnapshot").filter(|value| !value.is_null()) {
+        if !snapshot.is_object() || snapshot["v"] != 1 || !snapshot["scope"].is_object()
+            || !snapshot["students"].as_array().is_some_and(|students| students.len() == rows.len())
+            || snapshot.to_string().len() > 16 * 1024 * 1024 {
+            return Err("classaimate_mcp_write_job_invalid".into());
+        }
+    }
     if !exact_student_batch(store, tenant, data)? {
         for row in rows {
             let student = required_id(row.get("studentCode"))?;
@@ -223,6 +237,9 @@ fn save_student(store: &TransactionStore<'_>, tenant: &str, data: &Value) -> Res
                 .and_then(Value::as_str)
                 .unwrap_or("");
             let text = row.get("text").and_then(Value::as_str).unwrap_or("").trim();
+            if row.get("reviewNotes").is_some_and(|value| !value.as_array().is_some_and(|notes| notes.len() <= 10 && notes.iter().all(|note| note.as_str().is_some_and(|text| text.chars().count() <= 600)))) {
+                return Err("classaimate_mcp_write_job_invalid".into());
+            }
             if baseline.len() != 64
                 || !baseline.chars().all(|c| c.is_ascii_hexdigit())
                 || text.is_empty()
@@ -248,11 +265,13 @@ fn save_student(store: &TransactionStore<'_>, tenant: &str, data: &Value) -> Res
             json!({
                 "tenantId":tenant,"draftSetId":draft_set_id,"draftId":format!("{draft_set_id}__{code}"),
                 "studentCode":code,"studentName":row.get("studentName").and_then(Value::as_str).unwrap_or(""),
+                "studentAlias":row.get("studentAlias").cloned().unwrap_or(Value::Null),
                 "classNo":row.get("classNo").and_then(Value::as_i64).unwrap_or(0),"recordType":record_type,"status":"draft",
                 "behaviorComment":if record_type=="behavior" { text } else { "" },
                 "subjectComments":if record_type=="subjects" { json!([{"subject":subject,"comment":text}]) } else { json!([]) },
                 "creativeComments":if record_type=="creative" { json!([{"area":creative_area,"comment":text}]) } else { json!([]) },
                 "sourceType":"studentRecordMcp","sourceLabel":"내 ChatGPT","teacherReviewRequired":true,
+                "reviewNotes":row.get("reviewNotes").cloned().unwrap_or_else(|| json!([])),
                 "createdAtMs":now,"updatedAtMs":now
             })
         }).collect::<Vec<_>>();
@@ -260,6 +279,7 @@ fn save_student(store: &TransactionStore<'_>, tenant: &str, data: &Value) -> Res
             "tenantId":tenant,
             "draftSet":{"tenantId":tenant,"draftSetId":draft_set_id,"status":"draft","recordTypes":[record_type],
                 "subject":subject,"creativeArea":creative_area,"fromDate":scope.get("fromDate"),"toDate":scope.get("toDate"),
+                "schoolYear":scope.get("schoolYear"),"semester":scope.get("semester"),"scope":scope,"inputSnapshot":data.get("inputSnapshot"),
                 "sourceType":"studentRecordMcp","sourceLabel":"내 ChatGPT","teacherReviewRequired":true,
                 "createdAtMs":now,"updatedAtMs":now},
             "drafts":drafts
@@ -655,6 +675,10 @@ fn restructure_work_note(store: &TransactionStore<'_>, tenant: &str, data: &Valu
 
 fn verify_nonimage_readback(store: &TransactionStore<'_>, tenant: &str, operation: &str, data: &Value) -> Result<(), String> {
     match operation {
+        "student_record_traits_save" => {
+            let raw: String = store.conn.query_row("SELECT payload_json FROM student_record_draft_sets WHERE tenant_id=?1 AND draft_set_id=?2", params![tenant,data["workspaceId"].as_str()], |row| row.get(0)).map_err(|_| "LOCAL_STORE_WRITE_FAILED")?;
+            if decode(raw)?["workspace"]["behaviorInputs"][data["studentCode"].as_str().ok_or("MCP_STUDENT_TRAITS_INVALID")?] != data["behaviorInput"] { return Err("LOCAL_STORE_WRITE_FAILED".into()); }
+        }
         "student_record_save_drafts" => {
             if !exact_student_batch(store, tenant, data)? { return Err("LOCAL_STORE_WRITE_FAILED".into()); }
         }
@@ -805,6 +829,7 @@ pub(crate) fn apply_with_assets(store: &SqliteStore, input: &Value, assets: &Has
     let scoped = TransactionStore { conn: &transaction };
     let saved = match operation {
         "student_record_save_drafts" => save_student(&scoped, &tenant, data)?,
+        "student_record_traits_save" => crate::student_record_workspace::save_traits(&transaction, &tenant, data)?,
         "counseling_record_save_draft" => save_counseling(&scoped, &tenant, data)?,
         "counseling_record_prepare_create" => create_counseling(&scoped, &tenant, data)?,
         "materials_update_draft" => update_work_note(&scoped, &tenant, data)?,

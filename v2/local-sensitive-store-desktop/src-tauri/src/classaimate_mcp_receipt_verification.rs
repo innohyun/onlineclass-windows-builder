@@ -22,6 +22,7 @@ pub(super) fn verify_after_commit(
 pub(super) fn locator(operation: &str, data: &Value) -> Value {
     let record_id = match operation {
         "student_record_save_drafts" => &data["draftSetId"],
+        "student_record_traits_save" => &data["workspaceId"],
         "counseling_record_save_draft" => &data["draftId"],
         "counseling_record_prepare_create" => &data["counselingId"],
         _ => data.get("pageRef").unwrap_or(&data["pageId"]),
@@ -30,6 +31,7 @@ pub(super) fn locator(operation: &str, data: &Value) -> Value {
 }
 pub(super) fn digest(conn: &Connection, tenant: &str, locator: &Value) -> Result<String, String> {
     let tables: &[(&str, &str, &str)] = match locator["operation"].as_str().unwrap_or("") {
+        "student_record_traits_save" => &[("student_record_draft_sets", "draft_set_id", "draft_set_id")],
         "student_record_save_drafts" => &[
             ("student_record_draft_sets", "draft_set_id", "draft_set_id"),
             ("student_record_drafts", "draft_set_id", "draft_id"),

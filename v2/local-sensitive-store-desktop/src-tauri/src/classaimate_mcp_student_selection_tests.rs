@@ -42,7 +42,8 @@ fn observation_projection_uses_columns_and_never_mutates_or_expands_scope() {
     let conn = fixture();
     observation(&conn,"tenant-a","correct","S01","2026-09-08",json!({"note":"합성 관찰","subject":"수학","period":99,
         "sourceId":"forged","studentCode":"OTHER","date":"2020-01-01","updatedAtMs":999,"studentName":"private","secret":"hidden",
-        "content":{"arbitrary":"hidden"},"recordDomain":"subjects","revisionId":"revision-1","isActive":true}));
+        "content":{"arbitrary":"hidden"},"recordDomain":"subjects","revisionId":"revision-1","isActive":true,
+        "categoryId":"category-a","categoryMeaning":"확인된 의미","categoryScopeKind":"subject","categoryScopeKey":"수학"}));
     observation(&conn,"tenant-b","other-tenant","S01","2026-09-08",json!({"note":"private"}));
     observation(&conn,"tenant-a","other-student","S02","2026-09-08",json!({"note":"private"}));
     observation(&conn,"tenant-a","other-date","S01","2026-08-16",json!({"note":"private"}));
@@ -55,6 +56,8 @@ fn observation_projection_uses_columns_and_never_mutates_or_expands_scope() {
     assert_eq!(row["sourceId"],"correct"); assert_eq!(row["studentCode"],"S01");
     assert_eq!(row["date"],"2026-09-08"); assert_eq!(row["period"],1); assert_eq!(row["updatedAtMs"],100);
     assert_eq!(row["revisionId"],"revision-1");
+    assert_eq!(row["categoryId"],"category-a"); assert_eq!(row["categoryMeaning"],"확인된 의미");
+    assert_eq!(row["categoryScopeKind"],"subject"); assert_eq!(row["categoryScopeKey"],"수학");
     for key in ["studentName","secret","tenantId","content"] { assert!(row.get(key).is_none()); }
 }
 
@@ -161,4 +164,62 @@ fn complete_scope_over_limit_and_invalid_json_fail_without_partial_results() {
     conn.execute("DELETE FROM lesson_observations",[]).unwrap();
     conn.execute("INSERT INTO lesson_observations VALUES('tenant-a','bad','2026-09-08',1,'S01','not-json',1)",[]).unwrap();
     assert_eq!(read(&conn,&input()).unwrap_err(),READ_FAILED);
+}
+
+
+fn behavior_fixture(conn: &Connection, mode: &str, confirmed: bool) {
+    seed_workspace(conn);
+    let raw: String = conn.query_row("SELECT payload_json FROM student_record_draft_sets",[],|r|r.get(0)).unwrap();
+    let mut value: Value = serde_json::from_str(&raw).unwrap();
+    value["workspace"]["behaviorInputs"] = json!({"S01":{
+        "inputMode":mode,"confirmed":confirmed,"revision":2,
+        "confirmation":{"actorId":"teacher-a","confirmedAtMs":100,"revision":2},
+        "scope":{"schoolYear":2026,"semester":2,"fromDate":"2026-08-17","toDate":"2026-09-09"},
+        "traits":[{"traitId":"t-a","label":"책임감","meaning":"맡은 일을 마무리함"}]},
+        "OTHER":{"inputMode":"keywords","traits":[{"label":"PRIVATE"}]}});
+    value["workspace"]["selectedEvidence"]["S01"]["behavior"] = json!(["observation:included"]);
+    conn.execute("UPDATE student_record_draft_sets SET payload_json=?1",params![value.to_string()]).unwrap();
+}
+
+#[test]
+fn keyword_mode_skips_all_source_sql_and_projects_only_confirmed_student_traits() {
+    let conn = fixture(); behavior_fixture(&conn,"keywords",true);
+    conn.execute_batch("DROP TABLE lesson_observations; DROP TABLE eval_results; DROP TABLE eval_assignments; DROP TABLE teacher_counseling_sessions;").unwrap();
+    let mut request = input(); request["includeBehaviorInputs"] = json!(true);
+    let result = read(&conn,&request).unwrap();
+    assert_eq!(result["records"],json!([]));
+    assert_eq!(result["workspace"]["selectedEvidence"]["S01"],json!({}));
+    assert_eq!(result["workspace"]["checks"],json!({}));
+    assert_eq!(result["workspace"]["evidenceLinks"],json!({}));
+    assert_eq!(result["workspace"]["workspaceId"],"workspace-a");
+    assert_eq!(result["workspace"]["behaviorInputs"]["S01"]["traits"][0]["traitId"],"t-a");
+    assert!(!result.to_string().contains("OTHER")); assert!(!result.to_string().contains("PRIVATE"));
+    request["sourceTypes"] = json!([]);
+    assert!(read(&conn,&request).is_ok());
+}
+
+#[test]
+fn combined_mode_does_not_read_unselected_or_other_student_payloads() {
+    let conn = fixture(); behavior_fixture(&conn,"combined",true);
+    observation(&conn,"tenant-a","included","S01","2026-09-08",json!({"note":"선택 근거"}));
+    conn.execute("INSERT INTO lesson_observations VALUES('tenant-a','excluded','2026-09-08',1,'S01','MALFORMED PRIVATE',1)",[]).unwrap();
+    observation(&conn,"tenant-a","other-student","OTHER","2026-09-08",json!({"note":"PRIVATE"}));
+    let mut request = input(); request["includeBehaviorInputs"] = json!(true);
+    let result = read(&conn,&request).unwrap();
+    assert_eq!(result["records"].as_array().unwrap().len(),1);
+    assert_eq!(result["records"][0]["sourceId"],"included");
+}
+
+#[test]
+fn unconfirmed_or_wrong_term_traits_are_never_projected_and_ambiguous_workspace_fails() {
+    let conn = fixture(); behavior_fixture(&conn,"keywords",false);
+    let mut request = input(); request["includeBehaviorInputs"] = json!(true);
+    assert_eq!(read(&conn,&request).unwrap()["workspace"]["behaviorInputs"]["S01"]["traits"],json!([]));
+    conn.execute("UPDATE student_record_draft_sets SET payload_json=json_set(payload_json,'$.workspace.behaviorInputs.S01.confirmed',json('true'),'$.workspace.behaviorInputs.S01.scope.semester',1)",[]).unwrap();
+    assert_eq!(read(&conn,&request).unwrap()["workspace"]["behaviorInputs"]["S01"]["traits"],json!([]));
+    conn.execute("INSERT INTO student_record_draft_sets SELECT tenant_id,'workspace-b',status,from_date,to_date,json_set(payload_json,'$.workspace.workspaceId','workspace-b'),updated_at_ms FROM student_record_draft_sets",[]).unwrap();
+    assert_eq!(read(&conn,&request).unwrap_err(),"MCP_STUDENT_WORKSPACE_AMBIGUOUS");
+    assert_eq!(list_workspaces(&conn,"tenant-a",&Scope::parse("tenant-a",&request).unwrap()).unwrap().len(),2);
+    request["workspaceId"] = json!("workspace-a");
+    assert!(read(&conn,&request).is_ok());
 }

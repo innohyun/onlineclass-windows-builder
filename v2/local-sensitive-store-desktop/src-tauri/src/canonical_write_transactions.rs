@@ -6,7 +6,7 @@ use crate::{
     STUDENT_MATERIAL_ROOT_TITLE, WORK_MEETING_ROOT_PAGE_ID, WORK_REFERENCE_ROOT_PAGE_ID,
 };
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 
 // Connection-scoped canonical writes are shared by the UI store and one MCP transaction.
@@ -274,6 +274,11 @@ pub(crate) fn upsert_student_record_draft_set(
     }
     let tenant_id = input["tenantId"].as_str().unwrap_or_default();
     let draft_set_id = input["draftSetId"].as_str().unwrap_or_default();
+    let prior: Option<String> = conn.query_row("SELECT payload_json FROM student_record_draft_sets WHERE tenant_id=?1 AND draft_set_id=?2", params![tenant_id,draft_set_id], |r| r.get(0)).optional().map_err(|_| "student_record_draft_set_read_failed")?;
+    if let Some(raw) = prior {
+        let previous: Value = serde_json::from_str(&raw).map_err(|_| "student_record_draft_set_read_failed")?;
+        if !previous["inputSnapshot"].is_null() && previous["inputSnapshot"] != input["inputSnapshot"] { return Err("student_record_input_snapshot_immutable".into()); }
+    }
     let status = input["status"].as_str().unwrap_or_default();
     let from_date = input["fromDate"].as_str().unwrap_or_default();
     let to_date = input["toDate"].as_str().unwrap_or_default();
@@ -328,8 +333,46 @@ pub(crate) fn upsert_student_record_draft(
         "student_record_draft_id_required",
     )?;
     let class_no = normalize_period(input.get("classNo").or_else(|| input.get("number")));
-    let updated_at_ms = updated_at_ms(&input);
+    let expected = input.get("expectedRevision").map(|v| v.as_i64().filter(|v| *v >= 0 && *v < 9_007_199_254_740_991).ok_or("student_record_draft_revision_required")).transpose()?;
+    let previous: Option<(String,i64)> = conn.query_row("SELECT payload_json,updated_at_ms FROM student_record_drafts WHERE tenant_id=?1 AND draft_id=?2",params![tenant_id,draft_id],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(|_| "student_record_draft_read_failed")?;
+    let prior: Value = previous.as_ref().map(|(raw,_)| serde_json::from_str(raw)).transpose().map_err(|_| "student_record_draft_read_failed")?.unwrap_or(Value::Null);
+    if (prior["revisionProtected"] == true && expected.is_none()) || input["sourceType"] == "teacherRecordStudio" && expected.is_none() {
+        return Err("student_record_draft_revision_required".into());
+    }
+    if let Some(expected) = expected {
+        if previous.as_ref().map(|(_,v)|*v).unwrap_or(0) != expected { return Err("student_record_draft_revision_conflict".into()); }
+        if previous.is_some() {
+            for field in ["draftSetId","studentCode","recordType","subject","subjectFilter","creativeArea","fromDate","toDate","schoolYear","academicYear","semester"] {
+                if prior.get(field).is_some_and(|v| !v.is_null()) && prior[field] != input[field] { return Err("student_record_draft_scope_mismatch".into()); }
+            }
+            for (field,key) in [("subjectComments","subject"),("creativeComments","area")] {
+                let identities = |value: &Value| value[field].as_array().map(|rows| rows.iter().map(|row| row[key].as_str().unwrap_or("").to_string()).collect::<std::collections::BTreeSet<_>>()).unwrap_or_default();
+                if identities(&prior) != identities(&input) { return Err("student_record_draft_scope_mismatch".into()); }
+            }
+        }
+        let set_raw: Option<String> = conn.query_row("SELECT payload_json FROM student_record_draft_sets WHERE tenant_id=?1 AND draft_set_id=?2 AND status!='workspace'",params![tenant_id,draft_set_id],|r|r.get(0)).optional().map_err(|_| "student_record_draft_read_failed")?;
+        let set: Value = serde_json::from_str(&set_raw.ok_or("student_record_draft_set_not_found")?).map_err(|_| "student_record_draft_read_failed")?;
+        if previous.is_none() {
+            for field in ["fromDate","toDate","schoolYear","semester"] {
+                if set.get(field).is_some_and(|v| !v.is_null() && v != "") && set[field] != input[field] { return Err("student_record_draft_scope_mismatch".into()); }
+            }
+            if set["recordTypes"].as_array().is_some_and(|types| !types.is_empty() && !types.contains(&input["recordType"])) { return Err("student_record_draft_scope_mismatch".into()); }
+            for (kind,field,key,scope_key) in [("subjects","subjectComments","subject","subject"),("creative","creativeComments","area","creativeArea")] {
+                if input["recordType"] == kind && set[scope_key].as_str().is_some_and(|value| !value.is_empty())
+                    && !input[field].as_array().is_some_and(|rows| rows.len() == 1 && rows[0][key] == set[scope_key]) { return Err("student_record_draft_scope_mismatch".into()); }
+            }
+        }
+        let mut history = prior["history"].as_array().cloned().unwrap_or_default();
+        if previous.is_some() {
+            let mut entry = prior.clone(); entry.as_object_mut().ok_or("student_record_draft_read_failed")?.remove("history");
+            history.push(entry);
+        }
+        input["history"] = json!(history);
+        input["revisionProtected"] = json!(true);
+    }
+    let updated_at_ms = expected.map(|value| now_ms().max(value + 1)).unwrap_or_else(|| updated_at_ms(&input));
     if let Value::Object(ref mut obj) = input {
+        obj.remove("expectedRevision");
         set_obj(obj, "tenantId", tenant_id.clone());
         set_obj(obj, "id", draft_id.clone());
         set_obj(obj, "docId", draft_id.clone());
@@ -340,16 +383,18 @@ pub(crate) fn upsert_student_record_draft(
         set_updated_payload_fields(obj, updated_at_ms);
     }
     let payload_json = payload_json(&input, "student_record_draft_encode_failed")?;
-    conn.execute(
+    let changed = conn.execute(
         "INSERT INTO student_record_drafts
          (tenant_id, draft_id, draft_set_id, student_code, class_no, payload_json, updated_at_ms)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7 WHERE ?8 IS NULL OR ?8 = 0 OR EXISTS (
+           SELECT 1 FROM student_record_drafts WHERE tenant_id=?1 AND draft_id=?2 AND updated_at_ms=?8)
          ON CONFLICT(tenant_id, draft_id) DO UPDATE SET
            draft_set_id = excluded.draft_set_id,
            student_code = excluded.student_code,
            class_no = excluded.class_no,
            payload_json = excluded.payload_json,
-           updated_at_ms = excluded.updated_at_ms",
+           updated_at_ms = excluded.updated_at_ms
+         WHERE ?8 IS NULL OR student_record_drafts.updated_at_ms = ?8",
         params![
             tenant_id,
             draft_id,
@@ -357,9 +402,10 @@ pub(crate) fn upsert_student_record_draft(
             student_code,
             class_no,
             payload_json,
-            updated_at_ms
+            updated_at_ms, expected
         ],
     )
     .map_err(|e| format!("db_student_record_draft_upsert_failed:{e}"))?;
+    if changed != 1 { return Err("student_record_draft_revision_conflict".into()); }
     Ok(input)
 }

@@ -42,6 +42,7 @@ const CAPABILITIES: &[&str] = &[
     "classaimate_mcp_receipt_readback_v1",
     "classaimate_mcp_student_drafts_read_v1",
     "classaimate_mcp_student_selection_v1",
+    "classaimate_mcp_student_traits_v1",
     "classaimate_mcp_teaching_sources_v1",
     "classaimate_mcp_teaching_source_pages_v1",
 ];
@@ -76,6 +77,8 @@ fn diagnostic_code(error: &str) -> &str {
     if let Some(code) = uncertain_failure_code(error) { return code; }
     match error {
         "DRAFT_CONFLICT" => "DRAFT_CONFLICT",
+        "student_record_workspace_revision_conflict" => "MCP_STUDENT_WORKSPACE_REVISION_CONFLICT",
+        "MCP_STUDENT_TRAITS_REVISION_CONFLICT" | "MCP_STUDENT_TRAITS_INVALID" | "MCP_STUDENT_WORKSPACE_SCOPE_MISMATCH" | "MCP_STUDENT_WORKSPACE_NOT_FOUND" => error,
         "classaimate_mcp_write_job_invalid" => "MCP_WRITE_JOB_INVALID",
         "LOCAL_STORE_WRITE_FAILED" => "LOCAL_STORE_WRITE_FAILED",
         "IDEMPOTENCY_CONFLICT" => "IDEMPOTENCY_CONFLICT",
@@ -328,12 +331,15 @@ fn read_local(store: &SqliteStore, tenant: &str, owner: &str, frame: &Value) -> 
     if workspace == "student_record" && operation == "student_drafts_get" {
         return classaimate_mcp_write_jobs::student_drafts::read_current(store, tenant, &frame["input"]);
     }
+    if workspace == "student_record" && operation == "student_record_workspaces_list" {
+        return student_selection::discover(store, tenant, &frame["input"]);
+    }
     if workspace == "student_record" && operation == "student_record_selection_get" {
         return student_selection::read_only(store, tenant, &frame["input"]);
     }
     if operation == "write_receipt_get" {
         let allowed = match input.get("operation").and_then(Value::as_str).unwrap_or("") {
-            "student_record_save_drafts" => workspace == "student_record",
+            "student_record_save_drafts" | "student_record_traits_save" => workspace == "student_record",
             "counseling_record_save_draft" | "counseling_record_prepare_create" => workspace == "counseling_record",
             "lesson_observations_manage" => workspace == "lesson_observations",
             "life_records_manage" => workspace == "life_records",
@@ -457,6 +463,7 @@ fn read_frame_for_owner(store: &SqliteStore, tenant: &str, owner: &str, frame: &
                 } else if not_found { "local_workspace_page_not_found" }
                 else if ["MCP_LOCAL_RECEIPT_CONFLICT", "MCP_LOCAL_RECEIPT_UNSUPPORTED", "MCP_LOCAL_RECEIPT_READ_FAILED", "MCP_STUDENT_DRAFT_READ_FAILED", "INVALID_LOCAL_READ_REQUEST",
                     "MCP_STUDENT_SELECTION_INVALID", "MCP_STUDENT_SELECTION_READ_FAILED", "MCP_STUDENT_SELECTION_TOO_LARGE",
+                    "MCP_STUDENT_WORKSPACE_AMBIGUOUS", "MCP_STUDENT_TRAITS_INVALID",
                     "MCP_STUDENT_WORKSPACE_NOT_FOUND", "MCP_STUDENT_WORKSPACE_SCOPE_MISMATCH"].contains(&error.as_str()) {
                     error.as_str()
                 } else { reads::safe_error(&error) };

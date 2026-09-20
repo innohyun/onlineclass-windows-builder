@@ -11,6 +11,7 @@ const TOO_LARGE: &str = "MCP_STUDENT_SELECTION_TOO_LARGE";
 const MAX_RECORDS: usize = 10_000;
 const MAX_PROJECTION_BYTES: usize = 16 * 1024 * 1024;
 
+#[derive(Clone)]
 struct Scope {
     school_year: i64,
     semester: i64,
@@ -19,6 +20,8 @@ struct Scope {
     students: BTreeSet<String>,
     sources: BTreeSet<String>,
     workspace: Option<String>,
+    include_behavior: bool,
+    selected_ids: Option<BTreeSet<String>>,
     offset: usize,
     limit: usize,
 }
@@ -49,7 +52,7 @@ fn strings(value: Option<&Value>, max: usize) -> Result<BTreeSet<String>, String
 impl Scope {
     fn parse(tenant: &str, input: &Value) -> Result<Self, String> {
         let object = input.as_object().ok_or(INVALID)?;
-        let allowed = ["schoolYear", "semester", "fromDate", "toDate", "studentCodes", "sourceTypes", "workspaceId", "cursor", "limit"];
+        let allowed = ["schoolYear", "semester", "fromDate", "toDate", "studentCodes", "sourceTypes", "workspaceId", "cursor", "limit", "includeBehaviorInputs"];
         if !identifier(tenant, 128) || object.keys().any(|k| !allowed.contains(&k.as_str())) {
             return Err(INVALID.into());
         }
@@ -59,7 +62,8 @@ impl Scope {
         let to = date(input.get("toDate"))?;
         if from > to { return Err(INVALID.into()); }
         let students = strings(input.get("studentCodes"), 30)?;
-        let sources = strings(input.get("sourceTypes"), 4)?;
+        let include_behavior = input.get("includeBehaviorInputs").map(|v| v.as_bool().ok_or(INVALID)).transpose()?.unwrap_or(false);
+        let sources = if include_behavior && input["sourceTypes"] == json!([]) { BTreeSet::new() } else { strings(input.get("sourceTypes"), 4)? };
         if sources.iter().any(|s| !["observation", "evaluation", "manual_supplement", "counseling_summary"].contains(&s.as_str())) {
             return Err(INVALID.into());
         }
@@ -77,7 +81,15 @@ impl Scope {
             }
         };
         let limit = input["limit"].as_u64().filter(|n| (1..=200).contains(n)).ok_or(INVALID)? as usize;
-        Ok(Self { school_year, semester, from, to, students, sources, workspace, offset, limit })
+        Ok(Self { school_year, semester, from, to, students, sources, workspace, include_behavior, selected_ids: None, offset, limit })
+    }
+
+    fn selection_clause(&self, column: &str, kind: &str) -> String {
+        let Some(ids) = &self.selected_ids else { return String::new(); };
+        // Values are validated identifiers; never interpolate user free text into SQL.
+        let ids: Vec<_> = ids.iter().filter_map(|id| id.strip_prefix(&format!("{kind}:")))
+            .filter(|id| identifier(id, 260)).map(|id| format!("'{id}'")).collect();
+        if ids.is_empty() { " AND 0".into() } else { format!(" AND {column} IN ({})", ids.join(",")) }
     }
 
     fn bindings(&self, tenant: &str) -> Vec<String> {
@@ -113,7 +125,7 @@ fn copy_strings(target: &mut Map<String, Value>, source: &Value, fields: &[&str]
 }
 
 const STATE_FIELDS: &[&str] = &["status", "recordState", "archivedAtMs", "deletedAtMs", "isActive"];
-const OBSERVATION_FIELDS: &[&str] = &["note", "content", "observationText", "memo", "comment", "subject", "recordDomain", "creativeArea", "contextType", "sourceType", "revisionId"];
+const OBSERVATION_FIELDS: &[&str] = &["note", "content", "observationText", "memo", "comment", "subject", "recordDomain", "creativeArea", "contextType", "sourceType", "revisionId", "categoryId", "categoryLabel", "categoryVersion", "categoryMeaning", "categoryScopeKind", "categoryScopeKey", "contextName"];
 const EVALUATION_FIELDS: &[&str] = &["subject", "title", "evaluationTitle", "planTitle", "coreStandard", "achievementStandard", "standard", "coreAchievementStandard", "resultMode", "mode", "levelIndex", "levelLabel", "customResultText", "resultText", "score", "isRecorded", "isExcluded", "excluded", "note", "memo", "comment"];
 
 fn base(kind: &str, id: String, student: String, day: String, updated: i64) -> Map<String, Value> {
@@ -142,7 +154,7 @@ fn observations(conn: &Connection, tenant: &str, scope: &Scope, records: &mut Pr
         (true, false) => " AND COALESCE(json_extract(payload_json,'$.sourceType'),'') NOT IN ('teacherManualSupplement','manual_supplement')",
         _ => " AND json_extract(payload_json,'$.sourceType') IN ('teacherManualSupplement','manual_supplement')",
     };
-    let sql = format!("SELECT doc_id,student_code,date_key,period,updated_at_ms,payload_json FROM lesson_observations WHERE tenant_id=? AND date_key>=? AND date_key<=? AND student_code IN ({}){} ORDER BY date_key,doc_id LIMIT {}", scope.placeholders(), source_clause, MAX_RECORDS + 1);
+    let sql = format!("SELECT doc_id,student_code,date_key,period,updated_at_ms,payload_json FROM lesson_observations WHERE tenant_id=? AND date_key>=? AND date_key<=? AND student_code IN ({}){} ORDER BY date_key,doc_id LIMIT {}", scope.placeholders(), format!("{source_clause}{}", scope.selection_clause("doc_id", "observation")), MAX_RECORDS + 1);
     let mut statement = conn.prepare(&sql).map_err(|_| READ_FAILED)?;
     let mut rows = statement.query(params_from_iter(scope.bindings(tenant))).map_err(|_| READ_FAILED)?;
     while let Some(row) = rows.next().map_err(|_| READ_FAILED)? {
@@ -160,7 +172,7 @@ fn observations(conn: &Connection, tenant: &str, scope: &Scope, records: &mut Pr
 fn evaluations(conn: &Connection, tenant: &str, scope: &Scope, records: &mut Projection) -> Result<(), String> {
     if !scope.sources.contains("evaluation") { return Ok(()); }
     let day = "COALESCE(NULLIF(r.date_key,''),a.scheduled_date)";
-    let sql = format!("SELECT r.result_id,r.student_id,{day},MAX(r.updated_at_ms,a.updated_at_ms),r.payload_json,a.payload_json FROM eval_results r JOIN eval_assignments a ON a.tenant_id=r.tenant_id AND a.assignment_id=r.assignment_id WHERE r.tenant_id=? AND {day}>=? AND {day}<=? AND r.student_id IN ({}) ORDER BY {day},r.result_id LIMIT {}", scope.placeholders(), MAX_RECORDS + 1);
+    let sql = format!("SELECT r.result_id,r.student_id,{day},MAX(r.updated_at_ms,a.updated_at_ms),r.payload_json,a.payload_json FROM eval_results r JOIN eval_assignments a ON a.tenant_id=r.tenant_id AND a.assignment_id=r.assignment_id WHERE r.tenant_id=? AND {day}>=? AND {day}<=? AND r.student_id IN ({}){} ORDER BY {day},r.result_id LIMIT {}", scope.placeholders(), scope.selection_clause("r.result_id", "evaluation"), MAX_RECORDS + 1);
     let mut statement = conn.prepare(&sql).map_err(|_| READ_FAILED)?;
     let mut rows = statement.query(params_from_iter(scope.bindings(tenant))).map_err(|_| READ_FAILED)?;
     while let Some(row) = rows.next().map_err(|_| READ_FAILED)? {
@@ -205,7 +217,7 @@ fn counseling(conn: &Connection, tenant: &str, scope: &Scope, records: &mut Proj
     let end = NaiveDate::parse_from_str(&scope.to, "%Y-%m-%d").map_err(|_| INVALID)?.succ_opt().ok_or(INVALID)?.and_hms_opt(0, 0, 0).ok_or(INVALID)?;
     let mut bindings = vec![tenant.to_string(), zone.from_local_datetime(&start).single().ok_or(INVALID)?.timestamp_millis().to_string(), zone.from_local_datetime(&end).single().ok_or(INVALID)?.timestamp_millis().to_string()];
     bindings.extend(scope.students.iter().cloned());
-    let sql = format!("SELECT session_id,student_code,counseling_at_ms,updated_at_ms,status,archived_at_ms,payload_json FROM teacher_counseling_sessions WHERE tenant_id=? AND counseling_at_ms>=CAST(? AS INTEGER) AND counseling_at_ms<CAST(? AS INTEGER) AND student_code IN ({}) ORDER BY counseling_at_ms,session_id LIMIT {}", scope.placeholders(), MAX_RECORDS + 1);
+    let sql = format!("SELECT session_id,student_code,counseling_at_ms,updated_at_ms,status,archived_at_ms,payload_json FROM teacher_counseling_sessions WHERE tenant_id=? AND counseling_at_ms>=CAST(? AS INTEGER) AND counseling_at_ms<CAST(? AS INTEGER) AND student_code IN ({}){} ORDER BY counseling_at_ms,session_id LIMIT {}", scope.placeholders(), scope.selection_clause("session_id", "counseling"), MAX_RECORDS + 1);
     let mut statement = conn.prepare(&sql).map_err(|_| READ_FAILED)?;
     let mut rows = statement.query(params_from_iter(bindings)).map_err(|_| READ_FAILED)?;
     while let Some(row) = rows.next().map_err(|_| READ_FAILED)? {
@@ -221,8 +233,38 @@ fn counseling(conn: &Connection, tenant: &str, scope: &Scope, records: &mut Proj
     Ok(())
 }
 
+fn list_workspaces(conn: &Connection, tenant: &str, scope: &Scope) -> Result<Vec<Value>, String> {
+    let mut stmt = conn.prepare("SELECT draft_set_id,updated_at_ms,payload_json FROM student_record_draft_sets WHERE tenant_id=?1 AND status='workspace' AND from_date=?2 AND to_date=?3 ORDER BY draft_set_id").map_err(|_| READ_FAILED)?;
+    let rows = stmt.query_map(params![tenant,scope.from,scope.to], |row| Ok((row.get::<_,String>(0)?, row.get::<_,i64>(1)?, row.get::<_,String>(2)?))).map_err(|_| READ_FAILED)?;
+    let mut result = Vec::new();
+    for row in rows {
+        let (id, revision, raw) = row.map_err(|_| READ_FAILED)?;
+        let value = payload(&raw)?;
+        let body = &value["workspace"];
+        if value["kind"] == "student_record_workspace_v1" && body["academicYear"] == scope.school_year && body["semester"] == scope.semester
+            && body["workspaceId"] == id && body["fromDate"] == scope.from && body["toDate"] == scope.to
+            && body["studentCodes"].as_array().is_some_and(|codes| scope.students.iter().all(|student| codes.iter().any(|code| code == student))) {
+            result.push(json!({"workspaceId":id,"revision":revision,"schoolYear":scope.school_year,"semester":scope.semester,"fromDate":scope.from,"toDate":scope.to}));
+        }
+    }
+    Ok(result)
+}
+
+pub(crate) fn discover(store: &SqliteStore, tenant: &str, input: &Value) -> Result<Value, String> {
+    let scope = Scope::parse(tenant, input)?;
+    let conn = store.conn.lock().map_err(|_| READ_FAILED)?;
+    Ok(json!({"workspaces":list_workspaces(&conn, tenant, &scope)?}))
+}
+
 fn workspace(conn: &Connection, tenant: &str, scope: &Scope) -> Result<Value, String> {
-    let Some(id) = &scope.workspace else { return Ok(Value::Null); };
+    let resolved;
+    let id = if let Some(id) = &scope.workspace { id } else if scope.include_behavior {
+        let candidates = list_workspaces(conn, tenant, scope)?;
+        if candidates.len() > 1 { return Err("MCP_STUDENT_WORKSPACE_AMBIGUOUS".into()); }
+        let Some(candidate) = candidates.first() else { return Ok(Value::Null); };
+        resolved = candidate["workspaceId"].as_str().ok_or(READ_FAILED)?.to_string();
+        &resolved
+    } else { return Ok(Value::Null); };
     let found: Option<(String, String, String, i64)> = conn.query_row("SELECT payload_json,from_date,to_date,updated_at_ms FROM student_record_draft_sets WHERE tenant_id=?1 AND draft_set_id=?2 AND status='workspace'", params![tenant, id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).optional().map_err(|_| READ_FAILED)?;
     let Some((raw, from, to, revision)) = found else { return Err("MCP_STUDENT_WORKSPACE_NOT_FOUND".into()); };
     let parsed = payload(&raw)?;
@@ -232,13 +274,36 @@ fn workspace(conn: &Connection, tenant: &str, scope: &Scope) -> Result<Value, St
         || from != scope.from || to != scope.to || body["fromDate"] != from || body["toDate"] != to {
         return Err("MCP_STUDENT_WORKSPACE_SCOPE_MISMATCH".into());
     }
+    if scope.include_behavior && !body["studentCodes"].as_array().is_some_and(|codes| scope.students.iter().all(|student| codes.iter().any(|code| code == student))) {
+        return Err("MCP_STUDENT_WORKSPACE_SCOPE_MISMATCH".into());
+    }
+    let mut behavior = Map::new();
     let mut selected = Map::new();
     let mut checks = Map::new();
     let mut evidence_ids = BTreeSet::new();
     for student in &scope.students {
+        if scope.include_behavior {
+            let value = &body["behaviorInputs"][student];
+            let mode = value["inputMode"].as_str().unwrap_or("records");
+            if !["records", "keywords", "combined"].contains(&mode) { return Err(READ_FAILED.into()); }
+            let confirmed = value["confirmed"] == true && value["revision"].as_i64().is_some_and(|v| v > 0)
+                && value["confirmation"]["revision"] == value["revision"]
+                && value["scope"] == json!({"schoolYear":scope.school_year,"semester":scope.semester,"fromDate":scope.from,"toDate":scope.to});
+            let mut projected = json!({"inputMode":mode,"confirmed":confirmed,"revision":value["revision"].as_i64().unwrap_or(0),"traits":[]});
+            if confirmed {
+                crate::student_record_workspace::validate_behavior(value)?;
+                projected["traits"] = value["traits"].clone();
+                projected["confirmation"] = value["confirmation"].clone();
+                projected["scope"] = value["scope"].clone();
+                if let Some(note) = value.get("note") { projected["note"] = note.clone(); }
+            }
+            behavior.insert(student.clone(), projected);
+        }
         let mut areas = Map::new();
-        if let Some(values) = body["selectedEvidence"][student].as_object() {
+        if let Some(values) = body["selectedEvidence"][student].as_object().filter(|_| !scope.include_behavior
+            || (!scope.sources.is_empty() && body["behaviorInputs"][student]["inputMode"] != "keywords")) {
             for (area, value) in values {
+                if scope.include_behavior && area != "behavior" { continue; }
                 let Some(ids) = value.as_array() else { return Err(READ_FAILED.into()); };
                 if !ids.iter().all(Value::is_string) { return Err(READ_FAILED.into()); }
                 evidence_ids.extend(ids.iter().filter_map(Value::as_str).map(str::to_string));
@@ -259,19 +324,35 @@ fn workspace(conn: &Connection, tenant: &str, scope: &Scope) -> Result<Value, St
     }
     // Checks contain teacher-reviewed fingerprints; this projection is server-internal, never a public MCP DTO.
     Ok(json!({"workspaceId":id,"revision":revision,"schoolYear":scope.school_year,"academicYear":scope.school_year,"semester":scope.semester,"fromDate":from,"toDate":to,
-        "studentCodes":scope.students,"selectedEvidence":selected,"checks":checks,"evidenceLinks":links,"counselingFollowUps":followups}))
+        "studentCodes":scope.students,"behaviorInputs":behavior,"selectedEvidence":selected,"checks":checks,"evidenceLinks":links,"counselingFollowUps":followups}))
 }
 
 fn read_connection(conn: &Connection, tenant: &str, scope: &Scope) -> Result<Value, String> {
     let mut projection = Projection::default();
-    observations(conn, tenant, scope, &mut projection)?;
-    evaluations(conn, tenant, scope, &mut projection)?;
-    counseling(conn, tenant, scope, &mut projection)?;
+    let workspace = workspace(conn, tenant, scope)?;
+    if scope.include_behavior {
+        for student in &scope.students {
+            let mode = workspace["behaviorInputs"][student]["inputMode"].as_str().unwrap_or("records");
+            // Do not even prepare observation/evaluation/counseling SQL for keyword-only students.
+            if mode == "keywords" { continue; }
+            let mut single = scope.clone(); single.students = BTreeSet::from([student.clone()]);
+            if mode == "combined" {
+                single.selected_ids = Some(workspace["selectedEvidence"][student]["behavior"].as_array()
+                    .map(|ids| ids.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default());
+            }
+            observations(conn, tenant, &single, &mut projection)?;
+            evaluations(conn, tenant, &single, &mut projection)?;
+            counseling(conn, tenant, &single, &mut projection)?;
+        }
+    } else {
+        observations(conn, tenant, scope, &mut projection)?;
+        evaluations(conn, tenant, scope, &mut projection)?;
+        counseling(conn, tenant, scope, &mut projection)?;
+    }
     let mut records = projection.records;
     records.sort_by(|left, right| ["date", "kind", "sourceId", "studentCode"].iter()
         .map(|field| left[*field].as_str().unwrap_or("").cmp(right[*field].as_str().unwrap_or("")))
         .find(|order| !order.is_eq()).unwrap_or(std::cmp::Ordering::Equal));
-    let workspace = workspace(conn, tenant, scope)?;
     let all = json!({"records":records,"workspace":workspace});
     let bytes = serde_json::to_vec(&all).map_err(|_| READ_FAILED)?;
     if bytes.len() > MAX_PROJECTION_BYTES { return Err(TOO_LARGE.into()); }

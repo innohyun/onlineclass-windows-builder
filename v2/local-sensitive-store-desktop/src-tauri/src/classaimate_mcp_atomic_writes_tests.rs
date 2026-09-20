@@ -279,3 +279,38 @@ fn equal_clock_writes_still_advance_the_revision() {
         future + 1
     );
 }
+
+#[test]
+fn student_snapshot_aliases_survive_save_and_exact_replay() {
+    let mut fixture = Fixture::new("student_record_save_drafts");
+    fixture.input["data"]["inputSnapshot"] = json!({"v":1,"scope":fixture.input["data"]["scope"],"students":[
+        {"studentAlias":"학생-01","inputMode":"keywords","traits":[{"label":"책임감"}]},
+        {"studentAlias":"학생-02","inputMode":"records","evidence":[{"text":"두 번째 근거"}]}]});
+    fixture.input["requestSha256"] = json!(crate::sha256_json(&fixture.input["data"]).unwrap());
+    apply(&fixture.store, &fixture.input).unwrap();
+    let conn = fixture.store.conn.lock().unwrap();
+    let tx_store = TransactionStore { conn: &conn };
+    assert!(exact_student_batch(&tx_store, "tenant-a", &fixture.input["data"]).unwrap());
+    for row in fixture.input["data"]["rows"].as_array().unwrap() {
+        let raw: String = conn.query_row("SELECT payload_json FROM student_record_drafts WHERE student_code=?1", params![row["studentCode"].as_str().unwrap()], |record| record.get(0)).unwrap();
+        let draft: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(draft["studentAlias"], row["studentAlias"]);
+        assert_eq!(fixture.input["data"]["inputSnapshot"]["students"].as_array().unwrap().iter().filter(|entry| entry["studentAlias"] == draft["studentAlias"]).count(), 1);
+    }
+    drop(conn);
+    assert_eq!(apply(&fixture.store, &fixture.input).unwrap()["replayed"], true);
+    fixture.store.conn.lock().unwrap().execute("UPDATE student_record_drafts SET payload_json=json_set(payload_json,'$.studentAlias','학생-02') WHERE student_code='A001'", []).unwrap();
+    let conn = fixture.store.conn.lock().unwrap();
+    assert_eq!(exact_student_batch(&TransactionStore { conn: &conn }, "tenant-a", &fixture.input["data"]).unwrap_err(), "DRAFT_CONFLICT");
+    drop(conn);
+    assert_eq!(apply(&fixture.store, &fixture.input).unwrap_err(), "LOCAL_STORE_WRITE_FAILED");
+}
+
+#[test]
+fn student_alias_readback_mismatch_rolls_back_the_entire_batch() {
+    let fixture = Fixture::new("student_record_save_drafts");
+    let before = fixture.snapshot();
+    fixture.store.conn.lock().unwrap().execute_batch("CREATE TRIGGER corrupt_alias AFTER INSERT ON student_record_drafts BEGIN UPDATE student_record_drafts SET payload_json=json_remove(payload_json,'$.studentAlias') WHERE draft_id=NEW.draft_id; END").unwrap();
+    assert_eq!(apply(&fixture.store, &fixture.input).unwrap_err(), "DRAFT_CONFLICT");
+    assert_eq!(fixture.snapshot(), before);
+}

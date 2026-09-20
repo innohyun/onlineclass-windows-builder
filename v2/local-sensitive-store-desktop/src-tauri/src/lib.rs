@@ -200,7 +200,7 @@ const LOCAL_SENSITIVE_STORE_ROUTES: &[&str] = &[
     "/v1/password-vault/shared/decrypt",
     "/v1/password-vault/shared/recover",
 ];
-const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 32] = [
+const LOCAL_SENSITIVE_STORE_FEATURES: &[&str] = &[
     "observation_evidence_v1",
     "non_lesson_observations",
     "teacher_local_records",
@@ -216,6 +216,8 @@ const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 32] = [
     "lesson_plan_bindings_v1",
     "student_record_draft_batch_v1",
     "student_record_workspace_v1",
+    "student_record_drafts_cas_v1",
+    "classaimate_mcp_student_traits_v1",
     "student_record_mcp_v1",
     "classaimate_public_mcp_write_jobs_v1",
     "classaimate_public_mcp_operations_v1",
@@ -4410,8 +4412,11 @@ impl SqliteStore {
     }
 
     fn upsert_student_record_draft(&self, input: Value) -> Result<Value, String> {
-        let conn = self.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
-        canonical_write_transactions::upsert_student_record_draft(&conn, input)
+        let mut conn = self.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
+        let transaction = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|_| "student_record_draft_transaction_failed")?;
+        let result = canonical_write_transactions::upsert_student_record_draft(&transaction, input)?;
+        transaction.commit().map_err(|_| "student_record_draft_transaction_failed")?;
+        Ok(result)
     }
 
     fn import_student_record_drafts(&self, tenant_id: String, records: Vec<Value>) -> Result<Vec<Value>, String> {
@@ -4791,7 +4796,8 @@ fn request_error_status(error: &str) -> u16 {
         "observation_revision_conflict" | "observation_mutation_conflict" | "observation_evidence_integrity_mismatch" | "observation_photo_immutable" => 409,
         "observation_correction_reason_required" | "observation_event_precision_invalid" | "observation_event_time_required" | "observation_event_date_mismatch" | "observation_event_time_invalid" | "observation_evidence_unsafe_number" | "observation_duplicate_record" => 400,
         "observation_not_found" => 404,
-        "student_record_workspace_revision_conflict" => 409,
+        "student_record_workspace_revision_conflict" | "student_record_draft_revision_conflict" => 409,
+        "student_record_draft_scope_mismatch" | "student_record_draft_revision_required" | "student_record_draft_set_not_found" | "student_record_input_snapshot_immutable" => 400,
         "student_record_workspace_revision_required" | "student_record_workspace_invalid" => 400,
         "invalid_json" => 400,
         "browser_token_required" | "MCP_GRANT_REQUIRED" => 401,
