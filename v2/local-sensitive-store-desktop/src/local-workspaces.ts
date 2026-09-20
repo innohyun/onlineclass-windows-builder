@@ -24,12 +24,12 @@ type WorkspaceConfig = {
   tutorialKey: string;
 };
 
-type LocalWorkspaceOptions = { getTenantId: () => string };
+type LocalWorkspaceOptions = { getTenantId: () => string; openDocument?: (input: { pageId: string; workspace: 'workNotes' | 'lessonMaterials'; tenantId: string }) => void | Promise<void> };
 
 const CONFIGS: WorkspaceConfig[] = [
-  { view: 'lesson-materials', kind: 'lesson_materials', title: '수업자료', empty: '이 PC로 전환한 수업자료가 없습니다. 교사 홈의 수업계획에서 전체 수업자료를 로컬로 전환할 수 있습니다.', tutorialKey: 'localLessonMaterialsTutorial:v1' },
-  { view: 'work-materials', kind: 'work_materials', title: '업무자료', empty: '이 PC에 저장된 업무자료가 없습니다. 교사 홈 업무노트에서 필요한 문서를 로컬로 전환할 수 있습니다.', tutorialKey: 'localWorkMaterialsTutorial:v1' },
-  { view: 'student-learning-materials', kind: 'student_learning_materials', title: '학생 학습자료', empty: '이 PC에 저장된 학생 학습자료가 없습니다. 교사 홈에서 새 자료를 작성하거나 ChatGPT 초안을 저장할 수 있습니다.', tutorialKey: 'localStudentLearningMaterialsTutorial:v1' },
+  { view: 'lesson-materials', kind: 'lesson_materials', title: '수업자료', empty: '이 PC로 전환한 수업자료가 없습니다. 교사 홈의 수업계획에서 전체 수업자료를 로컬로 전환할 수 있습니다.', tutorialKey: 'localLessonMaterialsTutorial:v2' },
+  { view: 'work-materials', kind: 'work_materials', title: '업무 노트', empty: '이 PC에 저장된 업무자료가 없습니다. 교사 홈 업무노트에서 필요한 문서를 로컬로 전환할 수 있습니다.', tutorialKey: 'localWorkMaterialsTutorial:v2' },
+  { view: 'student-learning-materials', kind: 'student_learning_materials', title: '학생 학습자료', empty: '이 PC에 저장된 학생 학습자료가 없습니다. 교사 홈에서 새 자료를 작성하거나 ChatGPT 초안을 저장할 수 있습니다.', tutorialKey: 'localStudentLearningMaterialsTutorial:v2' },
 ];
 
 const DESIGN_PREVIEW = new URLSearchParams(window.location.search).get('designPreview');
@@ -128,12 +128,13 @@ function render(config: WorkspaceConfig, result: WorkspaceResult, selectedPageId
 
 function initWorkspace(config: WorkspaceConfig, options: LocalWorkspaceOptions) {
   const id = suffix(config); const view = required<HTMLElement>(`localWorkspace${id}`); const input = required<HTMLInputElement>(`localWorkspace${id}Query`);
-  let selectedPageId = ''; let loaded = false; let tutorialIndex = -1;
+  let selectedPageId = ''; let loadedTenant = ''; let generation = 0; let currentPages: WorkspacePage[] = []; let tutorialIndex = -1;
+  const editable = Boolean(options.openDocument) && config.kind !== 'student_learning_materials';
   const tutorialSteps = [
     { target: document.querySelector<HTMLElement>(`[data-app-view-target="${config.view}"]`), title: `${config.title} 작업공간`, copy: `${config.title}만 따로 모아 보지만 실제 로컬 DB와 백업은 하나입니다.` },
     { target: input, title: '작업공간 안에서 검색', copy: '제목·본문·첨부파일 이름을 검색하며 다른 작업공간 자료는 섞이지 않습니다.' },
     { target: required<HTMLElement>(`localWorkspace${id}Tree`), title: '가벼운 자료 구조', copy: '먼저 제목·계층·첨부 개수와 크기만 읽고, 본문은 선택할 때 불러옵니다.' },
-    { target: required<HTMLElement>(`localWorkspace${id}Open`), title: '읽기 전용으로 열기', copy: '원문과 첨부를 확인합니다. 수정·이동·삭제는 교사 홈에서 합니다.' },
+    { target: required<HTMLElement>(`localWorkspace${id}Open`), title: editable ? '본문에서 바로 편집' : '기존 자료 열람', copy: editable ? '문서를 열어 기존 서식과 첨부를 유지하며 편집합니다. 보호된 시스템 폴더는 읽기 전용입니다. 로컬 저장과 학생 공개는 별도입니다.' : '이 목록은 기존 로컬 자료입니다. 새 학생 학습자료는 교사 홈에서 작성·검토·공개하며 인터넷 연결이 필요합니다.' },
   ];
   const tutorial = required<HTMLElement>(`localWorkspace${id}Tutorial`);
   const renderTutorial = () => {
@@ -155,7 +156,9 @@ function initWorkspace(config: WorkspaceConfig, options: LocalWorkspaceOptions) 
   const openTutorial = () => { tutorialIndex = 0; renderTutorial(); };
 
   const load = async (query = '') => {
+    const requestGeneration = ++generation;
     const tenantId = options.getTenantId();
+    if (loadedTenant !== tenantId) { selectedPageId = ''; currentPages = []; }
     const isPreview = DESIGN_PREVIEW === config.view;
     if (!tenantId && !isPreview) { selectedPageId = render(config, { ok: true, pages: [], total: 0 }); return; }
     required(`localWorkspace${id}Status`).textContent = query ? '검색 중입니다.' : '자료 구조를 불러오는 중입니다.';
@@ -166,9 +169,12 @@ function initWorkspace(config: WorkspaceConfig, options: LocalWorkspaceOptions) 
         : query
         ? await invoke<WorkspaceResult>('search_local_workspace', { input: { tenantId, workspace: config.kind, query, offset: 0, limit: 100 } })
         : await invoke<WorkspaceResult>('get_local_workspace_tree', { tenantId, workspace: config.kind });
+      if (requestGeneration !== generation || tenantId !== options.getTenantId()) return;
       if (result?.ok === false) throw new Error(result.error || 'local_workspace_failed');
-      selectedPageId = render(config, result, selectedPageId); loaded = true;
+      currentPages = result.pages || [];
+      selectedPageId = render(config, result, selectedPageId); loadedTenant = tenantId;
     } catch (error) {
+      if (requestGeneration !== generation || tenantId !== options.getTenantId()) return;
       selectedPageId = ''; required(`localWorkspace${id}Tree`).innerHTML = '<p class="local-workspace-error">자료를 불러오지 못했습니다. 로컬 저장소 연결을 확인해 주세요.</p>';
       required(`localWorkspace${id}Status`).textContent = String((error as Error)?.message || error);
     }
@@ -176,8 +182,14 @@ function initWorkspace(config: WorkspaceConfig, options: LocalWorkspaceOptions) 
   const openSelected = async () => {
     if (!selectedPageId) return;
     const tenantId = options.getTenantId();
+    if (tenantId !== loadedTenant) { await load(input.value.trim()); return; }
     required<HTMLButtonElement>(`localWorkspace${id}Open`).disabled = true;
-    try { await openWorkspaceWorkNoteReader(tenantId, config.kind, selectedPageId); }
+    try {
+      const selected = currentPages.find((page) => page.pageId === selectedPageId);
+      const protectedFolder = ['lesson_materials_folder', 'student_learning_materials_folder'].includes(selected?.systemKind || '');
+      if (editable && !protectedFolder) await options.openDocument?.({ tenantId, pageId: selectedPageId, workspace: config.kind === 'lesson_materials' ? 'lessonMaterials' : 'workNotes' });
+      else await openWorkspaceWorkNoteReader(tenantId, config.kind, selectedPageId);
+    }
     catch { required(`localWorkspace${id}Status`).textContent = '선택한 원문을 열지 못했습니다.'; }
     finally { required<HTMLButtonElement>(`localWorkspace${id}Open`).disabled = false; }
   };
@@ -200,7 +212,7 @@ function initWorkspace(config: WorkspaceConfig, options: LocalWorkspaceOptions) 
 
   return {
     async open() {
-      if (!loaded) await load();
+      if (!loadedTenant || loadedTenant !== options.getTenantId()) await load();
       if (localStorage.getItem(config.tutorialKey) !== 'complete') openTutorial();
     },
     refresh: () => load(input.value.trim()),

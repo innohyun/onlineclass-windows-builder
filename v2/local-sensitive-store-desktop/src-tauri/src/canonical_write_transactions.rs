@@ -41,15 +41,14 @@ pub(crate) fn upsert_work_note(conn: &Connection, mut input: Value) -> Result<Va
         .cloned()
         .unwrap_or_else(|| json!({}));
     let blocks = input.get("blocks").cloned().unwrap_or_else(|| json!([]));
+    if input.get("markdown").and_then(Value::as_str).is_some_and(|v|v.chars().count()>2_000_000) { return Err("work_note_document_too_large".into()); }
     let markdown = input
         .get("markdown")
         .and_then(Value::as_str)
         .unwrap_or("")
-        .chars()
-        .take(2_000_000)
-        .collect::<String>();
+        .to_string();
     let now = Utc::now().timestamp_millis();
-    let updated_at_ms = input
+    let mut updated_at_ms = input
         .get("updatedAtMs")
         .and_then(Value::as_i64)
         .filter(|value| *value > 0)
@@ -78,6 +77,15 @@ pub(crate) fn upsert_work_note(conn: &Connection, mut input: Value) -> Result<Va
     }
     if parent_id == page_id {
         return Err("work_note_parent_cycle".to_string());
+    }
+    let existing = crate::work_note_documents::read(conn, &tenant_id, &page_id)?;
+    if input.get("expectedRevision").is_some() {
+        crate::work_note_documents::validate_content(&input)?;
+        if input.pointer("/properties/_localTrash").is_some(){return Err("work_note_trash_metadata_protected".into());}
+        let expected = crate::work_note_documents::check_revision(&input, existing.as_ref())?;
+        crate::work_note_documents::validate_parent(conn,&tenant_id,&page_id,input["parentId"].as_str())?;
+        if existing.as_ref().is_some_and(crate::work_note_documents::is_trashed) { return Err("work_note_trashed".into()); }
+        updated_at_ms = now.max(expected + 1);
     }
     if let Some((stored_parent, stored_title, stored_position)) =
         crate::lesson_plan_bindings::stored_page_structure(conn, &tenant_id, &page_id)?
@@ -136,7 +144,8 @@ pub(crate) fn upsert_work_note(conn: &Connection, mut input: Value) -> Result<Va
         params![tenant_id, page_id, title, markdown],
     )
     .map_err(|e| format!("db_work_note_fts_insert_failed:{e}"))?;
-    Ok(input)
+    crate::work_note_documents::read(conn, &tenant_id, &page_id)?
+        .ok_or_else(|| "work_note_readback_failed".to_string())
 }
 
 pub(crate) fn upsert_teacher_counseling_session(

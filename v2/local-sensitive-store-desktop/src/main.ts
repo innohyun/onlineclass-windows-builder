@@ -17,6 +17,10 @@ import "./settings-dashboard.css";
 import "./desktop-shell.css";
 import "./local-workspaces.css";
 import "./quick-observation.css";
+import "./desk-shell.css";
+import { mountDeskViews } from "./desk-navigation";
+import { bindTeacherDeskLifecycle, initTeacherDeskDocuments } from "./desk-workspace-lifecycle";
+import { initDeskRecordEditor } from "./desk-record-editor";
 import { initSharedArchive } from "./shared-archive";
 import { initHomeDashboard, loadHomeOverview, renderHomeStatus } from "./home-dashboard";
 import { createDeviceAuthorizationController, type DeviceAuthorizationResult } from "./device-authorization";
@@ -32,7 +36,6 @@ import { initSettingsDashboard, renderSettingsDashboard } from "./settings-dashb
 import { initSettingsDashboardPreview } from "./settings-dashboard-preview";
 import { loadDeviceSyncStatus, renderDeviceSyncStatus, runDeviceSyncNow } from "./device-sync-ui";
 import { initDesktopShell } from "./desktop-shell";
-import { initLocalWorkspaces } from "./local-workspaces";
 import { backupKindLabel, initBackupStorage } from "./backup-storage";
 import { initQuickObservation } from "./quick-observation";
 import type { BackupDiscovery, BackupItem, BackupPreview, BackupSource, BackupStatus, CommandResult } from "./backup-types";
@@ -514,6 +517,7 @@ function renderSummary() {
     syncAtMs: latestSyncTime(cloudSyncSnapshot),
     backupAtMs: latestBackupTime(backupSnapshot),
     pending,
+    deviceName: serviceSnapshot?.pcName,
   });
   const connection = deviceConnectionSnapshot?.connected ? deviceConnectionSnapshot : cloudSyncSnapshot;
   const connected = deviceConnectionSnapshot?.connected === true || cloudSyncSnapshot?.connected === true;
@@ -1203,20 +1207,25 @@ function bindUi() {
   });
 }
 
-const desktopShell = initDesktopShell();
+mountDeskViews();
+const canLeaveWorkspace = async () => await documentWorkspace.canLeave() && await deskRecordEditor.canLeave();
+// A restored teacher tab must wait until the document controllers below finish mounting.
+const desktopShell = initDesktopShell({ beforeLeave: () => Promise.resolve().then(canLeaveWorkspace) });
 const quickObservation = initQuickObservation({
   onConnect: () => document.getElementById("desktopTeacherHome")?.click(),
 });
 initArchiveBoardExplorer();
 initWorkNoteReader();
 const { dataExplorer, studentTimeline } = initRecordBrowsers(currentBackupTenantId);
+const deskRecordEditor = initDeskRecordEditor({ getTenantId: currentBackupTenantId, onChanged: () => { void dataExplorer.refresh(); void studentTimeline.refresh(); void loadHomeOverview(currentBackupTenantId()); } });
 initDeviceSyncConflicts({ getTenantId: currentBackupTenantId });
-const localWorkspaces = initLocalWorkspaces({ getTenantId: currentBackupTenantId });
+const { localWorkspaces, documentWorkspace } = initTeacherDeskDocuments({ getTenantId: currentBackupTenantId, openTeacherHome: desktopShell.openTeacherHome });
 const backupStorage = initBackupStorage({
   getTenantId: currentBackupTenantId,
   isConfigured: () => designPreview === "backup" || backupSnapshot?.configured === true, onBackupsChanged: () => loadBackupStatus().catch(renderBackupLoadError),
 });
-initHomeDashboard({
+const homeDashboard = initHomeDashboard({
+  beforeViewChange: canLeaveWorkspace,
   onViewChange(view, context) {
     if (view === "quick-observation") void quickObservation.open({ focus: true });
     if (view === "lesson-materials" || view === "work-materials" || view === "student-learning-materials") void localWorkspaces.open(view);
@@ -1228,14 +1237,7 @@ initHomeDashboard({
     void dataExplorer.open({ query });
   },
 });
-void desktopShell.startActivationHandling(async (intent) => {
-  const shortcutTarget = document.querySelector<HTMLButtonElement>('.sidebar-link[data-app-view-target="quick-observation"]');
-  if (!shortcutTarget) throw new Error("quick_observation_target_missing");
-  shortcutTarget.click();
-  await waitForPaint();
-  if (document.body.dataset.appView !== "quick-observation") throw new Error("quick_observation_view_not_activated");
-  await invoke<boolean>("acknowledge_desktop_activation_intent", { intent });
-});
+bindTeacherDeskLifecycle({ getTenantId: currentBackupTenantId, desktopShell, homeDashboard, canLeave: canLeaveWorkspace, waitForPaint });
 bindUi();
 if (designPreview !== "settings") {
   initSettingsDashboard({ onDisconnected: refreshAll, onAuthorizeBrowser: () => deviceAuthorization.start() });

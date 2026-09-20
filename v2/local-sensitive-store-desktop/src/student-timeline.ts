@@ -1,3 +1,4 @@
+import { updateTeacherRecordAction } from "./desk-record-editor";
 import { invoke } from "@tauri-apps/api/core";
 import {
   byteText,
@@ -205,6 +206,7 @@ export function initStudentTimeline(options: StudentTimelineOptions) {
     const record = records[selectedRecordIndex];
     empty.hidden = Boolean(record);
     detail.hidden = !record;
+    updateTeacherRecordAction(detail, record, options.getTenantId().trim());
     if (!record) return;
     const student = selectedStudent();
     const name = studentLabel(student);

@@ -356,7 +356,7 @@ fn node_markdown(node: &Value, depth: usize) -> String {
                 .map(|r| {
                     rows(&r["content"])
                         .iter()
-                        .map(|c| inline(c).replace('|', "\\|"))
+                        .map(|c| rows(&c["content"]).iter().map(inline).collect::<Vec<_>>().join("<br>").replace('|', "\\|"))
                         .collect::<Vec<_>>()
                         .join(" | ")
                 })
@@ -368,7 +368,9 @@ fn node_markdown(node: &Value, depth: usize) -> String {
                     format!("| {} |", cells[0]),
                     format!(
                         "| {} |",
-                        vec!["---"; rows(&children[0]["content"]).len()].join(" | ")
+                        rows(&children[0]["content"]).iter().map(|cell|match cell.pointer("/content/0/attrs/textAlign").and_then(Value::as_str) {
+                            Some("left")=>":---",Some("center")=>":---:",Some("right")=>"---:",_=>"---"
+                        }).collect::<Vec<_>>().join(" | ")
                     ),
                 ];
                 lines.extend(cells[1..].iter().map(|r| format!("| {r} |")));
@@ -387,7 +389,7 @@ fn plan(page: &Value, data: &Value) -> Result<Value, String> {
     let mut next = page.clone();
     if matches!(
         text(&data["transform"], "strategy"),
-        "organize" | "operations"
+        "organize" | "operations" | "replace_document"
     ) {
         let mut originals = HashMap::new();
         attachment_nodes(&page["blocks"], &mut originals);
@@ -582,6 +584,7 @@ mod tests {
             ("append", false),
             ("organize", false),
             ("operations", false),
+            ("replace_document", false),
             ("append", true),
         ] {
             let wire = wire(strategy, images);

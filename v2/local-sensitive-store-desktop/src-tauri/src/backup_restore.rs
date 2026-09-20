@@ -1336,7 +1336,7 @@ mod tests {
     }
 
     #[test]
-    fn generation_restores_and_deletes_work_note_attachment_with_its_parent() {
+    fn generation_restores_and_trashes_work_note_attachment_with_its_parent() {
         let base = std::env::temp_dir().join(format!(
             "onlineclass-generation-work-note-attachment-test-{}",
             random_url_token()
@@ -1410,8 +1410,8 @@ mod tests {
         ).expect("restore attachment and page tombstones");
         assert!(target.get_work_note("tenant-a".to_string(), "page-a".to_string()).expect("read target page").is_none());
         assert!(crate::work_note_attachments::list(&target, "tenant-a".to_string(), "page-a".to_string())
-            .expect("list target attachments").is_empty());
-        assert!(!target_attachment_path.exists());
+            .expect("list target attachments").len()==1);
+        assert!(target_attachment_path.exists());
 
         drop(source);
         drop(target);
@@ -1764,4 +1764,16 @@ mod tests {
         fs::remove_dir_all(base).expect("remove test directory");
     }
 
+}
+
+#[cfg(test)]
+#[test]
+fn native_document_sync_catalog_rejects_unknown_tables_before_apply() {
+    let manifest=json!({"sync":{"records":[{"table":"work_note_versions_future","recordKey":["version"],"changedGeneration":1,"recordVersion":1,"tombstone":false}]}});
+    assert_eq!(parse_sync_records(&manifest,1).unwrap_err(),"backup_sync_table_invalid");
+    // The current catalog accepts exactly the new history identity, including
+    // tombstones, which continue to block readers with a pre-history catalog.
+    let mut known=manifest;known["sync"]["records"][0]["table"]=json!("work_note_versions");
+    known["sync"]["records"][0]["tombstone"]=json!(true);
+    let records=parse_sync_records(&known,1).unwrap();assert_eq!(records.len(),1);assert!(records[0].tombstone);
 }

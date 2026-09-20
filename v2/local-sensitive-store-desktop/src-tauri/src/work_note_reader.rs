@@ -26,6 +26,7 @@ fn load_view(store: &SqliteStore, raw_tenant_id: String, raw_page_id: String) ->
     let mut pages = Vec::new();
     for row in rows { pages.push(row.map_err(|error| format!("work_note_reader_row_failed:{error}"))?); }
     drop(statement);
+    pages.retain(|page| !crate::work_note_documents::is_trashed(page));
     let parent_by_id = pages.iter().filter_map(|page| page.get("pageId").and_then(Value::as_str).map(|id| {
         (id.to_string(), page.get("parentId").and_then(Value::as_str).map(str::to_string))
     })).collect::<HashMap<_, _>>();

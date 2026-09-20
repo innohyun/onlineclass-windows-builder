@@ -311,6 +311,9 @@ fn build_union_query(input: &LocalDataSearchInput) -> Result<(String, Vec<SqlVal
             continue;
         }
         let mut where_parts = vec!["tenant_id = ?".to_string()];
+        if source.key == "work-notes" {
+            where_parts.push("COALESCE(json_extract(properties_json,'$._localTrash.deletedAtMs'),0)=0".to_string());
+        }
         if source.key == "observations" {
             where_parts.push(ACTIVE_OBSERVATION_FILTER.to_string());
         }

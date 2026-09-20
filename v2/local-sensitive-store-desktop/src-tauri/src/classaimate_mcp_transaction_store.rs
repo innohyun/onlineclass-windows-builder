@@ -37,7 +37,7 @@ impl TransactionStore<'_> {
                 "properties":serde_json::from_str::<Value>(&properties).unwrap_or_else(|_|json!({})),"blocks":serde_json::from_str::<Value>(&blocks).unwrap_or_else(|_|json!([])),
                 "markdown":row.get::<_,String>(8)?,"createdAtMs":row.get::<_,i64>(9)?,"updatedAtMs":row.get::<_,i64>(10)?}))
         }).map_err(|error|format!("db_work_note_query_failed:{error}"))?;
-        rows.collect::<Result<Vec<_>, _>>()
+        rows.filter(|row| row.as_ref().map(|page| !crate::work_note_documents::is_trashed(page)).unwrap_or(true)).collect::<Result<Vec<_>, _>>()
             .map_err(|error| format!("db_work_note_query_failed:{error}"))
     }
     pub fn get_work_note(&self, tenant: String, page: String) -> Result<Option<Value>, String> {

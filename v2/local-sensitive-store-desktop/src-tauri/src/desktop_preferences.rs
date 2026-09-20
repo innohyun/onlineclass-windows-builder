@@ -34,6 +34,7 @@ pub struct DesktopPreferencesStore {
     path: PathBuf,
     value: Mutex<DesktopPreferences>,
     startup_error: Mutex<Option<String>>,
+    suppress_autostart: bool,
 }
 
 impl DesktopPreferencesStore {
@@ -47,7 +48,17 @@ impl DesktopPreferencesStore {
             path,
             value: Mutex::new(value),
             startup_error: Mutex::new(None),
+            suppress_autostart: false,
         }
+    }
+
+    pub(crate) fn open_for_desktop(
+        data_dir: &Path,
+        isolation: &crate::desktop_qa::DesktopQaIsolation,
+    ) -> Self {
+        let mut store = Self::open(data_dir);
+        store.suppress_autostart = isolation.is_active();
+        store
     }
 
     pub fn snapshot(&self) -> DesktopPreferences {
@@ -60,9 +71,21 @@ impl DesktopPreferencesStore {
     pub fn apply_startup_setting(&self) -> Result<(), String> {
         // Opening an isolated/new Mac store must never change this user's login items.
         #[cfg(target_os = "macos")]
-        let result = macos_autostart::verify(self.snapshot().start_with_windows);
+        let apply = macos_autostart::verify;
         #[cfg(not(target_os = "macos"))]
-        let result = apply_start_with_windows(self.snapshot().start_with_windows);
+        let apply = apply_start_with_windows;
+        self.apply_startup_setting_with(apply)
+    }
+
+    fn apply_startup_setting_with(
+        &self,
+        apply: impl FnOnce(bool) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let result = if self.suppress_autostart {
+            Ok(())
+        } else {
+            apply(self.snapshot().start_with_windows)
+        };
         if let Ok(mut error) = self.startup_error.lock() {
             *error = result.as_ref().err().cloned();
         }
@@ -105,13 +128,13 @@ impl DesktopPreferencesStore {
             _ => return Err("desktop_preference_key_invalid".to_string()),
         }
 
-        if key == "startWithWindows" {
+        if key == "startWithWindows" && !self.suppress_autostart {
             if let Err(error) = apply(enabled) {
                 return Err(self.remember_startup_error(error));
             }
         }
         if let Err(error) = self.persist(&next) {
-            if key == "startWithWindows" {
+            if key == "startWithWindows" && !self.suppress_autostart {
                 if let Err(rollback_error) = apply(previous.start_with_windows) {
                     return Err(self.remember_startup_error(format!(
                         "{error};autostart_rollback_failed:{rollback_error}"
@@ -189,6 +212,26 @@ mod tests {
             "onlineclass-desktop-preferences-{label}-{}",
             std::process::id()
         ))
+    }
+
+    #[test]
+    fn desktop_qa_preferences_skip_os_callbacks_for_launch_and_settings() {
+        let directory = test_dir("qa-isolation");
+        let mut store = DesktopPreferencesStore::open(&directory);
+        store.suppress_autostart = true;
+        store
+            .apply_startup_setting_with(|_| panic!("QA must not touch OS autostart"))
+            .unwrap();
+        for enabled in [false, true] {
+            let saved = store
+                .set_with_autostart("startWithWindows", enabled, |_| {
+                    panic!("QA must not modify or delete OS autostart")
+                })
+                .unwrap();
+            assert_eq!(saved.start_with_windows, enabled);
+        }
+        assert!(store.startup_error().is_none());
+        fs::remove_dir_all(&directory).unwrap();
     }
 
     #[test]

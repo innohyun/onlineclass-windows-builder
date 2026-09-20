@@ -272,6 +272,13 @@ const BACKUP_TABLES: &[BackupTable] = &[
         optional: true,
     },
     BackupTable {
+        name: "work_note_versions",
+        columns: &["tenant_id", "version_id", "page_id", "payload_json", "captured_at_ms", "updated_at_ms"],
+        key_columns: &["tenant_id", "version_id"],
+        timestamp_column: "updated_at_ms",
+        optional: true,
+    },
+    BackupTable {
         name: "work_note_attachments",
         columns: &["tenant_id", "attachment_id", "page_id", "block_id", "file_name", "content_type", "byte_size", "sha256", "local_path", "created_at_ms", "updated_at_ms"],
         key_columns: &["tenant_id", "attachment_id"],
@@ -585,6 +592,11 @@ fn backup_schema_sql(prefix: &str) -> String {
           created_at_ms INTEGER NOT NULL,
           updated_at_ms INTEGER NOT NULL,
           PRIMARY KEY (tenant_id, page_id)
+        );
+        CREATE TABLE IF NOT EXISTS {prefix}work_note_versions (
+          tenant_id TEXT NOT NULL, version_id TEXT NOT NULL, page_id TEXT NOT NULL,
+          payload_json TEXT NOT NULL, captured_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL,
+          PRIMARY KEY (tenant_id, version_id)
         );
         CREATE TABLE IF NOT EXISTS {prefix}work_note_attachments (
           tenant_id TEXT NOT NULL,

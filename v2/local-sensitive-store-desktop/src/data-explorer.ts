@@ -1,3 +1,4 @@
+import { updateTeacherRecordAction } from "./desk-record-editor";
 import { invoke } from "@tauri-apps/api/core";
 import { openArchiveBoardViewer, searchArchiveBoards, type ArchiveBoardSummary } from "./archive-board-explorer";
 import { openWorkNoteReader } from "./work-note-reader";
@@ -422,6 +423,7 @@ export function initDataExplorer(options: ExplorerOptions) {
     const record = records[selectedIndex];
     empty.hidden = Boolean(record);
     detail.hidden = !record;
+    updateTeacherRecordAction(detail, record, options.getTenantId().trim());
     const openBoardButton = element<HTMLButtonElement>("dataOpenArchiveBoard");
     openBoardButton.hidden = record?.sectionKey !== "archive-board";
     const openWorkNoteButton = element<HTMLButtonElement>("dataOpenWorkNote");

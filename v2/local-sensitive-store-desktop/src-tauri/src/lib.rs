@@ -17,6 +17,8 @@ mod device_sync_credential;
 mod desktop_activation;
 mod desktop_local_transport;
 mod desktop_preferences;
+mod desktop_close;
+mod desktop_qa;
 mod shared_archive;
 mod shared_archive_apply;
 mod shared_archive_board;
@@ -33,6 +35,11 @@ mod work_note_attachments;
 mod work_note_search;
 mod work_note_localization;
 mod work_note_reader;
+mod work_note_documents;
+mod work_note_history;
+mod work_note_commands;
+mod work_note_retention;
+mod local_record_commands;
 mod device_sync_conflicts;
 mod lesson_plan_bindings;
 mod local_workspaces;
@@ -193,11 +200,14 @@ const LOCAL_SENSITIVE_STORE_ROUTES: &[&str] = &[
     "/v1/password-vault/shared/decrypt",
     "/v1/password-vault/shared/recover",
 ];
-const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 29] = [
+const LOCAL_SENSITIVE_STORE_FEATURES: [&str; 32] = [
     "observation_evidence_v1",
     "non_lesson_observations",
     "teacher_local_records",
     "work_notes",
+    "work_note_document_editor_v1",
+    "work_note_document_history_v1",
+    "classaimate_mcp_lesson_replace_document_v1",
     "work_note_tree_move",
     "counseling_local_authority",
     "onedrive_device_sync",
@@ -2059,6 +2069,7 @@ impl SqliteStore {
         quick_observation::ensure_schema(&conn)?;
         observation_evidence::ensure_schema(&conn, db_path.parent().unwrap_or_else(|| Path::new(".")))?;
         work_note_attachments::ensure_schema(&conn)?;
+        work_note_documents::ensure_schema(&conn)?;
         teaching_sources::ensure_schema(&conn)?;
         work_note_localization::ensure_schema(&conn)?;
         lesson_plan_bindings::ensure_schema(&conn)?;
@@ -2120,7 +2131,7 @@ impl SqliteStore {
         let mut records = Vec::new();
         for row in rows {
             let record = row.map_err(|e| format!("db_work_note_row_failed:{e}"))?;
-            if search.is_empty() || work_note_search::matches(&record, &search) { records.push(record); }
+            if !work_note_documents::is_trashed(&record) && (search.is_empty() || work_note_search::matches(&record, &search)) { records.push(record); }
             if !search.is_empty() && records.len() >= 100 { break; }
         }
         Ok(records)
@@ -2131,81 +2142,18 @@ impl SqliteStore {
     }
 
     fn delete_work_note(&self, tenant_id: String, page_id: String) -> Result<Value, String> {
-        let tenant = normalize_tenant_id(Some(&Value::String(tenant_id)));
-        let _access = self.media_access(&tenant)?;
-        let page = normalize_id_segment(Some(&Value::String(page_id)), 180);
-        if tenant.is_empty() { return Err("tenant_id_required".to_string()); }
-        if page.is_empty() { return Err("work_note_page_id_required".to_string()); }
-        if [WORK_MEETING_ROOT_PAGE_ID, WORK_REFERENCE_ROOT_PAGE_ID, STUDENT_MATERIAL_ROOT_PAGE_ID]
-            .contains(&page.as_str())
-        {
-            return Err("work_note_system_folder_protected".to_string());
-        }
-        let conn = self.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
-        let bound: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM lesson_plan_bindings WHERE tenant_id=?1 AND page_id=?2",
-            params![tenant,page], |row| row.get(0),
-        ).map_err(|error| format!("db_lesson_plan_binding_read_failed:{error}"))?;
-        if bound > 0 { return Err("lesson_plan_page_protected".to_string()); }
-        let child: i64 = conn.query_row("SELECT COUNT(*) FROM work_note_pages WHERE tenant_id=?1 AND parent_id=?2", params![tenant,page], |row| row.get(0)).map_err(|e| format!("db_work_note_child_check_failed:{e}"))?;
-        if child > 0 { return Err("work_note_has_children".to_string()); }
-        drop(conn);
-        let attachment_paths = work_note_attachments::page_local_paths(self, &tenant, &page)?;
-        let mut conn = self.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
-        let transaction = conn.transaction().map_err(|e| format!("db_work_note_transaction_failed:{e}"))?;
-        transaction.execute("DELETE FROM work_note_pages_fts WHERE tenant_id=?1 AND page_id=?2",params![tenant,page]).map_err(|e|format!("db_work_note_fts_delete_failed:{e}"))?;
-        let deleted=transaction.execute("DELETE FROM work_note_pages WHERE tenant_id=?1 AND page_id=?2",params![tenant,page]).map_err(|e|format!("db_work_note_delete_failed:{e}"))?;
-        transaction.commit().map_err(|e|format!("db_work_note_commit_failed:{e}"))?;
-        work_note_attachments::delete_local_paths(self, &attachment_paths);
-        Ok(json!({"ok":true,"deleted":deleted}))
+        let page=self.get_work_note(tenant_id.clone(),page_id.clone())?.ok_or("work_note_not_found")?;
+        let result=work_note_documents::mutate(self,json!({"tenantId":tenant_id,"pageId":page_id,
+            "expectedRevision":work_note_documents::revision(&page),"action":"trash"}))?;
+        Ok(json!({"ok":true,"deleted":result["pages"].as_array().map(Vec::len).unwrap_or(0),"trashed":true,"result":result}))
     }
 
-    fn move_work_note(&self, input: Value) -> Result<Value, String> {
-        #[derive(Clone)] struct Page { id: String, parent: Option<String>, position: i64 }
-        let tenant = normalize_tenant_id(input.get("tenantId"));
-        let source_id = normalize_id_segment(input.get("pageId"), 180);
-        let target_id = normalize_id_segment(input.get("targetPageId"), 180);
-        let placement = normalize_json_text(input.get("placement"), 16);
-        if tenant.is_empty() { return Err("tenant_id_required".to_string()); }
-        if source_id.is_empty() || target_id.is_empty() { return Err("work_note_page_id_required".to_string()); }
-        if !["before", "inside", "after"].contains(&placement.as_str()) { return Err("work_note_move_placement_invalid".to_string()); }
-        if source_id == target_id || source_id == "root"
-            || [WORK_MEETING_ROOT_PAGE_ID, WORK_REFERENCE_ROOT_PAGE_ID, STUDENT_MATERIAL_ROOT_PAGE_ID]
-                .contains(&source_id.as_str()) {
-            return Err("work_note_root_move_forbidden".to_string());
-        }
-        {
-            let conn = self.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
-            let bound: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM lesson_plan_bindings WHERE tenant_id=?1 AND page_id=?2",
-                params![tenant,source_id], |row| row.get(0),
-            ).map_err(|error| format!("db_lesson_plan_binding_read_failed:{error}"))?;
-            if bound > 0 { return Err("lesson_plan_page_protected".to_string()); }
-        }
-        if placement != "inside" && target_id == "root" { return Err("work_note_root_sibling_forbidden".to_string()); }
-        let records = self.list_work_notes(tenant.clone(), String::new())?;
-        let pages = records.iter().map(|value| Page {
-            id: value.get("pageId").and_then(Value::as_str).unwrap_or("").to_string(),
-            parent: value.get("parentId").and_then(Value::as_str).map(str::to_string),
-            position: value.get("position").and_then(Value::as_i64).unwrap_or(0),
-        }).collect::<Vec<_>>();
-        let source = pages.iter().find(|page| page.id == source_id).cloned().ok_or_else(|| "work_note_not_found".to_string())?;
-        let target = pages.iter().find(|page| page.id == target_id).cloned().ok_or_else(|| "work_note_not_found".to_string())?;
-        let destination_parent = if placement == "inside" { Some(target_id.clone()) } else { target.parent.clone() };
-        let mut cursor = destination_parent.clone();
-        while let Some(parent_id) = cursor { if parent_id == source_id { return Err("work_note_parent_cycle".to_string()); } cursor = pages.iter().find(|page| page.id == parent_id).and_then(|page| page.parent.clone()); }
-        let mut parent_ids = vec![source.parent.clone()];if source.parent != destination_parent { parent_ids.push(destination_parent.clone()); }
-        let mut groups = parent_ids.into_iter().map(|parent| { let mut group=pages.iter().filter(|page| page.id!=source_id&&page.parent==parent).cloned().collect::<Vec<_>>();group.sort_by(|a,b|a.position.cmp(&b.position).then(a.id.cmp(&b.id)));(parent,group) }).collect::<Vec<_>>();
-        let destination = groups.iter_mut().find(|(parent,_)| *parent == destination_parent).ok_or_else(|| "work_note_move_target_changed".to_string())?;
-        let index = if placement == "inside" { destination.1.len() } else { destination.1.iter().position(|page|page.id==target_id).ok_or_else(|| "work_note_move_target_changed".to_string())? + if placement == "after" {1}else{0} };
-        let mut moved=source.clone();moved.parent=destination_parent.clone();destination.1.insert(index,moved);
-        let mut changed=Vec::new();for(parent,group) in groups { for(position,page) in group.into_iter().enumerate(){if page.parent!=parent||page.position!=position as i64{changed.push((page.id,parent.clone(),position as i64));}} }
-        let now=Utc::now().timestamp_millis();let mut conn=self.conn.lock().map_err(|_|"db_lock_failed".to_string())?;let transaction=conn.transaction().map_err(|e|format!("db_work_note_transaction_failed:{e}"))?;
-        for(page_id,parent,position) in &changed { transaction.execute("UPDATE work_note_pages SET parent_id=?1,position=?2,updated_at_ms=?3 WHERE tenant_id=?4 AND page_id=?5",params![parent,position,now,tenant,page_id]).map_err(|e|format!("db_work_note_move_failed:{e}"))?; }
-        transaction.commit().map_err(|e|format!("db_work_note_commit_failed:{e}"))?;drop(conn);
-        Ok(json!({"ok":true,"records":self.list_work_notes(tenant,String::new())?,"changed":changed.iter().map(|(page_id,parent_id,position)|json!({"pageId":page_id,"parentId":parent_id,"position":position})).collect::<Vec<_>>()}))
+    fn move_work_note(&self, mut input: Value) -> Result<Value, String> {
+        input["action"]=json!("move");
+        let tenant=input["tenantId"].as_str().unwrap_or_default().to_string();
+        let result=work_note_documents::mutate(self,input)?;
+        Ok(json!({"ok":true,"records":self.list_work_notes(tenant,String::new())?,"changed":result["pages"],"page":result["page"],"revision":result["revision"]}))
     }
-
     fn reconcile_mobile_meeting_root(&self, tenant_id: String, ensure_root: bool) -> Result<Value, String> {
         let tenant = normalize_tenant_id(Some(&Value::String(tenant_id)));
         if tenant.is_empty() { return Err("tenant_id_required".to_string()); }
@@ -2822,7 +2770,7 @@ impl SqliteStore {
             .map_err(|e| format!("db_stats_import_runs_failed:{e}"))?;
         let work_notes = conn
             .query_row(
-                "SELECT COUNT(*), MAX(updated_at_ms) FROM work_note_pages WHERE tenant_id = ?1",
+                "SELECT COUNT(*), MAX(updated_at_ms) FROM work_note_pages WHERE tenant_id = ?1 AND COALESCE(json_extract(properties_json,'$._localTrash.deletedAtMs'),0)=0",
                 params![&safe_tenant],
                 |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?)),
             )
@@ -4824,6 +4772,9 @@ fn json_response(status: u16, payload: Value, origin: &str) -> Response<std::io:
 }
 
 fn request_error_status(error: &str) -> u16 {
+    if matches!(error,"work_note_revision_conflict"|"work_note_expected_revision_required"|"work_note_trashed"|"work_note_attachment_immutable") { return 409; }
+    if matches!(error,"work_note_document_too_large"|"work_note_metadata_too_large"|"work_note_import_limit_exceeded") { return 413; }
+    if matches!(error,"work_note_document_invalid"|"work_note_trash_metadata_protected") { return 400; }
     if matches!(error,
         "teaching_source_not_found" | "teaching_source_file_missing") { return 404; }
     if matches!(error,
@@ -5407,25 +5358,33 @@ fn handle_request(
             let page_id = path.trim_start_matches("/v1/work-notes/").to_string();
             let mut body = read_body(&mut request)?;
             if let Some(object) = body.as_object_mut() { object.insert("pageId".to_string(), Value::String(page_id)); }
+            if body.get("expectedRevision").and_then(Value::as_i64).is_none() { return Ok((409, json!({"ok":false,"error":"work_note_expected_revision_required"}))); }
             let record = store.upsert_work_note(body)?;
             return Ok((200, json!({ "ok": true, "record": record })));
         }
 
         if request.method() == &Method::Delete && path.starts_with("/v1/work-notes/") {
             let page_id = path.trim_start_matches("/v1/work-notes/").to_string();
-            return Ok((200, store.delete_work_note(query(&url, "tenantId"), page_id)?));
+            let expected=query(&url,"expectedRevision").parse::<i64>().map_err(|_|"work_note_expected_revision_required")?;
+            let result=work_note_documents::mutate(&store,json!({"tenantId":query(&url,"tenantId"),"pageId":page_id,"expectedRevision":expected,"action":"trash"}))?;
+            return Ok((200,json!({"ok":true,"deleted":result["pages"].as_array().map(Vec::len).unwrap_or(0),"trashed":true,"result":result})));
         }
 
         if request.method() == &Method::Post && path == "/v1/work-notes/import" {
             let body = read_body(&mut request)?;
             let records = body.get("records").and_then(Value::as_array).cloned().unwrap_or_default();
+            if records.len()>2000 { return Err("work_note_import_limit_exceeded".into()); }
+            let mut conn=store.conn.lock().map_err(|_|"db_lock_failed")?;
+            let transaction=conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
             let mut imported = Vec::new();
-            for mut record in records.into_iter().take(2000) {
+            for mut record in records {
                 if let Some(object) = record.as_object_mut() {
                     object.insert("tenantId".to_string(), body.get("tenantId").cloned().unwrap_or(Value::Null));
                 }
-                imported.push(store.upsert_work_note(record)?);
+                if record.get("expectedRevision").and_then(Value::as_i64).is_none(){return Err("work_note_expected_revision_required".into());}
+                imported.push(canonical_write_transactions::upsert_work_note(&transaction,record)?);
             }
+            transaction.commit().map_err(|e|e.to_string())?;
             return Ok((200, json!({ "ok": true, "imported": imported.len(), "records": imported })));
         }
 
@@ -6985,7 +6944,7 @@ fn setup_tray(app: &mut tauri::App) -> Result<(), tauri::Error> {
                     }
                 }
             }
-            "quit" => app.exit(0),
+            "quit" => desktop_close::request(app,"quit"),
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
@@ -7174,12 +7133,12 @@ mod device_authorization_tests {
         for (page_id,parent_id,position) in [("root",None,0),("a",Some("root"),2),("b",Some("root"),2),("c",Some("root"),2),("d",Some("a"),0)] {
             store.upsert_work_note(json!({"tenantId":"tenant-a","pageId":page_id,"parentId":parent_id,"title":page_id,"blocks":[],"markdown":"","position":position})).expect("save page");
         }
-        store.move_work_note(json!({"tenantId":"tenant-a","pageId":"c","targetPageId":"a","placement":"before"})).expect("move before");
-        store.move_work_note(json!({"tenantId":"tenant-a","pageId":"b","targetPageId":"a","placement":"inside"})).expect("move inside");
-        let result=store.move_work_note(json!({"tenantId":"tenant-a","pageId":"c","targetPageId":"b","placement":"after"})).expect("move after");
+        store.move_work_note(json!({"tenantId":"tenant-a","pageId":"c","expectedRevision":store.get_work_note("tenant-a".into(),"c".into()).unwrap().unwrap()["updatedAtMs"],"targetPageId":"a","placement":"before"})).expect("move before");
+        store.move_work_note(json!({"tenantId":"tenant-a","pageId":"b","expectedRevision":store.get_work_note("tenant-a".into(),"b".into()).unwrap().unwrap()["updatedAtMs"],"targetPageId":"a","placement":"inside"})).expect("move inside");
+        let result=store.move_work_note(json!({"tenantId":"tenant-a","pageId":"c","expectedRevision":store.get_work_note("tenant-a".into(),"c".into()).unwrap().unwrap()["updatedAtMs"],"targetPageId":"b","placement":"after"})).expect("move after");
         let children=result["records"].as_array().expect("records").iter().filter(|page|page["parentId"]=="a").map(|page|(page["pageId"].as_str().unwrap().to_string(),page["position"].as_i64().unwrap())).collect::<Vec<_>>();
         assert_eq!(children,vec![("d".to_string(),0),("b".to_string(),1),("c".to_string(),2)]);
-        assert_eq!(store.move_work_note(json!({"tenantId":"tenant-a","pageId":"a","targetPageId":"d","placement":"inside"})).unwrap_err(),"work_note_parent_cycle");
+        assert_eq!(store.move_work_note(json!({"tenantId":"tenant-a","pageId":"a","expectedRevision":store.get_work_note("tenant-a".into(),"a".into()).unwrap().unwrap()["updatedAtMs"],"targetPageId":"d","placement":"inside"})).unwrap_err(),"work_note_parent_cycle");
         drop(store);fs::remove_dir_all(root).expect("remove work note move directory");
     }
 
@@ -7355,7 +7314,11 @@ pub async fn run_student_record_mcp_stdio() -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let context = tauri::generate_context!();
+    let qa_isolation = desktop_qa::from_environment(&context.config().identifier)
+        .expect("desktop launch rejected: invalid QA isolation");
     tauri::Builder::default()
+        .manage(desktop_close::DesktopCloseGuard::default())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             let intent = desktop_activation::DesktopActivationIntent::from_args(args);
             desktop_activation::activate(app, intent, "single-instance");
@@ -7364,28 +7327,18 @@ pub fn run() {
         .on_window_event(|window, event| {
             if window.label() != "main" { return; }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                let keep_running_on_close = window
-                    .app_handle()
-                    .try_state::<AppState>()
-                    .map(|state| state.preferences.snapshot().keep_running_on_close)
-                    .unwrap_or(true);
-                if keep_running_on_close {
-                    api.prevent_close();
-                    let _ = window.hide();
-                } else {
-                    api.prevent_close();
-                    window.app_handle().exit(0);
-                }
+                api.prevent_close();
+                desktop_close::request(window.app_handle(),"close");
             }
         })
-        .setup(|app| {
+        .setup(move |app| {
             let initial_intent = desktop_activation::DesktopActivationIntent::from_args(env::args());
             app.manage(desktop_activation::DesktopActivationState::new(
                 default_data_dir(),
                 initial_intent,
                 app.get_webview_window("main"),
             ));
-            let preferences = desktop_preferences::DesktopPreferencesStore::open(&default_data_dir());
+            let preferences = desktop_preferences::DesktopPreferencesStore::open_for_desktop(&default_data_dir(), &qa_isolation);
             if let Err(error) = preferences.apply_startup_setting() {
                 eprintln!("[local-sensitive-store] autostart setup failed: {error}");
             }
@@ -7443,6 +7396,8 @@ pub fn run() {
             run_device_sync_now,
             disconnect_local_store,
             get_desktop_preferences,
+            desktop_close::set_desktop_close_guard,
+            desktop_close::finish_desktop_close,
             set_desktop_preference,
             run_cloud_sync,
             get_backup_status,
@@ -7471,6 +7426,23 @@ pub fn run() {
             local_workspaces::get_local_workspace_page,
             local_workspaces::search_local_workspace,
             work_note_reader::get_local_work_note_view,
+            local_record_commands::get_local_teacher_record,
+            local_record_commands::save_local_teacher_record,
+            work_note_commands::get_local_work_note_document,
+            work_note_commands::ensure_local_work_note_workspace,
+            work_note_commands::save_local_work_note_document,
+            work_note_commands::mutate_local_work_note_document,
+            work_note_commands::list_local_work_note_documents,
+            work_note_commands::list_local_work_note_history,
+            work_note_commands::get_local_work_note_version,
+            work_note_commands::list_local_work_note_trash,
+            work_note_commands::save_local_work_note_draft,
+            work_note_commands::get_local_work_note_draft,
+            work_note_commands::discard_local_work_note_draft,
+            work_note_commands::list_local_work_note_attachments,
+            work_note_commands::save_local_work_note_attachment,
+            work_note_commands::read_local_work_note_attachment,
+            work_note_commands::delete_local_work_note_attachment,
             device_sync_conflicts::list_device_sync_conflicts,
             device_sync_conflicts::get_device_sync_conflict,
             device_sync_conflicts::review_device_sync_conflicts,
@@ -7488,6 +7460,6 @@ pub fn run() {
             shared_archive::export_shared_archive,
             shared_archive::open_shared_archive_file
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running tauri application");
 }

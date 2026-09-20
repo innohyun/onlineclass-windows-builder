@@ -208,23 +208,39 @@ pub(crate) fn save<R: Read + ?Sized>(
     output.sync_all().map_err(|e| format!("work_note_attachment_sync_failed:{e}"))?;
     drop(output);
     let _access = store.media_access(&tenant)?;
-    if target_path.exists() { fs::remove_file(&target_path).map_err(|e| format!("work_note_attachment_replace_failed:{e}"))?; }
-    fs::rename(&temp_path, &target_path).map_err(|e| format!("work_note_attachment_rename_failed:{e}"))?;
     let local_path_text = local_path.to_string_lossy().to_string();
     let now = Utc::now().timestamp_millis();
     let sha256 = format!("{:x}", hash.finalize());
     let result = (|| -> Result<(), String> {
         let conn = store.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
-        conn.execute(
-            "INSERT INTO work_note_attachments (tenant_id,attachment_id,page_id,block_id,file_name,content_type,byte_size,sha256,local_path,created_at_ms,updated_at_ms) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?10) ON CONFLICT(tenant_id,attachment_id) DO UPDATE SET page_id=excluded.page_id,block_id=excluded.block_id,file_name=excluded.file_name,content_type=excluded.content_type,byte_size=excluded.byte_size,sha256=excluded.sha256,local_path=excluded.local_path,updated_at_ms=excluded.updated_at_ms",
+        let existing:Option<(String,String,String,String)> = conn.query_row(
+            "SELECT page_id,block_id,sha256,local_path FROM work_note_attachments WHERE tenant_id=?1 AND attachment_id=?2",
+            params![tenant,attachment],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))
+            .optional().map_err(|e|format!("db_work_note_attachment_query_failed:{e}"))?;
+        if let Some((old_page,old_block,old_sha,old_path))=existing {
+            if old_page!=page || old_block!=block || old_sha!=sha256 {
+                return Err("work_note_attachment_immutable".into());
+            }
+            // An identical retry may repair a missing binary without replacing document identity.
+            let old_target=checked_path(store,&old_path)?;
+            if !old_target.exists() {
+                if let Some(parent)=old_target.parent(){fs::create_dir_all(parent).map_err(|e|e.to_string())?;}
+                fs::rename(&temp_path,&old_target).map_err(|e|format!("work_note_attachment_rename_failed:{e}"))?;
+            }
+            return Ok(());
+        }
+        let active=crate::work_note_documents::read(&conn,&tenant,&page)?.ok_or("work_note_not_found")?;
+        if crate::work_note_documents::is_trashed(&active){return Err("work_note_trashed".into());}
+        if target_path.exists(){return Err("work_note_attachment_path_in_use".into());}
+        fs::rename(&temp_path,&target_path).map_err(|e|format!("work_note_attachment_rename_failed:{e}"))?;
+        if let Err(error)=conn.execute(
+            "INSERT INTO work_note_attachments (tenant_id,attachment_id,page_id,block_id,file_name,content_type,byte_size,sha256,local_path,created_at_ms,updated_at_ms) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?10)",
             params![tenant, attachment, page, block, name, mime, size, sha256, local_path_text, now],
-        ).map_err(|e| format!("db_work_note_attachment_upsert_failed:{e}"))?;
+        ) { let _=fs::remove_file(&target_path);return Err(format!("db_work_note_attachment_upsert_failed:{error}")); }
         Ok(())
     })();
-    if let Err(error) = result {
-        let _ = fs::remove_file(&target_path);
-        return Err(error);
-    }
+    let _=fs::remove_file(&temp_path);
+    result?;
     row_for(store, &tenant, &attachment)?.map(|row| row.record).ok_or_else(|| "work_note_attachment_not_found".to_string())
 }
 
@@ -270,26 +286,28 @@ pub(crate) fn delete(store: &SqliteStore, tenant_id: String, attachment_id: Stri
     if tenant.is_empty() { return Err("tenant_id_required".to_string()); }
     if attachment.is_empty() { return Err("work_note_attachment_id_required".to_string()); }
     let Some(row) = row_for(store, &tenant, &attachment)? else { return Ok(0); };
-    let deleted = store.conn.lock().map_err(|_| "db_lock_failed".to_string())?
-        .execute("DELETE FROM work_note_attachments WHERE tenant_id=?1 AND attachment_id=?2", params![tenant, attachment])
-        .map_err(|e| format!("db_work_note_attachment_delete_failed:{e}"))?;
-    if let Ok(path) = checked_path(store, &row.local_path) { let _ = fs::remove_file(path); }
+    let conn=store.conn.lock().map_err(|_|"db_lock_failed")?;
+    // The editor removes the visible block after this call. Keep its binary and metadata
+    // while current/trash/history documents refer to it, so undo and version restore work.
+    let referenced:i64=conn.query_row(
+        "SELECT (SELECT COUNT(*) FROM work_note_pages WHERE tenant_id=?1 AND (instr(document_json,?2)>0 OR instr(markdown,?2)>0)) + (SELECT COUNT(*) FROM work_note_versions WHERE tenant_id=?1 AND captured_at_ms>=?3 AND instr(payload_json,?2)>0) + (SELECT COUNT(*) FROM work_note_local_drafts WHERE tenant_id=?1 AND instr(payload_json,?2)>0)",
+        params![tenant,attachment,crate::now_ms()-crate::work_note_documents::RETENTION_MS],|r|r.get(0)).map_err(|e|format!("work_note_attachment_reference_check_failed:{e}"))?;
+    if referenced>0{return Ok(1);}
+    let deleted=conn.execute("DELETE FROM work_note_attachments WHERE tenant_id=?1 AND attachment_id=?2",params![tenant,attachment]).map_err(|e|format!("db_work_note_attachment_delete_failed:{e}"))?;
+    let sharing:i64=conn.query_row("SELECT COUNT(*) FROM work_note_attachments WHERE local_path=?1",params![row.local_path],|r|r.get(0)).map_err(|e|e.to_string())?;
+    if sharing==0 { if let Ok(path)=checked_path(store,&row.local_path){let _=fs::remove_file(path);} }
     Ok(deleted)
 }
 
-pub(crate) fn page_local_paths(store: &SqliteStore, tenant_id: &str, page_id: &str) -> Result<Vec<String>, String> {
-    let conn = store.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
-    let mut statement = conn.prepare("SELECT local_path FROM work_note_attachments WHERE tenant_id=?1 AND page_id=?2").map_err(|e| format!("db_work_note_attachment_prepare_failed:{e}"))?;
-    let rows = statement.query_map(params![tenant_id, page_id], |row| row.get::<_, String>(0)).map_err(|e| format!("db_work_note_attachment_query_failed:{e}"))?;
-    rows.map(|row| row.map_err(|e| format!("db_work_note_attachment_row_failed:{e}"))).collect()
-}
-
 pub(crate) fn delete_local_paths(store: &SqliteStore, paths: &[String]) {
+    let Ok(conn)=store.conn.lock() else {return;};
     for local_path in paths {
-        if let Ok(path) = checked_path(store, local_path) { let _ = fs::remove_file(path); }
+        let references=conn.query_row("SELECT COUNT(*) FROM work_note_attachments WHERE local_path=?1",params![local_path],|row|row.get::<_,i64>(0));
+        if references==Ok(0) {
+            if let Ok(path)=checked_path(store,local_path){let _=fs::remove_file(path);}
+        }
     }
 }
-
 fn add_response_headers<R: Read>(response: &mut Response<R>, origin: &str) {
     for (name, value) in [
         ("Cache-Control", "no-store"),

@@ -7,7 +7,7 @@ mod seed_tests;
 
 // Bump when the backed table/key/column catalog expands; the coverage test pins
 // each seed version so a new table cannot silently inherit a completed old seed.
-const SYNC_RECORD_SEED_VERSION: i64 = 4;
+const SYNC_RECORD_SEED_VERSION: i64 = 5;
 
 pub(crate) fn syncable_tables() -> impl Iterator<Item = &'static BackupTable> {
     BACKUP_TABLES

@@ -8,11 +8,14 @@ import { isMacDesktop } from "./settings-dashboard";
 const SHELL_HEIGHT = 56;
 const TEACHER_WEBVIEW_LABEL = "teacher-home";
 const TEACHER_HOME_URL = "https://t.classaimate.com/admin/";
-const TUTORIAL_KEY = "classaimateDesktopShellTutorial:v16";
+const TUTORIAL_KEY = "classaimateDesktopShellTutorial:v17";
 
 type ShellMode = "teacher" | "local";
 export type DesktopActivationIntent = "show-main" | "quick-observation";
+type DesktopShellOptions = { beforeLeave?: () => boolean | Promise<boolean> };
 type DesktopShellController = {
+  openTeacherHome: (path?: string) => Promise<void>;
+  startCloseHandling: (handler: () => Promise<boolean>) => Promise<void>;
   refreshConnection: () => Promise<void>;
   startActivationHandling: (handler: (intent: DesktopActivationIntent) => void | Promise<void>) => Promise<void>;
 };
@@ -40,9 +43,10 @@ function required<T extends HTMLElement>(id: string) {
   return node as T;
 }
 
-export function buildTeacherHomeUrl(bridge: BridgeResult) {
-  const url = new URL(TEACHER_HOME_URL);
-  url.searchParams.set("view", "overview");
+export function buildTeacherHomeUrl(bridge: BridgeResult, path = "/admin/?view=overview") {
+  const url = new URL(path, TEACHER_HOME_URL);
+  if (url.origin !== new URL(TEACHER_HOME_URL).origin || !url.pathname.startsWith("/admin/")) throw new Error("teacher_home_path_invalid");
+  url.hash = "";
   if (bridge.tenantId) url.searchParams.set("tenantId", bridge.tenantId);
   if (bridge.connected && bridge.requestId && bridge.tenantId && bridge.expiresAtMs) {
     const fragment = new URLSearchParams({
@@ -67,9 +71,8 @@ export function desktopShellErrorMessage(value: unknown) {
   return "교사 홈 연결을 준비하지 못했습니다. 잠시 뒤 다시 시도해 주세요.";
 }
 
-export function initDesktopShell(): DesktopShellController {
-  const noop: DesktopShellController = { refreshConnection: async () => undefined, startActivationHandling: async (_handler) => undefined };
-  if (!isTauri()) return noop;
+export function initDesktopShell(options: DesktopShellOptions = {}): DesktopShellController {
+  const native = isTauri();
 
   const bar = required<HTMLElement>("desktopShellBar");
   const teacherButton = required<HTMLButtonElement>("desktopTeacherHome");
@@ -88,7 +91,8 @@ export function initDesktopShell(): DesktopShellController {
   if (!storeCandidate) throw new Error("missing local store shell");
   const store = storeCandidate;
 
-  const appWindow = getCurrentWindow();
+  const appWindow = native ? getCurrentWindow() : null;
+  let teacherPath = "/admin/?view=overview";
   let teacherWebview: Webview | null = null;
   let creating: Promise<Webview> | null = null;
   let mode: ShellMode = "local";
@@ -121,6 +125,7 @@ export function initDesktopShell(): DesktopShellController {
   }
 
   async function webviewBounds() {
+    if (!appWindow) return { width: window.innerWidth, height: window.innerHeight - SHELL_HEIGHT };
     const [physical, scaleFactor] = await Promise.all([appWindow.innerSize(), appWindow.scaleFactor()]);
     const logical = physical.toLogical(scaleFactor);
     return { width: Math.max(320, logical.width), height: Math.max(180, logical.height - SHELL_HEIGHT) };
@@ -156,7 +161,7 @@ export function initDesktopShell(): DesktopShellController {
       const bridge = await invoke<BridgeResult>("prepare_teacher_home_bridge");
       if (bridge?.ok === false) throw new Error(bridge.error || "teacher_home_bridge_failed");
       setConnectionStatus(bridge);
-      const view = await createTeacherWebview(buildTeacherHomeUrl(bridge));
+      const view = await createTeacherWebview(buildTeacherHomeUrl(bridge, teacherPath));
       teacherWebview = view;
       return view;
     })();
@@ -181,12 +186,17 @@ export function initDesktopShell(): DesktopShellController {
   }
 
   async function selectMode(next: ShellMode) {
+    if (next !== mode && options.beforeLeave && !await options.beforeLeave()) return false;
     renderMode(next);
-    localStorage.setItem("classaimateDesktopShellMode:v1", next);
+    localStorage.setItem("classaimateDesktopShellMode:v2", next);
     if (next === "local") {
       fallback.hidden = true;
       await teacherWebview?.hide();
-      return;
+      return true;
+    }
+    if (!native) {
+      setFallback("설치형 앱에서 교사 홈을 연결합니다.", "미리보기에서는 내 작업실 화면을 확인할 수 있습니다.", true);
+      return true;
     }
     setFallback("교사 홈을 여는 중입니다.", "현재 교사 웹 화면과 안전하게 연결하고 있습니다.");
     try {
@@ -199,6 +209,7 @@ export function initDesktopShell(): DesktopShellController {
     } catch (error) {
       setFallback("교사 홈을 열지 못했습니다.", desktopShellErrorMessage(error), true);
     }
+    return true;
   }
 
   async function reloadTeacherHome() {
@@ -212,7 +223,19 @@ export function initDesktopShell(): DesktopShellController {
     }
   }
 
+  const openTeacherHome = async (path = "/admin/?view=overview") => {
+    buildTeacherHomeUrl({}, path);
+    if (options.beforeLeave && !await options.beforeLeave()) return;
+    if (teacherPath !== path && teacherWebview) { await teacherWebview.close(); teacherWebview = null; }
+    teacherPath = path;
+    await selectMode("teacher");
+  };
+
   const tutorialSteps = [
+    { target: required<HTMLElement>("deskCurrentStore"), text: "내 작업실은 이 PC에 연결된 학급의 자료를 여는 공간입니다. 현재 자료함에서 컴퓨터와 학급을 확인하세요. 다른 PC 자료는 백업·동기화에서 검증하고 반영하며, 이름이 같은 자료함을 자동으로 합치지 않습니다." },
+    { target: required<HTMLElement>("homeSearchForm"), text: "전체 검색은 이 PC의 문서·학생 기록·첨부파일을 찾습니다. Ctrl+K로 검색창을 열고, 사이드바에서 수업자료·업무 노트·학생 기록으로 바로 이동할 수 있습니다. 중복 자료 정리는 전체 검색 화면에 있습니다." },
+    { target: required<HTMLElement>("deskNewDocument"), text: "새로 만들기에서 수업자료·업무 노트와 빠른 관찰 기록을 시작합니다. 학생 학습자료 작성·검토·공개는 기존 교사 홈으로 연결합니다. 인터넷 연결이 필요한 작업과 이 PC 저장은 구분해서 표시합니다. 이 안내는 문서를 만들거나 저장하지 않습니다." },
+    { target: required<HTMLElement>("deskScreenIndex"), text: "화면 목록에서 휴지통·수정 이력·서식함·AI 변경 제안을 포함한 24개 작업 흐름을 찾습니다. 최근 문서의 별표는 이 PC의 즐겨찾기를 바꿉니다. 원문은 문서 저장소에서 다시 읽고, 즐겨찾기에는 문서 식별자만 보관합니다." },
     {
       target: teacherButton,
       text: "교사 홈은 현재 사용 중인 웹 화면을 그대로 엽니다. TV 현황판·발표 화면처럼 독립 실행이 필요한 기능은 로그인 상태를 유지한 별도 앱 창으로 열립니다.",
@@ -234,7 +257,13 @@ export function initDesktopShell(): DesktopShellController {
   ];
 
   function renderTutorial() {
+    document.querySelectorAll(".desktop-shell-tutorial-target").forEach((node) => node.classList.remove("desktop-shell-tutorial-target"));
     tutorialSteps.forEach((step) => step.target.classList.toggle("desktop-shell-tutorial-target", step.target === tutorialSteps[tutorialIndex].target));
+    const requestedTarget = tutorialSteps[tutorialIndex].target;
+    const target = requestedTarget.getClientRects().length ? requestedTarget : required<HTMLElement>("deskNewDocument");
+    requestedTarget.classList.toggle("desktop-shell-tutorial-target", target === requestedTarget);
+    target.classList.add("desktop-shell-tutorial-target");
+    target.scrollIntoView({ block: "nearest", inline: "nearest" });
     tutorialBody.textContent = tutorialSteps[tutorialIndex].text;
     tutorialStep.textContent = `${tutorialIndex + 1} / ${tutorialSteps.length}`;
     tutorialPrevious.disabled = tutorialIndex === 0;
@@ -246,6 +275,7 @@ export function initDesktopShell(): DesktopShellController {
     tutorialFirstRun = firstRun;
     tutorialIndex = 0;
     await teacherWebview?.hide();
+    renderMode("local");
     fallback.hidden = true;
     renderTutorial();
     tutorial.showModal();
@@ -255,7 +285,7 @@ export function initDesktopShell(): DesktopShellController {
     tutorialSteps.forEach((step) => step.target.classList.remove("desktop-shell-tutorial-target"));
     localStorage.setItem(TUTORIAL_KEY, "complete");
     tutorial.close();
-    await selectMode(tutorialFirstRun ? "teacher" : tutorialReturnMode);
+    await selectMode(tutorialFirstRun ? "local" : tutorialReturnMode);
   }
 
   teacherButton.addEventListener("click", () => void selectMode("teacher"));
@@ -275,21 +305,45 @@ export function initDesktopShell(): DesktopShellController {
     }
     void closeTutorial();
   });
-  void appWindow.onResized(() => { void sizeTeacherWebview(); });
+  void appWindow?.onResized(() => { void sizeTeacherWebview(); });
 
   const refreshConnection = async () => {
+    if (!native) return;
     const connection = await invoke<ConnectionResult>("get_device_connection_status");
     setConnectionStatus(connection);
   };
 
+  const startCloseHandling = async (handler: () => Promise<boolean>) => {
+    if (!native) return;
+    let closing = false;
+    let requestedIntent: 'close' | 'quit' = 'close';
+    await listen<{intent:'close'|'quit'}>("desktop-close-requested", async (event) => {
+      if (event.payload?.intent !== 'close' && event.payload?.intent !== 'quit') return;
+      if (event.payload.intent === 'quit') requestedIntent = 'quit';
+      if (closing) return;
+      closing = true;
+      try {
+        if (await handler()) {
+          const result = await invoke<{ok?:boolean;error?:string}>("finish_desktop_close", { intent: requestedIntent });
+          if (result?.ok !== true) throw new Error(result?.error || "desktop_close_failed");
+        }
+      } catch {
+        window.dispatchEvent(new CustomEvent("desk:close-error"));
+      } finally { closing = false; requestedIntent = 'close'; }
+    });
+    const result = await invoke<{ok?:boolean;error?:string}>("set_desktop_close_guard", { ready: true });
+    if (result?.ok !== true) throw new Error(result?.error || "desktop_close_guard_failed");
+  };
+
   const startActivationHandling = async (handler: (intent: DesktopActivationIntent) => void | Promise<void>) => {
+    if (!native) return;
     const consume = async (intent: DesktopActivationIntent | null | undefined) => {
       if (intent !== "quick-observation") return;
       if (tutorial.open) {
         tutorialSteps.forEach((step) => step.target.classList.remove("desktop-shell-tutorial-target"));
         tutorial.close();
       }
-      await selectMode("local");
+      if (!await selectMode("local")) return;
       await handler(intent);
     };
     await listen<DesktopActivationIntent>("desktop-activation", (event) => {
@@ -302,11 +356,11 @@ export function initDesktopShell(): DesktopShellController {
   };
 
   renderMode("local");
-  void refreshConnection();
-  if (localStorage.getItem(TUTORIAL_KEY) !== "complete") {
+  void refreshConnection().catch(() => setConnectionStatus({ connected: false }));
+  if (native && localStorage.getItem(TUTORIAL_KEY) !== "complete") {
     void openTutorial(true);
   } else {
-    void selectMode("teacher");
+    void selectMode(native && localStorage.getItem("classaimateDesktopShellMode:v2") === "teacher" ? "teacher" : "local");
   }
-  return { refreshConnection, startActivationHandling };
+  return { refreshConnection, startActivationHandling, openTeacherHome, startCloseHandling };
 }

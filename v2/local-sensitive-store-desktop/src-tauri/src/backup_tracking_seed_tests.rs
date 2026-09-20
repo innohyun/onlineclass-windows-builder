@@ -254,6 +254,7 @@ fn tracking_seed_catalog_changes_require_a_new_seed_version() {
     let expected = match SYNC_RECORD_SEED_VERSION {
         2 => "b239f33a1ee7432a4428076d4637a06d249d0eb8d71d23e72e2c468a8c619337",
         3 | 4 => "4a961a3154207fcd66f94d020e698d08520a9b5c0a5ca0f296e64bc1872faca9",
+        5 => "9e107a09a932f114fdbc073e6f7db39d0f4969a7cc4caf714bc7cc245fc48191",
         _ => panic!("register the new seed version and its syncable table coverage"),
     };
     assert_eq!(

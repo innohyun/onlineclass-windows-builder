@@ -1,0 +1,8 @@
+{
+  "name": "@classaimate-v3/domain",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./document-markdown": "./src/document-markdown.js"
+  }
+}

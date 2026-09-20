@@ -6,6 +6,7 @@ This repository intentionally contains only the installer source needed for:
 
 - `v2/local-sensitive-store-desktop`
 - `v2/desktop-shell`
+- The reviewed shared document editor modules in `v2/apps/web/src` and the standalone Markdown parser in `v2/packages/domain`
 
 It must not contain private app history, Firebase credentials, `.env` files, classroom data, WIKI files, or service-account material.
 

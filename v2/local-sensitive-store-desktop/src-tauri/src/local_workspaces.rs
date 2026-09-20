@@ -104,14 +104,14 @@ fn tree(
         COUNT(a.attachment_id),COALESCE(SUM(a.byte_size),0)
       FROM work_note_pages p
       LEFT JOIN work_note_attachments a ON a.tenant_id=p.tenant_id AND a.page_id=p.page_id
-      WHERE p.tenant_id=?1 AND {membership}
+      WHERE p.tenant_id=?1 AND COALESCE(json_extract(p.properties_json,'$._localTrash.deletedAtMs'),0)=0 AND {membership}
       GROUP BY p.tenant_id,p.page_id
       ORDER BY COALESCE(p.parent_id,''),p.position,p.page_id
       LIMIT ?2"#
     );
     let count_sql = format!(
         r#"{MATERIAL_TREE_CTE}
-      SELECT COUNT(*) FROM work_note_pages p WHERE p.tenant_id=?1 AND {membership}"#
+      SELECT COUNT(*) FROM work_note_pages p WHERE p.tenant_id=?1 AND COALESCE(json_extract(p.properties_json,'$._localTrash.deletedAtMs'),0)=0 AND {membership}"#
     );
     let conn = store
         .conn
@@ -161,7 +161,7 @@ fn page(
       SELECT p.page_id,p.parent_id,p.title,p.emoji,p.position,p.properties_json,
         p.document_json,p.markdown,p.created_at_ms,p.updated_at_ms
       FROM work_note_pages p
-      WHERE p.tenant_id=?1 AND p.page_id=?2 AND {membership}"#
+      WHERE p.tenant_id=?1 AND p.page_id=?2 AND COALESCE(json_extract(p.properties_json,'$._localTrash.deletedAtMs'),0)=0 AND {membership}"#
     );
     let conn = store
         .conn
@@ -238,7 +238,7 @@ fn search(store: &SqliteStore, input: LocalWorkspaceSearchInput) -> Result<Value
     let query = normalize(&input.query, 200);
     let offset = input.offset.max(0);
     let limit = input.limit.clamp(1, MAX_SEARCH_RESULTS);
-    let mut filters = vec!["p.tenant_id=?1".to_string(), membership.to_string()];
+    let mut filters = vec!["p.tenant_id=?1".to_string(), membership.to_string(), "COALESCE(json_extract(p.properties_json,'$._localTrash.deletedAtMs'),0)=0".to_string()];
     let mut values = vec![SqlValue::Text(tenant_id.clone())];
     if !query.is_empty() {
         let terms = query
@@ -316,12 +316,12 @@ fn title_path(
       ancestors(page_id,parent_id,title,depth) AS (
         SELECT p.page_id,p.parent_id,p.title,0
         FROM work_note_pages p
-        WHERE p.tenant_id=?1 AND p.page_id=?2 AND {membership}
+        WHERE p.tenant_id=?1 AND p.page_id=?2 AND COALESCE(json_extract(p.properties_json,'$._localTrash.deletedAtMs'),0)=0 AND {membership}
         UNION ALL
         SELECT p.page_id,p.parent_id,p.title,child.depth+1
         FROM work_note_pages p
         JOIN ancestors child ON child.parent_id=p.page_id
-        WHERE p.tenant_id=?1 AND {membership} AND child.depth<100
+        WHERE p.tenant_id=?1 AND COALESCE(json_extract(p.properties_json,'$._localTrash.deletedAtMs'),0)=0 AND {membership} AND child.depth<100
       )
       SELECT title FROM ancestors ORDER BY depth DESC"#
     );
@@ -384,7 +384,7 @@ pub(crate) fn mcp_search(store: &SqliteStore, input: &Value) -> Result<Value, St
         .and_then(Value::as_i64)
         .unwrap_or(MAX_MCP_SEARCH_RESULTS)
         .clamp(1, MAX_MCP_SEARCH_RESULTS);
-    let filters = vec!["p.tenant_id=?1".to_string(), membership.to_string()];
+    let filters = vec!["p.tenant_id=?1".to_string(), membership.to_string(), "COALESCE(json_extract(p.properties_json,'$._localTrash.deletedAtMs'),0)=0".to_string()];
     let values = vec![SqlValue::Text(tenant_id.clone())];
     let where_sql = filters.join(" AND ");
     let list_sql = format!(
@@ -479,7 +479,7 @@ pub(crate) fn mcp_page(store: &SqliteStore, input: &Value) -> Result<Value, Stri
         r#"{MATERIAL_TREE_CTE}
       SELECT p.title,p.markdown,p.document_json,p.updated_at_ms
       FROM work_note_pages p
-      WHERE p.tenant_id=?1 AND p.page_id=?2 AND {membership}"#
+      WHERE p.tenant_id=?1 AND p.page_id=?2 AND COALESCE(json_extract(p.properties_json,'$._localTrash.deletedAtMs'),0)=0 AND {membership}"#
     );
     let conn = store
         .conn

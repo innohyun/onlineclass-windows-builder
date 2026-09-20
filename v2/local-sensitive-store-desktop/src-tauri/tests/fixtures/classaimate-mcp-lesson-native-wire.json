@@ -905,6 +905,976 @@
         96,
         130
       ]
+    },
+    "replace_document-text": {
+      "page": {
+        "tenantId": "tenant-a",
+        "pageId": "lesson-page",
+        "parentId": null,
+        "title": "수학 자료",
+        "emoji": "📝",
+        "position": 0,
+        "properties": {
+          "privateMetadata": {
+            "preserved": true
+          }
+        },
+        "blocks": [
+          {
+            "id": "text-a",
+            "type": "text",
+            "text": "기존 본문"
+          },
+          {
+            "id": "old-asset-block",
+            "type": "attachment",
+            "attachmentId": "old-pdf",
+            "kind": "pdf",
+            "fileName": "원문.pdf",
+            "contentType": "application/pdf",
+            "size": 12,
+            "displayMode": "file"
+          }
+        ],
+        "markdown": "기존 본문\n\n[원문.pdf](local-attachment://old-pdf)",
+        "createdAtMs": 10,
+        "updatedAtMs": 10
+      },
+      "binding": {
+        "tenantId": "tenant-a",
+        "planId": "lesson-native-plan-a",
+        "pageId": "lesson-page",
+        "planKind": "lesson",
+        "dateKey": "2026-09-08",
+        "startPeriod": 1,
+        "endPeriod": 1,
+        "subject": "수학",
+        "bindingRevision": 1,
+        "updatedAtMs": 10
+      },
+      "input": {
+        "tenantId": "tenant-a",
+        "receiptId": "receipt-replace_document-false",
+        "operation": "lesson_material_apply_snapshot",
+        "requestSha256": "e4425a17d8a6970c1dff5252a70c73bbab8d79ac2e1463e42074967c42fc6ca5",
+        "data": {
+          "v": 1,
+          "pageRef": "lesson-page",
+          "materialAuthority": {
+            "v": 1,
+            "tenantId": "tenant-a",
+            "actorId": "owner-a",
+            "planId": "lesson-native-plan-a",
+            "planKind": "lesson",
+            "bindingRevision": 1,
+            "storageKind": "local",
+            "cloudDocumentId": "cloud-doc",
+            "cloudPageId": "cloud-page",
+            "localPageId": "lesson-page",
+            "dateKey": "2026-09-08",
+            "startPeriod": 1,
+            "endPeriod": 1,
+            "revision": 1,
+            "contentSha256": "3f1f95ece0bbdb55be4f7d64a46f1110bdf493b9b9bbcecb38e37ae9b21ab122",
+            "cloudDocumentRevision": null
+          },
+          "baseSnapshot": {
+            "documentTitle": "수학 자료",
+            "documentBlocks": [
+              {
+                "id": "text-a",
+                "text": "기존 본문",
+                "type": "text"
+              },
+              {
+                "attachmentType": "pdf",
+                "id": "old-asset-block",
+                "localAttachmentId": "old-pdf",
+                "type": "attachment"
+              }
+            ],
+            "markdown": "기존 본문\n\n[첨부]"
+          },
+          "targetSnapshot": {
+            "documentTitle": "수학 자료",
+            "documentBlocks": [
+              {
+                "content": {
+                  "attrs": {
+                    "blockId": "work-note-body-aaaaaaaaaaaaaaaaaaaaaaaa-1",
+                    "indent": 0,
+                    "level": 1
+                  },
+                  "content": [
+                    {
+                      "text": "인물의 마음을 근거로 설명하기",
+                      "type": "text"
+                    }
+                  ],
+                  "type": "heading"
+                },
+                "id": "work-note-body-aaaaaaaaaaaaaaaaaaaaaaaa-1",
+                "text": "인물의 마음을 근거로 설명하기",
+                "type": "h1"
+              },
+              {
+                "content": {
+                  "attrs": {
+                    "blockId": "work-note-body-aaaaaaaaaaaaaaaaaaaaaaaa-2",
+                    "indent": 0,
+                    "level": 2
+                  },
+                  "content": [
+                    {
+                      "text": "목표와 준비물",
+                      "type": "text"
+                    }
+                  ],
+                  "type": "heading"
+                },
+                "id": "work-note-body-aaaaaaaaaaaaaaaaaaaaaaaa-2",
+                "text": "목표와 준비물",
+                "type": "h2"
+              },
+              {
+                "content": {
+                  "attrs": {
+                    "blockId": "work-note-body-aaaaaaaaaaaaaaaaaaaaaaaa-3",
+                    "indent": 0
+                  },
+                  "content": [
+                    {
+                      "text": "이야기의 장면을 읽고 말과 행동에 나타난 인물의 마음을 두 가지 근거로 설명한다.",
+                      "type": "text"
+                    }
+                  ],
+                  "type": "paragraph"
+                },
+                "id": "work-note-body-aaaaaaaaaaaaaaaaaaaaaaaa-3",
+                "text": "이야기의 장면을 읽고 말과 행동에 나타난 인물의 마음을 두 가지 근거로 설명한다.",
+                "type": "text"
+              },
+              {
+                "content": {
+                  "attrs": {
+                    "blockId": "work-note-body-aaaaaaaaaaaaaaaaaaaaaaaa-4",
+                    "indent": 0
+                  },
+                  "content": [
+                    {
+                      "text": "준비물은 교과서 18~21쪽, 색연필 두 색, 역할 카드, 모둠 활동지이다.",
+                      "type": "text"
+                    }
+                  ],
+                  "type": "paragraph"
+                },
+                "id": "work-note-body-aaaaaaaaaaaaaaaaaaaaaaaa-4",
+                "text": "준비물은 교과서 18~21쪽, 색연필 두 색, 역할 카드, 모둠 활동지이다.",
+                "type": "text"
+              },
+              {
+                "content": {
+                  "attrs": {
+                    "blockId": "work-note-body-aaaaaaaaaaaaaaaaaaaaaaaa-5",
+                    "indent": 0,
+                    "level": 2
+                  },
+                  "content": [
+                    {
+                      "text": "도입 — 5분",
+                      "type": "text"
+                    }
+                  ],
+                  "type": "heading"
+                },
+                "id": "work-note-body-aaaaaaaaaaaaaaaaaaaaaaaa-5",
+                "text": "도입 — 5분",
+                "type": "h2"
+              },
+              {
+                "content": {
+                  "attrs": {
+                    "blockId": "work-note-body-aaaaaaaaaaaaaaaaaaaaaaaa-6",
+                    "indent": 0
+                  },
+                  "content": [
+                    {
+                      "text": "교사는 전날 읽은 장면을 화면에 보여 주고 30초 동안 말없이 살펴보게 한다.",
+                      "type": "text"
+                    }
+                  ],
+                  "type": "paragraph"
+                },
+                "id": "work-note-body-aaaaaaaaaaaaaaaaaaaaaaaa-6",
+                "text": "교사는 전날 읽은 장면을 화면에 보여 주고 30초 동안 말없이 살펴보게 한다.",
+                "type": "text"
+              },
+              {
+                "content": {
+                  "attrs": {
+                    "blockId": "work-note-body-aaaaaaaaaaaaaaaaaaaaaaaa-7",
+                    "indent": 0
+                  },
+                  "content": [
+                    {
+                      "text": "발문: “친구가 약속 장소에서 혼자 기다리고 있다면 어떤 생각이 들까요? 그렇게 생각한 까닭도 말해 봅시다.”",
+                      "type": "text"
+                    }
+                  ],
+                  "type": "paragraph"
+                },
+                "id": "work-note-body-aaaaaaaaaaaaaaaaaaaaaaaa-7",
+                "text": "발문: “친구가 약속 장소에서 혼자 기다리고 있다면 어떤 생각이 들까요? 그렇게 생각한 까닭도 말해 봅시다.”",
+                "type": "text"
+              },
+              {
+                "content": {
+                  "attrs": {
+                    "blockId": "work-note-body-aaaaaaaaaaaaaaaaaaaaaaaa-8",
+                    "indent": 0
+                  },
+                  "content": [
+                    {
+                      "text": "예상 반응: “친구가 오지 않아서 걱정할 것 같아요.” “약속을 잊었다고 생각하면 서운할 수 있어요.”",
+                      "type": "text"
+                    }
+                  ],
+                  "type": "paragraph"
+                },
+                "id": "work-note-body-aaaaaaaaaaaaaaaaaaaaaaaa-8",
+                "text": "예상 반응: “친구가 오지 않아서 걱정할 것 같아요.” “약속을 잊었다고 생각하면 서운할 수 있어요.”",
+                "type": "text"
+              },
+              {
+                "content": {
+                  "attrs": {
+                    "blockId": "work-note-body-aaaaaaaaaaaaaaaaaaaaaaaa-9",
+                    "indent": 0,
+                    "level": 2
+                  },
+                  "content": [
+                    {
+                      "text": "활동 1 — 장면의 근거 찾기, 10분",
+                      "type": "text"
+                    }
+                  ],
+                  "type": "heading"
+                },
+                "id": "work-note-body-aaaaaaaaaaaaaaaaaaaaaaaa-9",
+                "text": "활동 1 — 장면의 근거 찾기, 10분",
+                "type": "h2"
+              },
+              {
+                "content": {
+                  "attrs": {
+                    "blockId": "work-note-body-aaaaaaaaaaaaaaaaaaaaaaaa-10",
+                    "indent": 0,
+                    "start": 1,
+                    "type": null
+                  },
+                  "content": [
+                    {
+                      "content": [
+                        {
+                          "content": [
+                            {
+                              "text": "각자 인물의 말에 파란색, 행동에 빨간색 밑줄을 긋는다.",
+                              "type": "text"
+                            }
+                          ],
+                          "type": "paragraph"
+                        },
+                        {
+                          "content": [
+                            {
+                              "content": [
+                                {
+                                  "content": [
+                                    {
+                                      "text": "말의 근거: “조금만 더 기다려 보자.”라는 문장을 고른다.",
+                                      "type": "text"
+                                    }
+                                  ],
+                                  "type": "paragraph"
+                                },
+                                {
+                                  "content": [
+                                    {
+                                      "content": [
+                                        {
+                                          "content": [
+                                            {
+                                              "text": "왜 바로 돌아가지 않았는지 짝에게 설명한다.",
+                                              "type": "text"
+                                            }
+                                          ],
+                                          "type": "paragraph"
+                                        }
+                                      ],
+                                      "type": "listItem"
+                                    },
+                                    {
+                                      "content": [
+                                        {
+                                          "content": [
+                                            {
+                                              "text": "같은 장면의 다른 설명을 듣고 내 설명을 보완한다.",
+                                              "type": "text"
+                                            }
+                                          ],
+                                          "type": "paragraph"
+                                        }
+                                      ],
+                                      "type": "listItem"
+                                    }
+                                  ],
+                                  "type": "bulletList"
+                                }
+                              ],
+                              "type": "listItem"
+                            },
+                            {
+                              "content": [
+                                {
+                                  "content": [
+                                    {
+                                      "text": "행동의 근거: 시계를 두 번 살피는 행동을 찾는다.",
+                                      "type": "text"
+                                    }
+                                  ],
+                                  "type": "paragraph"
+                                }
+                              ],
+                              "type": "listItem"
+                            }
+                          ],
+                          "type": "bulletList"
+                        }
+                      ],
+                      "type": "listItem"
+                    },
+                    {
+                      "content": [
+                        {
+                          "content": [
+                            {
+                              "text": "짝과 찾은 근거를 비교하고 다른 답의 이유를 확인한다.",
+                              "type": "text"
+                            }
+                          ],
+                          "type": "paragraph"
+                        }
+                      ],
+                      "type": "listItem"
+                    }
+                  ],
+                  "type": "orderedList"
+                },
+                "id": "work-note-body-aaaaaaaaaaaaaaaaaaaaaaaa-10",
+                "text": "각자 인물의 말에 파란색, 행동에 빨간색 밑줄을 긋는다.말의 근거: “조금만 더 기다려 보자.”라는 문장을 고른다.왜 바로 돌아가지 않았는지 짝에게 설명한다.같은 장면의 다른 설명을 듣고 내 설명을 보완한다.행동의 근거: 시계를 두 번 살피는 행동을 찾는다.짝과 찾은 근거를 비교하고 다른 답의 이유를 확인한다.",
+                "type": "number"
+              },
+              {
+                "content": {
+                  "attrs": {
+                    "blockId": "work-note-body-aaaaaaaaaaaaaaaaaaaaaaaa-11",
+                    "indent": 0,
+                    "level": 2
+                  },
+                  "content": [
+                    {
+                      "text": "활동 2 — 역할 대화, 15분",
+                      "type": "text"
+                    }
+                  ],
+                  "type": "heading"
+                },
+                "id": "work-note-body-aaaaaaaaaaaaaaaaaaaaaaaa-11",
+                "text": "활동 2 — 역할 대화, 15분",
+                "type": "h2"
+              },
+              {
+                "content": {
+                  "attrs": {
+                    "blockId": "work-note-body-aaaaaaaaaaaaaaaaaaaaaaaa-12",
+                    "indent": 0
+                  },
+                  "content": [
+                    {
+                      "attrs": {
+                        "checked": false
+                      },
+                      "content": [
+                        {
+                          "content": [
+                            {
+                              "text": "역할 카드를 나누고 서로 다른 입장을 맡는다.",
+                              "type": "text"
+                            }
+                          ],
+                          "type": "paragraph"
+                        },
+                        {
+                          "content": [
+                            {
+                              "attrs": {
+                                "checked": true
+                              },
+                              "content": [
+                                {
+                                  "content": [
+                                    {
+                                      "text": "진행자가 먼저 대화 순서를 정한다.",
+                                      "type": "text"
+                                    }
+                                  ],
+                                  "type": "paragraph"
+                                }
+                              ],
+                              "type": "taskItem"
+                            },
+                            {
+                              "attrs": {
+                                "checked": false
+                              },
+                              "content": [
+                                {
+                                  "content": [
+                                    {
+                                      "text": "기록자가 인용한 문장을 활동지에 적는다.",
+                                      "type": "text"
+                                    }
+                                  ],
+                                  "type": "paragraph"
+                                }
+                              ],
+                              "type": "taskItem"
+                            }
+                          ],
+                          "type": "taskList"
+                        }
+                      ],
+                      "type": "taskItem"
+                    },
+                    {
+                      "attrs": {
+                        "checked": false
+                      },
+                      "content": [
+                        {
+                          "content": [
+                            {
+                              "text": "역할을 바꾸어 같은 장면을 다시 말한다.",
+                              "type": "text"
+                            }
+                          ],
+                          "type": "paragraph"
+                        }
+                      ],
+                      "type": "taskItem"
+                    }
+                  ],
+                  "type": "taskList"
+                },
+                "id": "work-note-body-aaaaaaaaaaaaaaaaaaaaaaaa-12",
+                "text": "역할 카드를 나누고 서로 다른 입장을 맡는다.진행자가 먼저 대화 순서를 정한다.기록자가 인용한 문장을 활동지에 적는다.역할을 바꾸어 같은 장면을 다시 말한다.",
+                "type": "todo"
+              },
+              {
+                "content": {
+                  "attrs": {
+                    "blockId": "work-note-body-aaaaaaaaaaaaaaaaaaaaaaaa-13",
+                    "indent": 0
+                  },
+                  "content": [
+                    {
+                      "content": [
+                        {
+                          "content": [
+                            {
+                              "attrs": {
+                                "textAlign": "left"
+                              },
+                              "content": [
+                                {
+                                  "text": "단계",
+                                  "type": "text"
+                                }
+                              ],
+                              "type": "paragraph"
+                            }
+                          ],
+                          "type": "tableHeader"
+                        },
+                        {
+                          "content": [
+                            {
+                              "attrs": {
+                                "textAlign": "center"
+                              },
+                              "content": [
+                                {
+                                  "text": "교사 발문",
+                                  "type": "text"
+                                }
+                              ],
+                              "type": "paragraph"
+                            }
+                          ],
+                          "type": "tableHeader"
+                        },
+                        {
+                          "content": [
+                            {
+                              "attrs": {
+                                "textAlign": "right"
+                              },
+                              "content": [
+                                {
+                                  "text": "예상 반응과 후속 지도",
+                                  "type": "text"
+                                }
+                              ],
+                              "type": "paragraph"
+                            }
+                          ],
+                          "type": "tableHeader"
+                        }
+                      ],
+                      "type": "tableRow"
+                    },
+                    {
+                      "content": [
+                        {
+                          "content": [
+                            {
+                              "attrs": {
+                                "textAlign": "left"
+                              },
+                              "content": [
+                                {
+                                  "text": "근거 확인",
+                                  "type": "text"
+                                }
+                              ],
+                              "type": "paragraph"
+                            }
+                          ],
+                          "type": "tableCell"
+                        },
+                        {
+                          "content": [
+                            {
+                              "attrs": {
+                                "textAlign": "center"
+                              },
+                              "content": [
+                                {
+                                  "marks": [
+                                    {
+                                      "type": "bold"
+                                    }
+                                  ],
+                                  "text": "어떤 말",
+                                  "type": "text"
+                                },
+                                {
+                                  "text": "에서 걱정을 느꼈나요?",
+                                  "type": "text"
+                                }
+                              ],
+                              "type": "paragraph"
+                            }
+                          ],
+                          "type": "tableCell"
+                        },
+                        {
+                          "content": [
+                            {
+                              "attrs": {
+                                "textAlign": "right"
+                              },
+                              "content": [
+                                {
+                                  "text": "“조금만 더”가 기다리는 마음을 보여 줍니다.",
+                                  "type": "text"
+                                }
+                              ],
+                              "type": "paragraph"
+                            }
+                          ],
+                          "type": "tableCell"
+                        }
+                      ],
+                      "type": "tableRow"
+                    },
+                    {
+                      "content": [
+                        {
+                          "content": [
+                            {
+                              "attrs": {
+                                "textAlign": "left"
+                              },
+                              "content": [
+                                {
+                                  "text": "비교",
+                                  "type": "text"
+                                }
+                              ],
+                              "type": "paragraph"
+                            }
+                          ],
+                          "type": "tableCell"
+                        },
+                        {
+                          "content": [
+                            {
+                              "attrs": {
+                                "textAlign": "center"
+                              },
+                              "content": [
+                                {
+                                  "text": "서운함과 걱정을 함께 느낄 수도 있나요?",
+                                  "type": "text"
+                                }
+                              ],
+                              "type": "paragraph"
+                            }
+                          ],
+                          "type": "tableCell"
+                        },
+                        {
+                          "content": [
+                            {
+                              "attrs": {
+                                "textAlign": "right"
+                              },
+                              "content": [
+                                {
+                                  "text": "두 근거를 연결하고 다른 해석도 존중합니다.",
+                                  "type": "text"
+                                }
+                              ],
+                              "type": "paragraph"
+                            }
+                          ],
+                          "type": "tableCell"
+                        }
+                      ],
+                      "type": "tableRow"
+                    },
+                    {
+                      "content": [
+                        {
+                          "content": [
+                            {
+                              "attrs": {
+                                "textAlign": "left"
+                              },
+                              "content": [
+                                {
+                                  "text": "적용",
+                                  "type": "text"
+                                }
+                              ],
+                              "type": "paragraph"
+                            }
+                          ],
+                          "type": "tableCell"
+                        },
+                        {
+                          "content": [
+                            {
+                              "attrs": {
+                                "textAlign": "center"
+                              },
+                              "content": [
+                                {
+                                  "text": "다음 장면에서 어떤 말을 건네면 좋을까요?",
+                                  "type": "text"
+                                }
+                              ],
+                              "type": "paragraph"
+                            }
+                          ],
+                          "type": "tableCell"
+                        },
+                        {
+                          "content": [
+                            {
+                              "attrs": {
+                                "textAlign": "right"
+                              },
+                              "content": [
+                                {
+                                  "text": "예: “늦어서 걱정했어. 무슨 일이 있었니?”",
+                                  "type": "text"
+                                }
+                              ],
+                              "type": "paragraph"
+                            }
+                          ],
+                          "type": "tableCell"
+                        }
+                      ],
+                      "type": "tableRow"
+                    }
+                  ],
+                  "type": "table"
+                },
+                "id": "work-note-body-aaaaaaaaaaaaaaaaaaaaaaaa-13",
+                "text": "단계교사 발문예상 반응과 후속 지도근거 확인어떤 말에서 걱정을 느꼈나요?“조금만 더”가 기다리는 마음을 보여 줍니다.비교서운함과 걱정을 함께 느낄 수도 있나요?두 근거를 연결하고 다른 해석도 존중합니다.적용다음 장면에서 어떤 말을 건네면 좋을까요?예: “늦어서 걱정했어. 무슨 일이 있었니?”",
+                "type": "table"
+              },
+              {
+                "content": {
+                  "attrs": {
+                    "blockId": "work-note-body-aaaaaaaaaaaaaaaaaaaaaaaa-14",
+                    "icon": "💡",
+                    "indent": 0,
+                    "tone": "purple"
+                  },
+                  "content": [
+                    {
+                      "attrs": {
+                        "blockId": "work-note-body-aaaaaaaaaaaaaaaaaaaaaaaa-13-1",
+                        "indent": 0
+                      },
+                      "content": [
+                        {
+                          "text": "발표를 망설이는 학생에게 1분의 준비 시간을 주고 짝의 설명부터 말하게 한다.",
+                          "type": "text"
+                        }
+                      ],
+                      "type": "paragraph"
+                    }
+                  ],
+                  "type": "callout"
+                },
+                "id": "work-note-body-aaaaaaaaaaaaaaaaaaaaaaaa-14",
+                "text": "발표를 망설이는 학생에게 1분의 준비 시간을 주고 짝의 설명부터 말하게 한다.",
+                "type": "callout"
+              },
+              {
+                "content": {
+                  "attrs": {
+                    "blockId": "work-note-body-aaaaaaaaaaaaaaaaaaaaaaaa-15",
+                    "indent": 0,
+                    "open": true
+                  },
+                  "content": [
+                    {
+                      "content": [
+                        {
+                          "text": "추가 발문과 예시",
+                          "type": "text"
+                        }
+                      ],
+                      "type": "detailsSummary"
+                    },
+                    {
+                      "content": [
+                        {
+                          "attrs": {
+                            "blockId": "work-note-body-aaaaaaaaaaaaaaaaaaaaaaaa-14-1",
+                            "indent": 0
+                          },
+                          "content": [
+                            {
+                              "text": "“친구가 늦은 이유를 알게 되면 인물의 마음은 어떻게 달라질까요?”",
+                              "type": "text"
+                            }
+                          ],
+                          "type": "paragraph"
+                        },
+                        {
+                          "attrs": {
+                            "blockId": "work-note-body-aaaaaaaaaaaaaaaaaaaaaaaa-14-2",
+                            "indent": 0
+                          },
+                          "content": [
+                            {
+                              "text": "예시: 사정을 듣기 전에는 서운했지만 아픈 동생을 돌봤다는 말을 듣고 미안해할 수 있다.",
+                              "type": "text"
+                            }
+                          ],
+                          "type": "paragraph"
+                        }
+                      ],
+                      "type": "detailsContent"
+                    }
+                  ],
+                  "type": "details"
+                },
+                "id": "work-note-body-aaaaaaaaaaaaaaaaaaaaaaaa-15",
+                "text": "추가 발문과 예시“친구가 늦은 이유를 알게 되면 인물의 마음은 어떻게 달라질까요?”예시: 사정을 듣기 전에는 서운했지만 아픈 동생을 돌봤다는 말을 듣고 미안해할 수 있다.",
+                "type": "toggle"
+              },
+              {
+                "content": {
+                  "attrs": {
+                    "blockId": "work-note-body-aaaaaaaaaaaaaaaaaaaaaaaa-16",
+                    "indent": 0,
+                    "level": 2
+                  },
+                  "content": [
+                    {
+                      "text": "정리와 평가 — 10분",
+                      "type": "text"
+                    }
+                  ],
+                  "type": "heading"
+                },
+                "id": "work-note-body-aaaaaaaaaaaaaaaaaaaaaaaa-16",
+                "text": "정리와 평가 — 10분",
+                "type": "h2"
+              },
+              {
+                "content": {
+                  "attrs": {
+                    "blockId": "work-note-body-aaaaaaaaaaaaaaaaaaaaaaaa-17",
+                    "indent": 0
+                  },
+                  "content": [
+                    {
+                      "text": "활동지에 인물의 마음, 말의 근거, 행동의 근거를 각각 한 문장 이상 적는다.",
+                      "type": "text"
+                    }
+                  ],
+                  "type": "paragraph"
+                },
+                "id": "work-note-body-aaaaaaaaaaaaaaaaaaaaaaaa-17",
+                "text": "활동지에 인물의 마음, 말의 근거, 행동의 근거를 각각 한 문장 이상 적는다.",
+                "type": "text"
+              },
+              {
+                "content": {
+                  "attrs": {
+                    "blockId": "work-note-body-aaaaaaaaaaaaaaaaaaaaaaaa-18",
+                    "indent": 0
+                  },
+                  "content": [
+                    {
+                      "text": "교사는 근거 두 가지의 적절성과 다른 해석을 존중하는 태도를 확인하고 다음 수업에서 짧게 피드백한다.",
+                      "type": "text"
+                    }
+                  ],
+                  "type": "paragraph"
+                },
+                "id": "work-note-body-aaaaaaaaaaaaaaaaaaaaaaaa-18",
+                "text": "교사는 근거 두 가지의 적절성과 다른 해석을 존중하는 태도를 확인하고 다음 수업에서 짧게 피드백한다.",
+                "type": "text"
+              },
+              {
+                "content": {
+                  "attrs": {
+                    "blockId": "work-note-body-aaaaaaaaaaaaaaaaaaaaaaaa-19",
+                    "indent": 0
+                  },
+                  "content": [
+                    {
+                      "text": "유의점: 발표량만으로 평가하지 않고 밑줄, 짝 대화, 활동지를 함께 확인한다.",
+                      "type": "text"
+                    }
+                  ],
+                  "type": "paragraph"
+                },
+                "id": "work-note-body-aaaaaaaaaaaaaaaaaaaaaaaa-19",
+                "text": "유의점: 발표량만으로 평가하지 않고 밑줄, 짝 대화, 활동지를 함께 확인한다.",
+                "type": "text"
+              },
+              {
+                "attachmentType": "pdf",
+                "id": "old-asset-block",
+                "localAttachmentId": "old-pdf",
+                "type": "attachment"
+              }
+            ],
+            "markdown": "# 인물의 마음을 근거로 설명하기\n\n## 목표와 준비물\n\n이야기의 장면을 읽고 말과 행동에 나타난 인물의 마음을 두 가지 근거로 설명한다.\n\n준비물은 교과서 18~21쪽, 색연필 두 색, 역할 카드, 모둠 활동지이다.\n\n## 도입 — 5분\n\n교사는 전날 읽은 장면을 화면에 보여 주고 30초 동안 말없이 살펴보게 한다.\n\n발문: “친구가 약속 장소에서 혼자 기다리고 있다면 어떤 생각이 들까요? 그렇게 생각한 까닭도 말해 봅시다.”\n\n예상 반응: “친구가 오지 않아서 걱정할 것 같아요.” “약속을 잊었다고 생각하면 서운할 수 있어요.”\n\n## 활동 1 — 장면의 근거 찾기, 10분\n\n1. 각자 인물의 말에 파란색, 행동에 빨간색 밑줄을 긋는다.\n  - 말의 근거: “조금만 더 기다려 보자.”라는 문장을 고른다.\n    - 왜 바로 돌아가지 않았는지 짝에게 설명한다.\n    - 같은 장면의 다른 설명을 듣고 내 설명을 보완한다.\n  - 행동의 근거: 시계를 두 번 살피는 행동을 찾는다.\n2. 짝과 찾은 근거를 비교하고 다른 답의 이유를 확인한다.\n\n## 활동 2 — 역할 대화, 15분\n\n- [ ] 역할 카드를 나누고 서로 다른 입장을 맡는다.\n  - [x] 진행자가 먼저 대화 순서를 정한다.\n  - [ ] 기록자가 인용한 문장을 활동지에 적는다.\n- [ ] 역할을 바꾸어 같은 장면을 다시 말한다.\n\n| 단계 | 교사 발문 | 예상 반응과 후속 지도 |\n| :--- | :---: | ---: |\n| 근거 확인 | **어떤 말**에서 걱정을 느꼈나요? | “조금만 더”가 기다리는 마음을 보여 줍니다. |\n| 비교 | 서운함과 걱정을 함께 느낄 수도 있나요? | 두 근거를 연결하고 다른 해석도 존중합니다. |\n| 적용 | 다음 장면에서 어떤 말을 건네면 좋을까요? | 예: “늦어서 걱정했어. 무슨 일이 있었니?” |\n\n> [!NOTE] 💡\n> 발표를 망설이는 학생에게 1분의 준비 시간을 주고 짝의 설명부터 말하게 한다.\n\n<details>\n<summary>추가 발문과 예시</summary>\n\n“친구가 늦은 이유를 알게 되면 인물의 마음은 어떻게 달라질까요?”\n\n예시: 사정을 듣기 전에는 서운했지만 아픈 동생을 돌봤다는 말을 듣고 미안해할 수 있다.\n</details>\n\n## 정리와 평가 — 10분\n\n활동지에 인물의 마음, 말의 근거, 행동의 근거를 각각 한 문장 이상 적는다.\n\n교사는 근거 두 가지의 적절성과 다른 해석을 존중하는 태도를 확인하고 다음 수업에서 짧게 피드백한다.\n\n유의점: 발표량만으로 평가하지 않고 밑줄, 짝 대화, 활동지를 함께 확인한다.\n\n[첨부]"
+          },
+          "snapshotRevision": 2,
+          "contentSha256": "06ea7f53845407e3ff28198ac794eb319c8922158aae35333e17ca4443c65d8c",
+          "transform": {
+            "strategy": "replace_document",
+            "markdown": "# 인물의 마음을 근거로 설명하기\n\n## 목표와 준비물\n이야기의 장면을 읽고 말과 행동에 나타난 인물의 마음을 두 가지 근거로 설명한다.\n준비물은 교과서 18~21쪽, 색연필 두 색, 역할 카드, 모둠 활동지이다.\n\n## 도입 — 5분\n교사는 전날 읽은 장면을 화면에 보여 주고 30초 동안 말없이 살펴보게 한다.\n발문: “친구가 약속 장소에서 혼자 기다리고 있다면 어떤 생각이 들까요? 그렇게 생각한 까닭도 말해 봅시다.”\n예상 반응: “친구가 오지 않아서 걱정할 것 같아요.” “약속을 잊었다고 생각하면 서운할 수 있어요.”\n\n## 활동 1 — 장면의 근거 찾기, 10분\n1. 각자 인물의 말에 파란색, 행동에 빨간색 밑줄을 긋는다.\n  - 말의 근거: “조금만 더 기다려 보자.”라는 문장을 고른다.\n    - 왜 바로 돌아가지 않았는지 짝에게 설명한다.\n    - 같은 장면의 다른 설명을 듣고 내 설명을 보완한다.\n  - 행동의 근거: 시계를 두 번 살피는 행동을 찾는다.\n2. 짝과 찾은 근거를 비교하고 다른 답의 이유를 확인한다.\n\n## 활동 2 — 역할 대화, 15분\n- [ ] 역할 카드를 나누고 서로 다른 입장을 맡는다.\n  - [x] 진행자가 먼저 대화 순서를 정한다.\n  - [ ] 기록자가 인용한 문장을 활동지에 적는다.\n- [ ] 역할을 바꾸어 같은 장면을 다시 말한다.\n\n| 단계 | 교사 발문 | 예상 반응과 후속 지도 |\n| :--- | :---: | ---: |\n| 근거 확인 | **어떤 말**에서 걱정을 느꼈나요? | “조금만 더”가 기다리는 마음을 보여 줍니다. |\n| 비교 | 서운함과 걱정을 함께 느낄 수도 있나요? | 두 근거를 연결하고 다른 해석도 존중합니다. |\n| 적용 | 다음 장면에서 어떤 말을 건네면 좋을까요? | 예: “늦어서 걱정했어. 무슨 일이 있었니?” |\n\n> [!NOTE] 💡\n> 발표를 망설이는 학생에게 1분의 준비 시간을 주고 짝의 설명부터 말하게 한다.\n\n<details>\n<summary>추가 발문과 예시</summary>\n\n“친구가 늦은 이유를 알게 되면 인물의 마음은 어떻게 달라질까요?”\n예시: 사정을 듣기 전에는 서운했지만 아픈 동생을 돌봤다는 말을 듣고 미안해할 수 있다.\n\n</details>\n\n## 정리와 평가 — 10분\n활동지에 인물의 마음, 말의 근거, 행동의 근거를 각각 한 문장 이상 적는다.\n교사는 근거 두 가지의 적절성과 다른 해석을 존중하는 태도를 확인하고 다음 수업에서 짧게 피드백한다.\n유의점: 발표량만으로 평가하지 않고 밑줄, 짝 대화, 활동지를 함께 확인한다.\n",
+            "idSeed": "aaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "appendBlocks": [],
+          "markdownDelta": "",
+          "attachments": []
+        }
+      },
+      "png": [
+        137,
+        80,
+        78,
+        71,
+        13,
+        10,
+        26,
+        10,
+        0,
+        0,
+        0,
+        13,
+        73,
+        72,
+        68,
+        82,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        1,
+        8,
+        4,
+        0,
+        0,
+        0,
+        181,
+        28,
+        12,
+        2,
+        0,
+        0,
+        0,
+        11,
+        73,
+        68,
+        65,
+        84,
+        120,
+        218,
+        99,
+        252,
+        255,
+        31,
+        0,
+        3,
+        3,
+        2,
+        0,
+        239,
+        154,
+        58,
+        234,
+        0,
+        0,
+        0,
+        0,
+        73,
+        69,
+        78,
+        68,
+        174,
+        66,
+        96,
+        130
+      ]
     }
   }
 }
