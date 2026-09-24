@@ -274,7 +274,7 @@ mod tests {
             std::env::temp_dir().join(format!("classaimate-lesson-binding-{}", random_url_token()));
         fs::create_dir_all(&data_dir).expect("create lesson binding fixture");
         let db_path = data_dir.join("fixture.sqlite");
-        let opened = SqliteStore::open(&db_path).expect("open lesson binding fixture");
+        let opened = SqliteStore::open(db_path.clone()).expect("open lesson binding fixture");
         let conn = opened.conn.into_inner().unwrap();
         ensure_schema(&conn).expect("create binding schema");
         (
