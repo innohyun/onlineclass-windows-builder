@@ -7120,9 +7120,10 @@ mod device_authorization_tests {
         let root = env::temp_dir().join(format!("onlineclass-work-note-reconcile-{}-{}", std::process::id(), now_ms()));
         fs::create_dir_all(&root).expect("create work note test directory");
         let store = SqliteStore::open(root.join("store.sqlite")).expect("open work note store");
+        // Seed pre-folder-contract records; typed folders reject bodies on new writes.
         let system_root = |page_id: &str, blocks: Value| json!({
             "tenantId":"tenant-a","pageId":page_id,"parentId":null,"title":WORK_MEETING_ROOT_TITLE,"emoji":"🗂️","position":0,
-            "properties":{"systemKind":"mobile_work_meeting_folder","nodeKind":"folder","schemaVersion":1},"blocks":blocks,"markdown":format!("# {WORK_MEETING_ROOT_TITLE}")
+            "properties":{"systemKind":"mobile_work_meeting_folder","schemaVersion":1},"blocks":blocks,"markdown":format!("# {WORK_MEETING_ROOT_TITLE}")
         });
         store.upsert_work_note(system_root("duplicate:encoded root", json!([]))).expect("save blank duplicate");
         store.upsert_work_note(system_root("duplicate:user root", json!([{"id":"user","type":"text","text":"보존할 메모"}]))).expect("save modified duplicate");
