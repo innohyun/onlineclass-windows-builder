@@ -139,7 +139,7 @@ impl Executor {
         let started = Instant::now();
         trace(&frame, "app_received", started, "START", None);
         let remaining = frame["deadlineAt"].as_i64().unwrap_or(0) - chrono::Utc::now().timestamp_millis();
-        let limit = if frame["workspace"] == "teaching_sources" && frame["operation"] == "pages" { 31_000 } else { 13_000 };
+        let limit = if frame["workspace"] == "teaching_sources" && frame["operation"] != "chunks" { 31_000 } else { 13_000 };
         let reject = if remaining <= RESPONSE_MARGIN_MS { Some("LOCAL_DB_QUERY_TIMEOUT") }
             else if remaining > limit || frame["type"] != "local_read_request" { Some("INVALID_LOCAL_READ_REQUEST") }
             else if self.pending.len() >= MAX_PENDING { Some("MCP_RELAY_BUSY") } else { None };

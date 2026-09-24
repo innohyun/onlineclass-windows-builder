@@ -17,6 +17,10 @@ use std::path::{Component, Path, PathBuf};
 use tiny_http::{Method, Request, ResponseBox};
 
 const ROOT_DIR: &str = "teaching-sources";
+#[path = "teaching_sources_pdf_text.rs"]
+mod pdf_text;
+#[path = "teaching_sources_pdf_fallback.rs"]
+mod pdf_fallback;
 const MAX_FILE_BYTES: u64 = 500 * 1024 * 1024;
 const MAX_JSON_BYTES: u64 = 12 * 1024 * 1024;
 const MAX_CHUNKS_PER_BATCH: usize = 200;
@@ -263,13 +267,16 @@ fn read_json(request: &mut Request) -> Result<Value, String> {
 fn source_row(store: &SqliteStore, owner: &str, source: &str) -> Result<Option<Value>, String> {
     let conn = store.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
     conn.query_row(
-        "SELECT source_id,source_type,grade,semester_scope,subject_code,title,publisher,original_file_name,content_type,byte_size,sha256,extraction_status,extractor_version,page_count,revision,created_at_ms,updated_at_ms,origin_tenant_id,lifecycle_status FROM teaching_sources WHERE owner_uid=?1 AND source_id=?2",
+        "SELECT source_id,source_type,grade,semester_scope,subject_code,title,publisher,original_file_name,content_type,byte_size,sha256,extraction_status,extractor_version,page_count,revision,created_at_ms,updated_at_ms,origin_tenant_id,lifecycle_status,local_path FROM teaching_sources WHERE owner_uid=?1 AND source_id=?2",
         params![owner, source], |row| {
             let content_type=row.get::<_,String>(8)?;
             let extraction_status=row.get::<_,String>(11)?;
             let extractor_version=row.get::<_,Option<String>>(12)?;
             let reindex_required=content_type=="application/pdf" && extraction_status=="ready"
                 && extractor_version.as_deref()!=Some(SPARSE_PDF_EXTRACTOR);
+            let expected_size = row.get::<_,i64>(9)?;
+            let original_available = row.get::<_,Option<String>>(19)?.and_then(|relative| resolve_local_path(store, &relative).ok())
+                .and_then(|path| fs::metadata(path).ok()).is_some_and(|meta| meta.is_file() && meta.len() as i64 == expected_size);
             Ok(json!({
                 "sourceId":row.get::<_,String>(0)?,"sourceType":row.get::<_,String>(1)?,"grade":row.get::<_,String>(2)?,
                 "semesterScope":row.get::<_,String>(3)?,"subjectCode":row.get::<_,String>(4)?,"title":row.get::<_,String>(5)?,
@@ -277,7 +284,8 @@ fn source_row(store: &SqliteStore, owner: &str, source: &str) -> Result<Option<V
                 "byteSize":row.get::<_,i64>(9)?,"sha256":row.get::<_,Option<String>>(10)?,"extractionStatus":extraction_status,
                 "extractorVersion":extractor_version,"pageCount":row.get::<_,Option<i64>>(13)?,"revision":row.get::<_,i64>(14)?,
                 "createdAt":row.get::<_,i64>(15)?,"updatedAt":row.get::<_,i64>(16)?,"originTenantId":row.get::<_,String>(17)?,
-                "lifecycleStatus":row.get::<_,String>(18)?,"backupState":"onedrive_included","reindexRequired":reindex_required
+                "lifecycleStatus":row.get::<_,String>(18)?,"backupState":"onedrive_included","reindexRequired":reindex_required,
+                "originalFileAvailable":original_available
             }))
         }
     ).optional().map_err(|e| format!("db_teaching_source_read_failed:{e}"))
@@ -627,7 +635,7 @@ fn sparse_page_number(value: &str) -> Option<i64> {
         .then(|| value[5..].parse::<i64>().ok()).flatten().filter(|page| *page > 0)
 }
 
-pub(crate) fn mcp_matches(store: &SqliteStore, tenant: &str, owner: &str, input: &Value) -> Result<Value, String> {
+fn mcp_index_matches(store: &SqliteStore, tenant: &str, owner: &str, input: &Value) -> Result<Value, String> {
     let lessons = input.get("lessons").and_then(Value::as_array).cloned().unwrap_or_default();
     if lessons.is_empty() || lessons.len() > 100 { return Err("INVALID_LOCAL_READ_REQUEST".into()); }
     let source_types=input.get("sourceTypes").and_then(Value::as_array).cloned().unwrap_or_default();
@@ -738,6 +746,14 @@ pub(crate) fn mcp_matches(store: &SqliteStore, tenant: &str, owner: &str, input:
     Ok(json!({"matches":page,"diagnostics":diagnostic_rows,"diagnosticsTruncated":diagnostics_truncated,"complete":complete,"nextOffset":if complete {Value::Null}else{json!(offset+page.len())},"snapshotDigest":snapshot_digest,"snapshotStale":false,"strategy":"exact_link_then_lesson_context_fts_then_subject_query_fts"}))
 }
 
+pub(crate) fn mcp_matches(store: &SqliteStore, tenant: &str, owner: &str, input: &Value) -> Result<Value, String> {
+    pdf_fallback::matches(store, tenant, owner, input)
+}
+
+pub(crate) fn mcp_page_refs(store: &SqliteStore, tenant: &str, owner: &str, input: &Value) -> Result<Value, String> {
+    pdf_fallback::page_refs(store, tenant, owner, input)
+}
+
 pub(crate) fn mcp_chunks(store: &SqliteStore, tenant: &str, owner: &str, input: &Value) -> Result<Value, String> {
     let refs = input.get("refs").and_then(Value::as_array).filter(|v| !v.is_empty() && v.len() <= MAX_MCP_CHUNKS).ok_or("INVALID_LOCAL_READ_REQUEST")?;
     let unique=refs.iter().map(|item|format!("{}:{}",item.get("sourceRef").and_then(Value::as_str).unwrap_or(""),item.get("chunkRef").and_then(Value::as_str).unwrap_or(""))).collect::<HashSet<_>>();
@@ -791,8 +807,8 @@ pub(crate) fn mcp_pages(store: &SqliteStore, tenant: &str, owner: &str, input: &
         let conn = store.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
         for item in refs {
             ensure_page_deadline(deadline_at)?;
-            let object = item.as_object().filter(|value| value.len() == 5
-                && value.keys().all(|key| ["sourceRef","chunkRef","sourceRevision","chunkRevision","fileSha256"].contains(&key.as_str())))
+            let object = item.as_object().filter(|value| (5..=6).contains(&value.len())
+                && value.keys().all(|key| ["sourceRef","chunkRef","sourceRevision","chunkRevision","fileSha256","readBasis"].contains(&key.as_str())))
                 .ok_or("INVALID_LOCAL_READ_REQUEST")?;
             let source = safe_id(object.get("sourceRef").and_then(Value::as_str).unwrap_or(""), 160)
                 .ok_or("INVALID_LOCAL_READ_REQUEST")?;
@@ -801,11 +817,28 @@ pub(crate) fn mcp_pages(store: &SqliteStore, tenant: &str, owner: &str, input: &
                 .ok_or("INVALID_LOCAL_READ_REQUEST")?;
             let source_revision = object.get("sourceRevision").and_then(Value::as_i64).filter(|value| *value > 0)
                 .ok_or("INVALID_LOCAL_READ_REQUEST")?;
-            let chunk_revision = object.get("chunkRevision").and_then(Value::as_i64).filter(|value| *value > 0)
-                .ok_or("INVALID_LOCAL_READ_REQUEST")?;
+            let original = match object.get("readBasis").and_then(Value::as_str).unwrap_or("index") {
+                "original_pdf" => true, "index" => false, _ => return Err("INVALID_LOCAL_READ_REQUEST".into()),
+            };
+            let chunk_revision = object.get("chunkRevision").and_then(Value::as_i64).filter(|value| *value > 0);
+            if (original && !item["chunkRevision"].is_null()) || (!original && chunk_revision.is_none()) {
+                return Err("INVALID_LOCAL_READ_REQUEST".into());
+            }
             let file_sha = object.get("fileSha256").and_then(Value::as_str)
                 .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()))
                 .ok_or("INVALID_LOCAL_READ_REQUEST")?;
+            if original {
+                let page = sparse_page_number(&chunk).filter(|v| *v <= 2_000).ok_or("INVALID_LOCAL_READ_REQUEST")?;
+                let row = conn.query_row("SELECT title,source_type,subject_code,publisher FROM teaching_sources WHERE owner_uid=?1 AND source_id=?2 AND revision=?3 AND sha256=?4 AND content_type='application/pdf' AND lifecycle_status='active'",
+                    params![owner,source,source_revision,file_sha], |row| Ok(json!({
+                        "title":row.get::<_,String>(0)?,"sourceType":row.get::<_,String>(1)?,
+                        "subjectCode":row.get::<_,String>(2)?,"publisher":row.get::<_,String>(3)?
+                    }))).optional().map_err(|_| "db_teaching_source_page_read_failed")?.ok_or("teaching_source_stale")?;
+                rows.push(json!({"pageNumber":page,"chunkRef":chunk,"chunkRevision":null,"readBasis":"original_pdf",
+                    "sourceRef":source,"title":row["title"],"sourceType":row["sourceType"],"subjectCode":row["subjectCode"],
+                    "publisher":row["publisher"],"sourceRevision":source_revision,"fileSha256":file_sha,"pageCount":null}));
+                continue;
+            }
             let row = conn.query_row(
                 "SELECT c.chunk_id,c.revision,c.page_start,c.page_end,s.source_id,s.title,s.source_type,s.subject_code,s.publisher,s.revision,s.sha256,s.content_type,s.page_count,s.extractor_version,c.ordinal,length(c.text) FROM teaching_source_chunks c JOIN teaching_sources s ON s.owner_uid=c.owner_uid AND s.source_id=c.source_id WHERE c.owner_uid=?1 AND c.source_id=?2 AND c.chunk_id=?3 AND c.revision=?4 AND s.revision=?5 AND s.sha256=?6 AND s.extraction_status='ready' AND s.lifecycle_status='active'",
                 params![owner,source,chunk,chunk_revision,source_revision,file_sha], |row| Ok(json!({
@@ -851,7 +884,8 @@ pub(crate) fn mcp_pages(store: &SqliteStore, tenant: &str, owner: &str, input: &
         ensure_page_deadline(deadline_at)?;
         let pdf = Pdf::new(file).map_err(|_| "teaching_source_page_render_failed".to_string())?;
         ensure_page_deadline(deadline_at)?;
-        if first["pageCount"].as_i64()!=Some(pdf.pages().len() as i64){return Err("teaching_source_stale".into());}
+        if indexes.iter().any(|index| rows[*index]["readBasis"] != "original_pdf"
+            && rows[*index]["pageCount"].as_i64()!=Some(pdf.pages().len() as i64)) { return Err("teaching_source_stale".into()); }
         let cache = RenderCache::new();
         let interpreter_settings = InterpreterSettings::default();
         for index in indexes {
@@ -878,6 +912,14 @@ pub(crate) fn mcp_pages(store: &SqliteStore, tenant: &str, owner: &str, input: &
     {
         let conn=store.conn.lock().map_err(|_|"db_lock_failed".to_string())?;
         for row in &rows {
+            if row["readBasis"] == "original_pdf" {
+                let current: i64 = conn.query_row("SELECT COUNT(*) FROM teaching_sources WHERE owner_uid=?1 AND source_id=?2 AND revision=?3 AND sha256=?4 AND content_type='application/pdf' AND lifecycle_status='active'",
+                    params![owner,row["sourceRef"].as_str().unwrap_or(""),row["sourceRevision"].as_i64().unwrap_or(0),row["fileSha256"].as_str().unwrap_or("")], |result| result.get(0))
+                    .map_err(|_| "db_teaching_source_page_revalidate_failed")?;
+                if current != 1 { return Err("teaching_source_stale".into()); }
+                ensure_page_deadline(deadline_at)?;
+                continue;
+            }
             let current: i64=conn.query_row("SELECT COUNT(*) FROM teaching_source_chunks c JOIN teaching_sources s ON s.owner_uid=c.owner_uid AND s.source_id=c.source_id WHERE c.owner_uid=?1 AND c.source_id=?2 AND c.chunk_id=?3 AND c.revision=?4 AND s.revision=?5 AND s.sha256=?6 AND s.content_type='application/pdf' AND s.extractor_version=?7 AND s.extraction_status='ready' AND s.lifecycle_status='active' AND s.page_count=?8 AND c.page_start=?9 AND c.page_end=?9 AND c.ordinal=?9-1 AND length(c.text) BETWEEN 1 AND ?10",params![owner,row["sourceRef"].as_str().unwrap_or(""),row["chunkRef"].as_str().unwrap_or(""),row["chunkRevision"].as_i64().unwrap_or(0),row["sourceRevision"].as_i64().unwrap_or(0),row["fileSha256"].as_str().unwrap_or(""),SPARSE_PDF_EXTRACTOR,row["pageCount"].as_i64().unwrap_or(0),row["pageNumber"].as_i64().unwrap_or(0),MAX_SPARSE_PAGE_LOCATOR_TEXT as i64],|result|result.get(0)).map_err(|error|format!("db_teaching_source_page_revalidate_failed:{error}"))?;
             if current!=1{return Err("teaching_source_stale".into());}
             ensure_page_deadline(deadline_at)?;

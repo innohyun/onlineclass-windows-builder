@@ -45,6 +45,7 @@ const CAPABILITIES: &[&str] = &[
     "classaimate_mcp_student_traits_v1",
     "classaimate_mcp_teaching_sources_v1",
     "classaimate_mcp_teaching_source_pages_v1",
+    "classaimate_mcp_teaching_source_fallback_v1",
 ];
 static STARTED: AtomicBool = AtomicBool::new(false);
 static STATE: Mutex<(&str, &str, i64)> = Mutex::new(("waiting_connection", "", 0));
@@ -354,9 +355,10 @@ fn read_local(store: &SqliteStore, tenant: &str, owner: &str, frame: &Value) -> 
     }
     if workspace == "teaching_sources" {
         let allowed: &[&str] = match operation {
-            "matches" => &["lessons", "query", "subjectCode", "sourceTypes", "limit", "offset", "expectedSnapshotDigest"],
+            "matches" => &["lessons", "query", "subjectCode", "sourceTypes", "limit", "offset", "expectedSnapshotDigest", "scan"],
             "chunks" => &["refs", "maxChars"],
             "pages" => &["refs"],
+            "page_refs" => &["sourceRef", "sourceRevision", "fileSha256", "pageStart", "pageEnd"],
             _ => return Err("INVALID_LOCAL_READ_REQUEST".to_string()),
         };
         if input.keys().any(|key| !allowed.contains(&key.as_str())) {
@@ -364,6 +366,7 @@ fn read_local(store: &SqliteStore, tenant: &str, owner: &str, frame: &Value) -> 
         }
         return match operation {
             "matches" => teaching_sources::mcp_matches(store, tenant, owner, &frame["input"]),
+            "page_refs" => teaching_sources::mcp_page_refs(store, tenant, owner, &frame["input"]),
             "chunks" => teaching_sources::mcp_chunks(store, tenant, owner, &frame["input"]),
             "pages" => teaching_sources::mcp_pages(store, tenant, owner, &frame["input"], frame["deadlineAt"].as_i64().ok_or("INVALID_LOCAL_READ_REQUEST")?),
             _ => Err("INVALID_LOCAL_READ_REQUEST".to_string()),
@@ -433,7 +436,7 @@ fn read_local(store: &SqliteStore, tenant: &str, owner: &str, frame: &Value) -> 
 fn read_frame_for_owner(store: &SqliteStore, tenant: &str, owner: &str, frame: &Value, now: i64) -> Option<Value> {
     let request_id = frame["requestId"].as_str()?;
     let deadline = frame["deadlineAt"].as_i64()?;
-    let deadline_limit = if frame["workspace"] == "teaching_sources" && frame["operation"] == "pages" { 31_000 } else { 13_000 };
+    let deadline_limit = if frame["workspace"] == "teaching_sources" && frame["operation"] != "chunks" { 31_000 } else { 13_000 };
     if !id(request_id)
         || deadline > now + deadline_limit
         || frame["type"] != "local_read_request"
@@ -460,6 +463,8 @@ fn read_frame_for_owner(store: &SqliteStore, tenant: &str, owner: &str, frame: &
                     "MCP_TEACHING_SOURCE_PAGE_TOO_LARGE"
                 } else if error=="teaching_source_page_render_failed" {
                     "MCP_TEACHING_SOURCE_PAGE_RENDER_FAILED"
+                } else if error=="teaching_source_page_range_invalid" {
+                    "MCP_TEACHING_SOURCE_PAGE_RANGE_INVALID"
                 } else if not_found { "local_workspace_page_not_found" }
                 else if ["MCP_LOCAL_RECEIPT_CONFLICT", "MCP_LOCAL_RECEIPT_UNSUPPORTED", "MCP_LOCAL_RECEIPT_READ_FAILED", "MCP_STUDENT_DRAFT_READ_FAILED", "INVALID_LOCAL_READ_REQUEST",
                     "MCP_STUDENT_SELECTION_INVALID", "MCP_STUDENT_SELECTION_READ_FAILED", "MCP_STUDENT_SELECTION_TOO_LARGE",
