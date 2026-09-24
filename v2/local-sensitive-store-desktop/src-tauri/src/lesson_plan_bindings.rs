@@ -205,12 +205,38 @@ pub(crate) fn upsert(store: &SqliteStore, body: Value) -> Result<Vec<Value>, Str
              WHERE excluded.binding_revision>lesson_plan_bindings.binding_revision",
             params![tenant, plan_id, page_id, plan_kind, date_key, start_period, end_period, subject, revision, updated_at],
         ).map_err(|error| format!("db_lesson_plan_binding_upsert_failed:{error}"))?;
+        refresh_page_metadata(&transaction,&tenant,&page_id,updated_at)?;
     }
     transaction
         .commit()
         .map_err(|error| format!("db_lesson_plan_binding_commit_failed:{error}"))?;
     drop(conn);
     list(store, tenant)
+}
+
+// Called only with an authoritative binding in the same write transaction.
+pub(crate) fn refresh_page_metadata(conn: &Connection, tenant: &str, page_id: &str, now: i64) -> Result<(), String> {
+    let Some(page) = crate::work_note_documents::read(conn,tenant,page_id)? else { return Ok(()); };
+    let binding: Option<(String,i64,i64,String)> = conn.query_row(
+        "SELECT date_key,start_period,end_period,subject FROM lesson_plan_bindings WHERE tenant_id=?1 AND page_id=?2",
+        params![tenant,page_id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(|e|format!("db_lesson_metadata_read:{e}"))?;
+    let Some((date,start,end,subject)) = binding else { return Ok(()); };
+    let mut next = crate::classaimate_mcp_write_jobs::lesson_snapshot::system_metadata_page(&page,&date,start,end,&subject);
+    if page["parentId"].as_str().is_some_and(|id| id.starts_with("lesson-date-")) {
+        let folder = format!("lesson-date-{}",date.replace("-",""));
+        if crate::work_note_documents::read(conn,tenant,&folder)?.is_none() {
+            crate::canonical_write_transactions::upsert_work_note(conn,json!({"tenantId":tenant,"pageId":folder,"parentId":"lesson-materials-root",
+                "title":date,"position":0,"properties":{"systemKind":"lesson_plan_date_projection"},"blocks":[],"markdown":"","updatedAtMs":now}))?;
+        }
+        next["parentId"] = json!(folder); next["position"] = json!(start);
+    }
+    if next != page {
+        next["updatedAtMs"] = json!(now.max(page["updatedAtMs"].as_i64().unwrap_or(0)+1));
+        conn.execute("UPDATE work_note_pages SET title=?1,parent_id=?2,position=?3 WHERE tenant_id=?4 AND page_id=?5",
+            params![next["title"].as_str(),next["parentId"].as_str(),next["position"].as_i64(),tenant,page_id]).map_err(|e|format!("db_lesson_metadata_write:{e}"))?;
+        crate::canonical_write_transactions::upsert_work_note(conn,next)?;
+    }
+    Ok(())
 }
 
 pub(crate) fn stored_page_structure(
@@ -248,14 +274,8 @@ mod tests {
             std::env::temp_dir().join(format!("classaimate-lesson-binding-{}", random_url_token()));
         fs::create_dir_all(&data_dir).expect("create lesson binding fixture");
         let db_path = data_dir.join("fixture.sqlite");
-        let conn = Connection::open(&db_path).expect("open lesson binding fixture");
-        conn.execute_batch(
-            "CREATE TABLE work_note_pages(
-               tenant_id TEXT NOT NULL,page_id TEXT NOT NULL,parent_id TEXT,title TEXT NOT NULL,
-               position INTEGER NOT NULL,PRIMARY KEY(tenant_id,page_id)
-             );",
-        )
-        .expect("create work note fixture");
+        let opened = SqliteStore::open(&db_path).expect("open lesson binding fixture");
+        let conn = opened.conn.into_inner().unwrap();
         ensure_schema(&conn).expect("create binding schema");
         (
             SqliteStore {

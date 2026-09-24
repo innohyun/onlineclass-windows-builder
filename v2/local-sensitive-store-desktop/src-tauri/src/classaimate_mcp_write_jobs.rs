@@ -8,7 +8,7 @@ use std::collections::{BTreeSet, HashMap};
 #[path = "classaimate_mcp_material_assets.rs"]
 pub(crate) mod material_assets;
 #[path = "classaimate_mcp_lesson_snapshot.rs"]
-mod lesson_snapshot;
+pub(crate) mod lesson_snapshot;
 #[path = "classaimate_mcp_transaction_store.rs"]
 mod transaction_store;
 use transaction_store::TransactionStore;

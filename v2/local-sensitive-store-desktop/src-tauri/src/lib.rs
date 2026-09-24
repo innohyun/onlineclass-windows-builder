@@ -228,6 +228,7 @@ const LOCAL_SENSITIVE_STORE_FEATURES: &[&str] = &[
     "classaimate_mcp_material_assets_v1",
     "classaimate_mcp_receipt_readback_v1",
     "classaimate_mcp_lesson_snapshot_v1",
+    "classaimate_mcp_lesson_integrity_v1",
     "lesson_observations_mcp_v1",
     "lesson_observations_delete_v1",
     "life_records_mcp_v1",

@@ -39,6 +39,7 @@ const CAPABILITIES: &[&str] = &[
     "classaimate_mcp_native_worker_v1",
     "classaimate_mcp_material_assets_v1",
     "classaimate_mcp_lesson_snapshot_v1",
+    "classaimate_mcp_lesson_integrity_v1",
     "classaimate_mcp_receipt_readback_v1",
     "classaimate_mcp_student_drafts_read_v1",
     "classaimate_mcp_student_selection_v1",
@@ -393,6 +394,7 @@ fn read_local(store: &SqliteStore, tenant: &str, owner: &str, frame: &Value) -> 
         ("work_materials" | "lesson_materials" | "student_learning_materials", "search") => {
             &["query", "limit"]
         }
+        ("lesson_materials", "lesson_material_inspect") => &["pageRef", "planId"],
         ("work_materials" | "lesson_materials" | "student_learning_materials", "get_page") => {
             &["pageRef"]
         }
@@ -414,6 +416,9 @@ fn read_local(store: &SqliteStore, tenant: &str, owner: &str, frame: &Value) -> 
         return Ok(
             json!({"records":result["records"],"complete":result["complete"],"nextCursor":result["nextCursor"]}),
         );
+    }
+    if workspace == "lesson_materials" && operation == "lesson_material_inspect" {
+        return crate::classaimate_mcp_write_jobs::lesson_snapshot::inspect(store, &body);
     }
     body["workspace"] = json!(workspace);
     if operation == "search" {

@@ -118,6 +118,29 @@ fn digest(value: &Value) -> Result<String, String> {
     crate::sha256_json(&canonicalize_json(value))
 }
 
+pub(crate) fn inspect(store: &SqliteStore, input: &Value) -> Result<Value, String> {
+    let tenant = text(input, "tenantId");
+    let page_id = text(input, "pageRef");
+    let plan_id = text(input, "planId");
+    if tenant.is_empty() || page_id.is_empty() || plan_id.is_empty() { return Err(invalid()); }
+    let bindings = crate::lesson_plan_bindings::list(store, tenant.into())?;
+    let selected = bindings.iter().find(|row| row["planId"] == plan_id || row["pageId"] == page_id);
+    if selected.is_some_and(|row| row["planId"] != plan_id || row["pageId"] != page_id) {
+        return Err("INVALID_RELATION".into());
+    }
+    let conn = store.conn.lock().map_err(|_| "db_lock_failed")?;
+    let page = TransactionStore { conn: &conn }.get_work_note(tenant.into(), page_id.into())?;
+    match page {
+        None => Ok(json!({"status":"missing","binding":selected})),
+        Some(page) => {
+            if page["properties"]["_localTrash"]["deletedAtMs"].as_i64().unwrap_or(0) > 0 {
+                return Err("LESSON_MATERIAL_ARCHIVED".into());
+            }
+            Ok(json!({"status":"found","binding":selected,"revision":page["updatedAtMs"],"snapshot":snapshot(&page)}))
+        }
+    }
+}
+
 fn binding(conn: &Connection, tenant: &str, data: &Value) -> Result<(), String> {
     let a = &data["materialAuthority"];
     if data["v"] != 1
@@ -134,7 +157,17 @@ fn binding(conn: &Connection, tenant: &str, data: &Value) -> Result<(), String> 
     }
     let row:Option<Value>=conn.query_row("SELECT page_id,plan_kind,date_key,start_period,end_period,binding_revision FROM lesson_plan_bindings WHERE tenant_id=?1 AND plan_id=?2",
         params![tenant,text(a,"planId")],|r|Ok(json!({"localPageId":r.get::<_,String>(0)?,"planKind":r.get::<_,String>(1)?,"dateKey":r.get::<_,String>(2)?,"startPeriod":r.get::<_,i64>(3)?,"endPeriod":r.get::<_,i64>(4)?,"bindingRevision":r.get::<_,i64>(5)?}))).optional().map_err(db)?;
+    if data["transform"]["strategy"] == "create_local" {
+        if row.is_some() { return Err("INVALID_RELATION".into()); }
+        let page_exists: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM work_note_pages WHERE tenant_id=?1 AND page_id=?2)",params![tenant,text(data,"pageRef")],|r|r.get(0)).map_err(db)?;
+        return if page_exists { Err("MATERIAL_REVISION_CONFLICT".into()) } else { Ok(()) };
+    }
     if row.is_none_or(|r| {
+        let old = &data["transform"]["localBinding"];
+        if old["pageId"] == a["localPageId"] && old["planId"] == a["planId"]
+            && old["bindingRevision"].as_i64().unwrap_or(0) < a["bindingRevision"].as_i64().unwrap_or(0)
+            && r["localPageId"] == old["pageId"]
+            && ["planKind","dateKey","startPeriod","endPeriod","bindingRevision"].iter().all(|key| r[key] == old[key]) { return false; }
         [
             "localPageId",
             "planKind",
@@ -381,13 +414,55 @@ fn node_markdown(node: &Value, depth: usize) -> String {
     }
 }
 
+pub(crate) fn system_metadata_page(page: &Value, date: &str, start: i64, end: i64, subject: &str) -> Value {
+    let generated = rows(&page["blocks"]).iter().any(|b| text(b,"id").starts_with("lesson-") && text(b,"id").ends_with("-goal-heading"))
+        && rows(&page["blocks"]).iter().any(|b| text(b,"id").starts_with("lesson-") && text(b,"id").ends_with("-materials-heading"));
+    if !generated || date.len() != 10 || !date.is_ascii() { return page.clone(); }
+    let month = date[5..7].parse::<i64>().unwrap_or(0); let day = date[8..10].parse::<i64>().unwrap_or(0);
+    let period = if start == end { format!("{start}") } else { format!("{start}~{end}") };
+    let title = format!("{month}월 {day}일 {period}교시 · {subject}");
+    let pattern = Regex::new(r"^\d{1,2}월 \d{1,2}일 \d{1,2}(?:~\d{1,2})?교시 · ").unwrap();
+    let mut next = page.clone();
+    let old_title = text(page,"title");
+    if pattern.is_match(old_title) && old_title.ends_with(&format!(" · {subject}")) { next["title"] = json!(title); }
+    let markdown = text(page,"markdown"); let first = markdown.lines().next().unwrap_or("");
+    if first.starts_with("# ") && pattern.is_match(&first[2..]) && first.ends_with(&format!(" · {subject}")) {
+        next["markdown"] = json!(format!("# {}{}",title,&markdown[first.len()..]));
+    }
+    if let Some(first) = next["blocks"].as_array_mut().and_then(|v| v.first_mut()) {
+        if first["type"] == "h1" && pattern.is_match(text(first,"text")) && text(first,"text").ends_with(&format!(" · {subject}")) {
+            first["text"] = json!(title);
+        } else {
+            let node = if first["content"].is_object() { &mut first["content"] } else { first };
+            if node["type"] == "heading" && node["attrs"]["level"] == 1 && rows(&node["content"]).len() == 1
+                && node["content"][0]["type"] == "text" && pattern.is_match(text(&node["content"][0],"text"))
+                && text(&node["content"][0],"text").ends_with(&format!(" · {subject}")) { node["content"][0]["text"] = json!(title); }
+        }
+    }
+    next
+}
+
 fn plan(page: &Value, data: &Value) -> Result<Value, String> {
+    let a = &data["materialAuthority"];
+    let aligned = system_metadata_page(page,text(a,"dateKey"),a["startPeriod"].as_i64().unwrap_or(0),a["endPeriod"].as_i64().unwrap_or(0),
+        text(&data["transform"]["localBinding"],"subject"));
+    let page = if snapshot(page) != data["baseSnapshot"] && !data["transform"]["localBinding"].is_null() { &aligned } else { page };
     if snapshot(page) != data["baseSnapshot"] {
         return Err("MATERIAL_REVISION_CONFLICT".into());
     }
     let target = &data["targetSnapshot"];
     let mut next = page.clone();
-    if matches!(
+    if data["transform"]["strategy"] == "system_metadata" {
+        let expected = system_metadata_page(page,text(a,"dateKey"),a["startPeriod"].as_i64().unwrap_or(0),a["endPeriod"].as_i64().unwrap_or(0),text(&data["transform"]["lesson"],"subject"));
+        if snapshot(&expected) != *target { return Err(invalid()); }
+        next = expected;
+        next["title"] = target["documentTitle"].clone();
+        let old_first = text(page,"markdown").lines().next().unwrap_or("");
+        let new_first = text(target,"markdown").lines().next().unwrap_or("");
+        if old_first.starts_with("# ") && new_first.starts_with("# ") {
+            next["markdown"] = json!(format!("{}{}",new_first,&text(page,"markdown")[old_first.len()..]));
+        }
+    } else if matches!(
         text(&data["transform"], "strategy"),
         "organize" | "operations" | "replace_document"
     ) {
@@ -465,6 +540,28 @@ fn plan(page: &Value, data: &Value) -> Result<Value, String> {
     Ok(next)
 }
 
+fn new_lesson_page(tenant: &str, data: &Value) -> Value {
+    let a = &data["materialAuthority"];
+    json!({"tenantId":tenant,"pageId":data["pageRef"],"parentId":format!("lesson-date-{}",text(a,"dateKey").replace("-","")),
+      "title":data["targetSnapshot"]["documentTitle"],"emoji":"📖","position":a["startPeriod"],
+      "properties":{"systemKind":"lesson_plan_binding"},"blocks":data["targetSnapshot"]["documentBlocks"],
+      "markdown":data["targetSnapshot"]["markdown"],"createdAtMs":Utc::now().timestamp_millis(),"updatedAtMs":Utc::now().timestamp_millis()})
+}
+fn create_lesson_structure(conn: &Connection, tenant: &str, data: &Value, now: i64) -> Result<(), String> {
+    let a = &data["materialAuthority"]; let date = text(a,"dateKey");
+    let folder = format!("lesson-date-{}",date.replace("-",""));
+    for (id,parent,title,kind) in [("lesson-materials-root",None,"수업자료","lesson_materials_folder"),
+        (folder.as_str(),Some("lesson-materials-root"),date,"lesson_plan_date_projection")] {
+        if (TransactionStore{conn}).get_work_note(tenant.into(),id.into())?.is_none() {
+            crate::canonical_write_transactions::upsert_work_note(conn,json!({"tenantId":tenant,"pageId":id,"parentId":parent,"title":title,
+              "emoji":"📚","position":0,"properties":{"systemKind":kind},"blocks":[],"markdown":"","createdAtMs":now,"updatedAtMs":now}))?;
+        }
+    }
+    conn.execute("INSERT INTO lesson_plan_bindings(tenant_id,plan_id,page_id,plan_kind,date_key,start_period,end_period,subject,binding_revision,updated_at_ms) VALUES(?1,?2,?3,'lesson',?4,?5,?6,?7,1,?8)",
+      params![tenant,text(a,"planId"),text(data,"pageRef"),date,a["startPeriod"].as_i64(),a["endPeriod"].as_i64(),text(&data["transform"]["lesson"],"subject"),now]).map_err(db)?;
+    Ok(())
+}
+
 pub(super) fn apply(
     store: &SqliteStore,
     input: &Value,
@@ -473,13 +570,13 @@ pub(super) fn apply(
     let tenant = text(input, "tenantId");
     let data = &input["data"];
     let page_id = text(data, "pageRef");
-    let (page, next) = {
+    let create = data["transform"]["strategy"] == "create_local";
+    let (page, mut next) = {
         let conn = store.conn.lock().map_err(|_| "db_lock_failed")?;
         binding(&conn, tenant, data)?;
-        let page = TransactionStore { conn: &conn }
-            .get_work_note(tenant.into(), page_id.into())?
-            .ok_or("MATERIAL_REVISION_CONFLICT")?;
-        let next = plan(&page, data)?;
+        let found = (TransactionStore { conn: &conn }).get_work_note(tenant.into(), page_id.into())?;
+        let page = if create { Value::Null } else { found.ok_or("MATERIAL_REVISION_CONFLICT")? };
+        let next = if create { new_lesson_page(tenant,data) } else { plan(&page, data)? };
         (page, next)
     };
     let mut manifest = json!({"mode":"append","workspace":"lesson_materials","pageRef":page_id,"expectedRevision":page["updatedAtMs"],
@@ -499,11 +596,20 @@ pub(super) fn apply(
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(db)?;
         binding(&tx, tenant, data)?;
-        let current = TransactionStore { conn: &tx }
-            .get_work_note(tenant.into(), page_id.into())?
-            .ok_or("MATERIAL_REVISION_CONFLICT")?;
+        let current = (TransactionStore { conn: &tx }).get_work_note(tenant.into(), page_id.into())?.unwrap_or(Value::Null);
         if current != page {
             return Err("MATERIAL_REVISION_CONFLICT".into());
+        }
+        if create { create_lesson_structure(&tx,tenant,data,next["updatedAtMs"].as_i64().ok_or_else(invalid)?)?; }
+        let a = &data["materialAuthority"];
+        let old_binding = &data["transform"]["localBinding"];
+        if !old_binding.is_null() {
+            tx.execute("UPDATE lesson_plan_bindings SET date_key=?1,start_period=?2,end_period=?3,binding_revision=?4,updated_at_ms=?5 WHERE tenant_id=?6 AND plan_id=?7 AND page_id=?8 AND binding_revision=?9",
+                params![text(a,"dateKey"),a["startPeriod"].as_i64(),a["endPeriod"].as_i64(),a["bindingRevision"].as_i64(),Utc::now().timestamp_millis(),tenant,text(a,"planId"),page_id,old_binding["bindingRevision"].as_i64()]).map_err(db)?;
+        }
+        crate::lesson_plan_bindings::refresh_page_metadata(&tx,tenant,page_id,next["updatedAtMs"].as_i64().ok_or_else(invalid)?)?;
+        if let Some((parent,_,position)) = crate::lesson_plan_bindings::stored_page_structure(&tx,tenant,page_id)? {
+            next["parentId"] = json!(parent); next["position"] = json!(position);
         }
         crate::canonical_write_transactions::upsert_work_note(&tx, next.clone())?;
         let now = next["updatedAtMs"].as_i64().ok_or_else(invalid)?;
