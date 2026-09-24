@@ -128,8 +128,8 @@ fn protected(conn: &Connection, tenant: &str, page: &Value, structure: bool) -> 
     if structure {
         let bound: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM lesson_plan_bindings WHERE tenant_id=?1 AND page_id=?2",
-                params![tenant, id],
+                "SELECT COUNT(*) FROM lesson_plan_bindings WHERE tenant_id=?1 AND (page_id=?2 OR page_id=?3)",
+                params![tenant, id, page.pointer("/properties/folderSourcePageId").and_then(Value::as_str).unwrap_or("")],
                 |r| r.get(0),
             )
             .map_err(|e| format!("work_note_binding_read_failed:{e}"))?;
@@ -200,6 +200,10 @@ pub(crate) fn validate_parent(
             return Err("work_note_parent_cycle".into());
         }
         let row = read(conn, tenant, &id)?.ok_or("work_note_parent_not_found")?;
+        if Some(id.as_str()) == parent && row.pointer("/properties/nodeKind").is_some()
+            && !crate::work_note_folders::is_folder(&row) {
+            return Err("work_note_parent_not_folder".into());
+        }
         if is_trashed(&row) {
             return Err("work_note_parent_trashed".into());
         }
@@ -342,7 +346,8 @@ pub(crate) fn mutate(store: &SqliteStore, input: Value) -> Result<Value, String>
                 if !["before", "inside", "after"].contains(&placement) {
                     return Err("work_note_move_placement_invalid".into());
                 }
-                let parent = if placement == "inside" {
+                let inside_folder = placement == "inside" && (crate::work_note_folders::is_folder(&target) || target.pointer("/properties/nodeKind").is_none());
+                let parent = if inside_folder {
                     Some(target_id)
                 } else {
                     target["parentId"].as_str()

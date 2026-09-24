@@ -405,6 +405,9 @@ fn save_work_note(store: &TransactionStore<'_>, tenant: &str, data: &Value) -> R
     if parent.is_none() {
         return Err("WORK_NOTE_PARENT_NOT_FOUND".to_string());
     }
+    if parent.as_ref().is_some_and(|p|p.pointer("/properties/nodeKind").is_some()&&!crate::work_note_folders::is_folder(p)) {
+        return Err("work_note_parent_not_folder".into());
+    }
     let title = data
         .get("title")
         .and_then(Value::as_str)

@@ -2,7 +2,7 @@ export const workNoteCommandGroups = [
   ["AI", [["ai", "AI로 작성·편집", "ai, 인공지능, 작성, 편집", "선택한 글이나 현재 블록을 AI로 다듬습니다.", "fa-wand-magic-sparkles"]]],
   ["기본 블록", [
     ["text", "일반 텍스트", "text, 텍스트, 일반", "문장을 작성합니다.", "fa-font"],
-    ["page", "페이지", "page, 페이지, 새페이지", "현재 문서 아래에 하위 페이지를 만듭니다.", "fa-file-circle-plus"],
+    ["page", "페이지", "page, 페이지, 새페이지", "현재 문서 아래에 같은 폴더의 노트를 만듭니다.", "fa-file-circle-plus"],
     ["todo", "할 일", "todo, 할일", "체크할 수 있는 할 일을 만듭니다.", "fa-square-check"],
     ["bullet", "글머리 기호", "bullet, 글머리", "글머리 기호 목록입니다.", "fa-list-ul"],
     ["number", "번호 목록", "number, 번호", "순서가 있는 목록입니다.", "fa-list-ol"],

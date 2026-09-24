@@ -36,7 +36,7 @@ pub(crate) fn upsert_work_note(conn: &Connection, mut input: Value) -> Result<Va
         .and_then(Value::as_i64)
         .unwrap_or(0)
         .max(0);
-    let properties = input
+    let mut properties = input
         .get("properties")
         .cloned()
         .unwrap_or_else(|| json!({}));
@@ -79,6 +79,12 @@ pub(crate) fn upsert_work_note(conn: &Connection, mut input: Value) -> Result<Va
         return Err("work_note_parent_cycle".to_string());
     }
     let existing = crate::work_note_documents::read(conn, &tenant_id, &page_id)?;
+    if properties.get("nodeKind").is_none() {
+        if let Some(kind)=existing.as_ref().and_then(|p|p.pointer("/properties/nodeKind")) {
+            properties["nodeKind"]=kind.clone();input["properties"]=properties.clone();
+        }
+    }
+    crate::work_note_folders::validate_write(conn, &tenant_id, &input, existing.as_ref())?;
     if input.get("expectedRevision").is_some() {
         crate::work_note_documents::validate_content(&input)?;
         if input.pointer("/properties/_localTrash").is_some(){return Err("work_note_trash_metadata_protected".into());}

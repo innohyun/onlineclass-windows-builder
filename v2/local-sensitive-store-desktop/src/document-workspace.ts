@@ -95,6 +95,10 @@ export function initDocumentWorkspace(options: WorkspaceOptions) {
     await editor.releaseRealtime();
     view.editor.replaceChildren();
     session?.close(); page = structuredClone(record);
+    if(record.properties?.nodeKind==='folder'){
+      session=null;readOnly=true;view.title.value=record.title;view.title.disabled=true;view.heading.textContent=record.title;
+      view.editor.textContent='폴더 안의 노트를 선택해 주세요.';view.status.textContent='폴더';return;
+    }
     originalBlocks=structuredClone(record.blocks);
     const unsupported=unsupportedDocumentNodes(record.blocks);
     readOnly=unsupported.length>0;
@@ -131,9 +135,11 @@ export function initDocumentWorkspace(options: WorkspaceOptions) {
     else if(draft) await repository.discardDraft(tenant,pageId,draft.generation);
   }
   async function createPage(parentId:string|null,title='제목 없음',markdown='') {
+    const parent=pages.find(item=>item.pageId===parentId);
+    if(parent?.properties?.nodeKind==='note')parentId=parent.parentId||null;
     const pageId=crypto.randomUUID();
     const body=markdown.trim()?projectDocumentMarkdown(pageId,markdown):{blocks:[{id:crypto.randomUUID(),type:'text',text:''}],markdown:''};
-    const created=await repository.save(tenant,{pageId,parentId,title,emoji:'',properties:{},position:Date.now(),...body},0);
+    const created=await repository.save(tenant,{pageId,parentId,title,emoji:'',properties:{nodeKind:'note'},position:Date.now(),...body},0);
     await refreshPages(); changed(); return created;
   }
   function currentPage() { if(!page) throw new Error('문서를 먼저 열어 주세요.'); return page; }

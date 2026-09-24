@@ -541,7 +541,7 @@ export function createWorkNotesTiptapEditor(options) {
     editor = null;
     ydoc?.destroy();
     renderBlockRangeToolbar(null);
-    pageId = page.pageId;
+    pageId = options.isContainerPage?.(page) ? '' : page.pageId; if (!pageId) { ydoc = null; bootstrapping = false; options.element.replaceChildren(); return; }
     ydoc = new Y.Doc();
     const initial = blocksToTiptapDocument(page.blocks);
     function createBoundEditor(editorOptions = {}) {

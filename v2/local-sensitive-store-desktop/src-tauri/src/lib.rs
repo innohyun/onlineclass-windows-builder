@@ -36,6 +36,7 @@ mod work_note_search;
 mod work_note_localization;
 mod work_note_reader;
 mod work_note_documents;
+mod work_note_folders;
 mod work_note_history;
 mod work_note_commands;
 mod work_note_retention;
@@ -167,6 +168,7 @@ const LOCAL_SENSITIVE_STORE_ROUTES: &[&str] = &[
     "/v1/lesson-plan-bindings",
     "/v1/work-notes/reconcile-mobile-meeting-root",
     "/v1/work-notes/reconcile-system-folders",
+    "/v1/work-notes/organize-folders",
     "/v1/work-note-attachments",
     "/v1/teaching-sources",
     "/v1/work-notes/import",
@@ -207,6 +209,7 @@ const LOCAL_SENSITIVE_STORE_FEATURES: &[&str] = &[
     "work_notes",
     "work_note_document_editor_v1",
     "work_note_document_history_v1",
+    "work_note_folders_v1",
     "classaimate_mcp_lesson_replace_document_v1",
     "work_note_tree_move",
     "counseling_local_authority",
@@ -2191,7 +2194,7 @@ impl SqliteStore {
         let should_have_root = canonical.is_some() || ensure_root || !duplicates.is_empty();
         if canonical.is_none() && should_have_root || canonical.is_some_and(|page| is_safe_mobile_meeting_root(page, true) && is_bug_blanked_mobile_meeting_root(page)) {
             let created_at = canonical.and_then(|page| page.get("createdAtMs").and_then(Value::as_i64)).unwrap_or(now);
-            let properties = json!({"systemKind":"mobile_work_meeting_folder","schemaVersion":1,"tags":[WORK_MEETING_ROOT_TITLE]}).to_string();
+            let properties = json!({"systemKind":"mobile_work_meeting_folder","nodeKind":"folder","schemaVersion":1,"tags":[WORK_MEETING_ROOT_TITLE]}).to_string();
             let blocks = json!([
                 {"id":"work-meeting-root-intro","type":"callout","text":WORK_MEETING_ROOT_INTRO},
                 {"id":"work-meeting-root-end","type":"text","text":""}
@@ -2237,7 +2240,7 @@ impl SqliteStore {
         if existing_kind.is_some_and(|kind| kind != "work_reference_materials_folder") {
             return Err("work_note_reference_root_conflict".to_string());
         }
-        let properties = json!({"systemKind":"work_reference_materials_folder","schemaVersion":1,"tags":[WORK_REFERENCE_ROOT_TITLE]}).to_string();
+        let properties = json!({"systemKind":"work_reference_materials_folder","nodeKind":"folder","schemaVersion":1,"tags":[WORK_REFERENCE_ROOT_TITLE]}).to_string();
         let blocks = json!([
             {"id":"work-reference-root-intro","type":"callout","text":WORK_REFERENCE_ROOT_INTRO},
             {"id":"work-reference-root-end","type":"text","text":""}
@@ -4777,6 +4780,9 @@ fn json_response(status: u16, payload: Value, origin: &str) -> Response<std::io:
 }
 
 fn request_error_status(error: &str) -> u16 {
+    if matches!(error, "work_note_system_folder_protected" | "work_note_folder_body_forbidden" | "work_note_node_kind_immutable") { return 403; }
+    if matches!(error, "work_note_parent_not_folder" | "work_note_node_kind_invalid") { return 400; }
+    if error == "work_note_folder_id_conflict" { return 409; }
     if matches!(error,"work_note_revision_conflict"|"work_note_expected_revision_required"|"work_note_trashed"|"work_note_attachment_immutable") { return 409; }
     if matches!(error,"work_note_document_too_large"|"work_note_metadata_too_large"|"work_note_import_limit_exceeded") { return 413; }
     if matches!(error,"work_note_document_invalid"|"work_note_trash_metadata_protected") { return 400; }
@@ -5347,6 +5353,10 @@ fn handle_request(
             return Ok((200, store.reconcile_system_folders(tenant_id)?));
         }
 
+        if request.method() == &Method::Post && path == "/v1/work-notes/organize-folders" {
+            let body = read_body(&mut request)?;
+            return Ok((200, work_note_folders::organize(&store, body)?));
+        }
         if request.method() == &Method::Post && path == "/v1/work-notes/move" {
             let body = read_body(&mut request)?;
             return Ok((200, store.move_work_note(body)?));
@@ -7111,7 +7121,7 @@ mod device_authorization_tests {
         let store = SqliteStore::open(root.join("store.sqlite")).expect("open work note store");
         let system_root = |page_id: &str, blocks: Value| json!({
             "tenantId":"tenant-a","pageId":page_id,"parentId":null,"title":WORK_MEETING_ROOT_TITLE,"emoji":"🗂️","position":0,
-            "properties":{"systemKind":"mobile_work_meeting_folder","schemaVersion":1},"blocks":blocks,"markdown":format!("# {WORK_MEETING_ROOT_TITLE}")
+            "properties":{"systemKind":"mobile_work_meeting_folder","nodeKind":"folder","schemaVersion":1},"blocks":blocks,"markdown":format!("# {WORK_MEETING_ROOT_TITLE}")
         });
         store.upsert_work_note(system_root("duplicate:encoded root", json!([]))).expect("save blank duplicate");
         store.upsert_work_note(system_root("duplicate:user root", json!([{"id":"user","type":"text","text":"보존할 메모"}]))).expect("save modified duplicate");

@@ -11,6 +11,11 @@ on:
         required: false
         default: ""
 
+      rust_test_filter:
+        description: "Optional focused Rust test filter; empty runs all regressions."
+        required: false
+        default: ""
+
 permissions:
   contents: write
 
@@ -53,9 +58,12 @@ jobs:
 
       - name: Verify isolated Windows backup and local-store regressions
         shell: pwsh
+        env:
+          RUST_TEST_FILTER: ${{ inputs.rust_test_filter }}
         run: |
           $env:CLASSAIMATE_WINDOWS_TEST_MANIFEST = "1"
-          cargo test --locked --release --manifest-path src-tauri/Cargo.toml --lib -- --test-threads=1
+          $testFilter = $env:RUST_TEST_FILTER
+          cargo test --locked --release --manifest-path src-tauri/Cargo.toml --lib $testFilter -- --test-threads=1
           if ($LASTEXITCODE -ne 0) { throw "Isolated local-store regression failed" }
 
       - name: Build Windows installer

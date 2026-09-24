@@ -17,9 +17,9 @@ export function workNoteInlineOptions({ mode, query, pages, pageId, pagePath }) 
       items.push({ group: '날짜', icon: 'fa-calendar-day', label, copy: workNoteDateValue(label), action: 'date', value: label });
     }
   }
-  if (mode === 'plus') items.push({ group: '페이지 만들기', icon: 'fa-file-circle-plus', label: `${query || '제목 없음'} 하위 페이지 만들기`, copy: '현재 페이지 아래에 만듭니다.', action: 'child' });
+  if (mode === 'plus') items.push({ group: '페이지 만들기', icon: 'fa-file-circle-plus', label: `${query || '제목 없음'} 같은 폴더의 노트 만들기`, copy: '현재 노트와 같은 폴더에 만듭니다.', action: 'child' });
   found.forEach((page) => items.push({ group: '페이지', icon: 'fa-file-lines', label: page.title, copy: pagePath(page), action: 'link', page }));
-  if (mode === 'brackets') items.push({ group: '페이지 만들기', icon: 'fa-file-circle-plus', label: `${query || '제목 없음'} 새 하위 페이지`, copy: '만든 뒤 현재 문서에 연결합니다.', action: 'child' });
+  if (mode === 'brackets') items.push({ group: '페이지 만들기', icon: 'fa-file-circle-plus', label: `${query || '제목 없음'} 새 같은 폴더의 노트`, copy: '만든 뒤 현재 문서에 연결합니다.', action: 'child' });
   if (mode === 'plus') items.push({ group: '페이지 만들기', icon: 'fa-folder-plus', label: '최상위 페이지로 만들기', copy: '현재 계층 밖에 새 페이지를 만듭니다.', action: 'root' });
   return items;
 }
