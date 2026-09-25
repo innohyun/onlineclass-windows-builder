@@ -6203,6 +6203,26 @@ fn device_api_data(payload: Value) -> Result<Value, String> {
     payload.get("data").cloned().ok_or_else(|| "device_authorization_response_invalid".to_string())
 }
 
+fn persistent_device_instance_id(path: &Path) -> Result<String, String> {
+    match fs::OpenOptions::new().write(true).create_new(true).open(path) {
+        Ok(mut file) => {
+            let value = random_url_token();
+            std::io::Write::write_all(&mut file, value.as_bytes())
+                .map_err(|_| "device_instance_write_failed".to_string())?;
+            file.sync_all().map_err(|_| "device_instance_write_failed".to_string())?;
+            Ok(value)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let value = fs::read_to_string(path).map_err(|_| "device_instance_read_failed".to_string())?;
+            if value.len() != 43 || !value.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-') {
+                return Err("device_instance_invalid".to_string());
+            }
+            Ok(value)
+        }
+        Err(_) => Err("device_instance_write_failed".to_string()),
+    }
+}
+
 #[tauri::command]
 fn start_device_authorization(state: tauri::State<'_, AppState>) -> Value {
     let status = match state.status.lock().map(|status| status.clone()) {
@@ -6211,6 +6231,11 @@ fn start_device_authorization(state: tauri::State<'_, AppState>) -> Value {
     };
     let request_id = random_url_token();
     let verifier = random_url_token();
+    let instance_path = Path::new(&status.db_path).with_file_name("device-instance-id");
+    let instance_id = match persistent_device_instance_id(&instance_path) {
+        Ok(value) => value,
+        Err(error) => return json!({ "ok": false, "error": error }),
+    };
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(5))
         .timeout_read(Duration::from_secs(8))
@@ -6221,7 +6246,8 @@ fn start_device_authorization(state: tauri::State<'_, AppState>) -> Value {
         "verifierDigest": sha256_hex(&verifier),
         "deviceName": status.pc_name,
         "platformLabel": format!("{} {}", status.os, status.arch).trim().to_string(),
-        "appVersion": env!("CARGO_PKG_VERSION")
+        "appVersion": env!("CARGO_PKG_VERSION"),
+        "deviceInstanceId": instance_id
     });
     let created = match device_api_response(agent.post(&device_authorization_api_url()).send_json(payload)).and_then(device_api_data) {
         Ok(value) => value,
