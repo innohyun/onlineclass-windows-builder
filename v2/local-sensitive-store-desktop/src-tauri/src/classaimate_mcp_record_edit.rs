@@ -60,7 +60,7 @@ pub(crate) fn verify(conn:&Connection,tenant:&str,data:&Value)->Result<(),String
     let raw:String=conn.query_row("SELECT payload_json FROM student_record_drafts WHERE tenant_id=?1 AND draft_id=?2",params![tenant,data["draft"]["draftId"].as_str()],|row|row.get(0)).map_err(|_| "LOCAL_STORE_WRITE_FAILED")?;
     let actual=decode(raw)?;
     for (key,value) in data["draft"].as_object().ok_or("LOCAL_STORE_WRITE_FAILED")? {
-        if !["id","docId","tenantId","updatedAt","updatedAtMs","revisionProtected","history"].contains(&key.as_str()) && actual[key]!=*value {return Err("LOCAL_STORE_WRITE_FAILED".into());}
+        if !["id","docId","tenantId","updatedAt","updatedAtMs","updatedAtIso","revisionProtected","history"].contains(&key.as_str()) && actual[key]!=*value {return Err("LOCAL_STORE_WRITE_FAILED".into());}
     }
     Ok(())
 }
