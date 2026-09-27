@@ -16,6 +16,9 @@ pub(crate) struct StorageScan {
     pub(crate) scanned_at_ms: i64,
     pub(crate) errors: Vec<String>,
     pub(crate) snapshot_bytes: HashMap<PathBuf, i64>,
+    pub(crate) latest_snapshot_version: Option<i64>,
+    pub(crate) other_entries: Vec<Value>,
+    pub(crate) staging_entries: Vec<Value>,
 }
 
 fn collect_files(
@@ -89,6 +92,7 @@ pub(crate) fn scan_storage(tenant_dir: &Path) -> StorageScan {
     let mut files = Vec::new();
     collect_files(tenant_dir, tenant_dir, &mut files, &mut scan.errors);
     let mut snapshots = HashMap::<String, (i64, PathBuf, String)>::new();
+    let mut latest_created = 0;
     for (relative, _) in &files {
         let parts = relative
             .iter()
@@ -110,6 +114,11 @@ pub(crate) fn scan_storage(tenant_dir: &Path) -> StorageScan {
             continue;
         };
         let version = manifest.get("version").and_then(Value::as_i64).unwrap_or(0);
+        let created = manifest["createdAtMs"].as_i64().unwrap_or(0);
+        if created > latest_created {
+            latest_created = created;
+            scan.latest_snapshot_version = Some(version);
+        }
         let database = manifest
             .pointer("/db/relativePath")
             .and_then(Value::as_str)
@@ -129,18 +138,22 @@ pub(crate) fn scan_storage(tenant_dir: &Path) -> StorageScan {
             .and_then(Value::as_str)
             .unwrap_or("legacy")
             .to_string();
-        if version == SNAPSHOT_VERSION && kind == "manual" {
+        if matches!(version,4|5) && kind == "manual" {
             scan.manual_snapshot_count += 1;
         }
         snapshots.insert(parts[1].to_string(), (version, database.unwrap(), kind));
     }
     let mut missing_databases = snapshots.keys().cloned().collect::<HashSet<_>>();
+    let mut staging = HashMap::<String, i64>::new();
     for (relative, size) in files {
         let parts = relative
             .iter()
             .map(|part| part.to_string_lossy())
             .collect::<Vec<_>>();
         let mut category = "otherBytes";
+        if parts.len() >= 3 && parts[0] == "snapshots" && parts[1].ends_with(".staging") {
+            *scan.snapshot_bytes.entry(tenant_dir.join("snapshots").join(parts[1].as_ref())).or_default() += size;
+        }
         if parts.iter().any(|part| part.ends_with(".staging")) {
             category = "stagingBytes";
         } else if parts.first().is_some_and(|part| part == "objects") {
@@ -187,6 +200,7 @@ pub(crate) fn scan_storage(tenant_dir: &Path) -> StorageScan {
                 if *version < SNAPSHOT_VERSION {
                     category = "legacySnapshotBytes";
                     scan.legacy_snapshot_bytes = scan.legacy_snapshot_bytes.saturating_add(size);
+                    if *version == 4 && kind == "manual" {scan.manual_snapshot_bytes=scan.manual_snapshot_bytes.saturating_add(size);}
                 } else {
                     if kind == "manual" {
                         scan.manual_snapshot_bytes =
@@ -203,6 +217,17 @@ pub(crate) fn scan_storage(tenant_dir: &Path) -> StorageScan {
         scan.total_logical_bytes = scan.total_logical_bytes.saturating_add(size);
         let previous = scan.storage_breakdown[category].as_i64().unwrap_or(0);
         scan.storage_breakdown[category] = json!(previous.saturating_add(size));
+        if category == "otherBytes" {
+            scan.other_entries.push(json!({"relativePath":relative.to_string_lossy(),"bytes":size,
+                "type":if parts.first().is_some_and(|part| part=="db") {"legacy_layout_database"}
+                    else if parts.len()==1 && parts[0].starts_with("manifest-") {"legacy_layout_manifest"}
+                    else if parts.first().is_some_and(|part| part=="OnlineClassLocalBackups") {"nested_backup_namespace"}
+                    else {"unclassified"},"action":"review"}));
+        }
+        if category == "stagingBytes" {
+            let end = parts.iter().position(|part| part.ends_with(".staging")).unwrap_or(0);
+            *staging.entry(parts[..=end].iter().map(|part| part.as_ref()).collect::<Vec<_>>().join("/")).or_default() += size;
+        }
     }
     for name in missing_databases {
         scan.errors.push(format!(
@@ -212,5 +237,11 @@ pub(crate) fn scan_storage(tenant_dir: &Path) -> StorageScan {
     scan.errors.sort();
     scan.errors.dedup();
     scan.scan_complete = scan.errors.is_empty();
+    scan.other_entries.sort_by(|a,b| b["bytes"].as_i64().cmp(&a["bytes"].as_i64()));
+    scan.staging_entries = staging.into_iter().map(|(path,bytes)| {
+        let owner = json_file(&tenant_dir.join(&path).join("operation.json"));
+        json!({"relativePath":path,"bytes":bytes,"bytesComplete":scan.scan_complete,"owner":owner,
+            "state":"activity_unconfirmed","action":"review","reason":"cross_device_activity_must_be_confirmed"})
+    }).collect();
     scan
 }

@@ -225,7 +225,7 @@ pub(super) fn reconcile_legacy_quarantine_records(
     tenant_dir: &Path,
     records: &mut [Value],
     now_ms: i64,
-) -> bool {
+) -> Result<bool,String> {
     let mut changed = false;
     for record in records {
         let status = record
@@ -243,13 +243,16 @@ pub(super) fn reconcile_legacy_quarantine_records(
             changed = true;
             continue;
         };
+        let original_exists=original.try_exists().map_err(|_| "backup_quarantine_inventory_unavailable")?;
+        let quarantine_exists=quarantined.try_exists().map_err(|_| "backup_quarantine_inventory_unavailable")?;
+        if status == "purging" && quarantine_exists && !original_exists && record["purgeInventory"].is_array() {continue;}
         let (mut next_status, mut reason) = match status.as_str() {
-            "pending" if quarantined.exists() && !original.exists() => ("quarantined", None),
-            "pending" if original.exists() && !quarantined.exists() => ("cancelled", None),
-            "restoring" if original.exists() && !quarantined.exists() => ("restored", None),
-            "restoring" if quarantined.exists() && !original.exists() => ("quarantined", None),
-            "purging" if !quarantined.exists() && !original.exists() => ("purged", None),
-            "purging" if quarantined.exists() && !original.exists() => ("quarantined", None),
+            "pending" if quarantine_exists && !original_exists => ("quarantined", None),
+            "pending" if original_exists && !quarantine_exists => ("cancelled", None),
+            "restoring" if original_exists && !quarantine_exists => ("restored", None),
+            "restoring" if quarantine_exists && !original_exists => ("quarantined", None),
+            "purging" if !quarantine_exists && !original_exists => ("purged", None),
+            "purging" if quarantine_exists && !original_exists => ("quarantined", None),
             _ => ("review_required", Some("interrupted_state_conflict")),
         };
         let check_path = match next_status {
@@ -276,7 +279,7 @@ pub(super) fn reconcile_legacy_quarantine_records(
         }
         changed = true;
     }
-    changed
+    Ok(changed)
 }
 
 pub(super) fn load_reconciled_legacy_quarantine_records(
@@ -284,10 +287,28 @@ pub(super) fn load_reconciled_legacy_quarantine_records(
     now_ms: i64,
 ) -> Result<Vec<Value>, String> {
     let mut records = load_legacy_quarantine_records(tenant_dir)?;
-    let reconciled = reconcile_legacy_quarantine_records(tenant_dir, &mut records, now_ms);
+    let reconciled = reconcile_legacy_quarantine_records(tenant_dir, &mut records, now_ms)?;
     let orphans = reconcile_orphan_items(tenant_dir, &mut records, now_ms)?;
     if reconciled || orphans {
         save_legacy_quarantine_records(tenant_dir, &records, now_ms)?;
+    }
+    Ok(records)
+}
+
+// Capacity refresh and previews never rotate/write the journal or move files.
+pub(super) fn read_legacy_quarantine_records(tenant_dir: &Path, now: i64) -> Result<Vec<Value>, String> {
+    let mut records = selected_journal(tenant_dir)?.map(|journal| journal.records).unwrap_or_default();
+    reconcile_legacy_quarantine_records(tenant_dir, &mut records, now)?;
+    reconcile_orphan_items(tenant_dir, &mut records, now)?;
+    for record in &mut records {
+        if record["status"] == "quarantined" {
+            let (original, quarantined) = legacy_record_paths(tenant_dir, record)?;
+            match (original.try_exists(), quarantined.try_exists()) {
+                (Ok(false),Ok(true)) => {},
+                (Err(_),_)|(_,Err(_)) => return Err("backup_quarantine_inventory_unavailable".into()),
+                _ => { record["status"] = json!("review_required"); record["reviewReason"] = json!("quarantine_path_state_changed"); }
+            }
+        }
     }
     Ok(records)
 }

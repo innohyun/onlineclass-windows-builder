@@ -319,11 +319,7 @@ impl DeviceSyncManager {
         if let Ok(root)=backup::configured_tenant_dir(&self.store,&session.tenant_id) {
             crate::onedrive_evidence::select_checkpoint(&root,checkpoint.as_ref());
         }
-        let snapshot_version = data
-            .pointer("/snapshotPolicy/maxWritableSnapshotVersion")
-            .and_then(Value::as_i64)
-            .unwrap_or(4)
-            .clamp(4, SNAPSHOT_FORMAT_MAX);
+        let snapshot_version = backup::remember_snapshot_policy(&self.store, &session.tenant_id, &data)?;
         Ok((checkpoint, snapshot_version))
     }
 
@@ -642,6 +638,9 @@ impl DeviceSyncManager {
         Ok(json!({
             "ok": true,
             "connected": true,
+            "supportedSnapshotVersion": SNAPSHOT_FORMAT_MAX,
+            "snapshotPolicy": backup::snapshot_policy(&self.store, &session.tenant_id)?,
+            "backupMaintenance": backup::maintenance_status(&self.store, &session.tenant_id)?,
             "tenantId": session.tenant_id,
             "uid": session.uid,
             "deviceId": session.device_id,

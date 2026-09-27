@@ -329,6 +329,7 @@ pub(crate) use artifact_recovery::{artifact_issue_status, pending_local_change_c
 mod capture;
 #[path = "backup_maintenance.rs"]
 mod maintenance;
+pub(crate) use maintenance::maintenance_status;
 
 #[derive(Clone)]
 struct MediaRow {
@@ -1186,6 +1187,6 @@ pub(crate) fn start_background(store: Arc<SqliteStore>) {
                 let _ = run_with_kind(&store, tenant_id, "scheduled", None);
             }
         }
-        thread::sleep(Duration::from_secs(15 * 60));
+        // Due times and bounded backoff are persisted independently of backup creation.
     });
 }

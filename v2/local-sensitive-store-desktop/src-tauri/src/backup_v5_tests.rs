@@ -153,119 +153,85 @@ fn content_objects_are_reused_and_digest_conflicts_fail_closed() {
     fs::remove_dir_all(root).unwrap();
 }
 
+fn legacy_fixture(root: &Path, names: &[(&str,i64)]) {
+    for (name,created) in names.iter().map(|(name,at)| (name.to_string(),*at)).chain((0..9).map(|i| (format!("retained-{i}"),50+i))) {
+        let path=valid_snapshot(root,&name,"auto_sync",created,Some(created));
+        let mut manifest=json_file(&path.join("manifest.json")).unwrap();
+        manifest["version"]=json!(4);
+        fs::write(path.join("manifest.json"),manifest.to_string()).unwrap();
+    }
+}
+
 #[test]
 fn legacy_cleanup_rejects_same_size_file_changes_after_preview() {
-    let root = std::env::temp_dir().join(format!(
-        "backup-v5-cleanup-{}",
-        Utc::now().timestamp_nanos_opt().unwrap_or(0)
-    ));
-    let older = root.join("snapshots/older");
-    let newest = root.join("snapshots/newest");
-    fs::create_dir_all(&older).unwrap();
-    fs::create_dir_all(&newest).unwrap();
-    fs::write(
-        older.join("manifest.json"),
-        json!({"version":4,"kind":"auto_sync","createdAtMs":1}).to_string(),
-    )
-    .unwrap();
-    fs::write(older.join("attachment.bin"), b"before").unwrap();
-    fs::write(
-        newest.join("manifest.json"),
-        json!({"version":4,"kind":"auto_sync","createdAtMs":2}).to_string(),
-    )
-    .unwrap();
-    let pinned = HashSet::new();
-    let preview = legacy_cleanup_preview(&root, &pinned);
-    assert_eq!(preview["candidateCount"], 1);
-    fs::write(older.join("attachment.bin"), b"after!").unwrap();
-    assert_eq!(
-        apply_legacy_cleanup(
-            &root,
-            &pinned,
-            preview["previewToken"].as_str().unwrap(),
-            10,
-            10,
-        )
-        .unwrap_err(),
-        "backup_legacy_cleanup_preview_changed"
-    );
-    assert!(older.exists());
-    fs::remove_dir_all(root).unwrap();
+    let fixture=FixtureRoot::new("preview-race"); let root=&fixture.0;
+    legacy_fixture(root,&[("older",1),("newest",2)]);
+    let preview=legacy_cleanup_preview(root,&HashSet::new());
+    assert_eq!(preview["candidateCount"],1);
+    fs::write(root.join("snapshots/older/db/local-sensitive.sqlite"),b"modified database!").unwrap();
+    assert_eq!(apply_legacy_cleanup(root,&HashSet::new(),preview["previewToken"].as_str().unwrap(),0,100).unwrap_err(),"backup_legacy_cleanup_preview_changed");
+    assert!(root.join("snapshots/older").exists());
 }
 
 #[test]
 fn legacy_snapshots_are_quarantined_for_thirty_days_and_can_be_restored() {
-    let root = std::env::temp_dir().join(format!(
-        "backup-v5-legacy-quarantine-{}",
-        Utc::now().timestamp_nanos_opt().unwrap_or(0)
-    ));
-    for (name, created) in [("older", 1), ("newest", 2)] {
-        let snapshot = root.join("snapshots").join(name);
-        fs::create_dir_all(&snapshot).unwrap();
-        fs::write(
-            snapshot.join("manifest.json"),
-            json!({"version":4,"kind":"auto_sync","createdAtMs":created}).to_string(),
-        )
-        .unwrap();
-        fs::write(snapshot.join("attachment.bin"), name.as_bytes()).unwrap();
-    }
-    let pinned = HashSet::new();
-    let quarantined = quarantine_legacy_snapshots(&root, &pinned, 10, 100).unwrap();
-    assert_eq!(quarantined["quarantined"], 1);
+    let fixture=FixtureRoot::new("legacy-undo"); let root=&fixture.0;
+    legacy_fixture(root,&[("older",1),("newest",2)]);
+    assert_eq!(quarantine_legacy_snapshots(root,&HashSet::new(),0,100).unwrap()["quarantined"],1);
     assert!(!root.join("snapshots/older").exists());
-    assert!(root.join("snapshots/newest").exists());
-    let summary = legacy_quarantine_summary(&root, 100).unwrap();
-    assert_eq!(summary["quarantinedCount"], 1);
-    assert_eq!(summary["purgeAfterMs"], 100 + QUARANTINE_DAYS * 86_400_000);
-
-    let restored = undo_legacy_quarantine(&root, 200).unwrap();
-    assert_eq!(restored["restored"], 1);
-    assert!(root.join("snapshots/older").exists());
-    assert_eq!(
-        quarantine_legacy_snapshots(&root, &pinned, 10, 300).unwrap()["quarantined"],
-        0
-    );
-    fs::remove_dir_all(root).unwrap();
+    let summary=legacy_quarantine_summary(root,100).unwrap();
+    assert_eq!(summary["purgeAfterMs"],100+QUARANTINE_DAYS*86_400_000);
+    assert_eq!(undo_legacy_quarantine(root,200).unwrap()["restored"],1);
+    assert_eq!(quarantine_legacy_snapshots(root,&HashSet::new(),0,300).unwrap()["quarantined"],0);
 }
 
 #[test]
 fn legacy_quarantine_purge_revalidates_fingerprint_and_marks_review() {
-    let root = std::env::temp_dir().join(format!(
-        "backup-v5-legacy-review-{}",
-        Utc::now().timestamp_nanos_opt().unwrap_or(0)
-    ));
-    for (name, created) in [("oldest", 1), ("older", 2), ("newest", 3)] {
-        let snapshot = root.join("snapshots").join(name);
-        fs::create_dir_all(&snapshot).unwrap();
-        fs::write(
-            snapshot.join("manifest.json"),
-            json!({"version":4,"kind":"auto_sync","createdAtMs":created}).to_string(),
-        )
-        .unwrap();
-        fs::write(snapshot.join("attachment.bin"), name.as_bytes()).unwrap();
-    }
-    let pinned = HashSet::new();
-    assert_eq!(
-        quarantine_legacy_snapshots(&root, &pinned, 10, 100).unwrap()["quarantined"],
-        2
-    );
-    let records = load_legacy_quarantine_records(&root).unwrap();
-    let changed = records
-        .iter()
-        .find(|record| record["snapshotName"] == "oldest")
-        .unwrap();
-    let (_, changed_path) = legacy_record_paths(&root, changed).unwrap();
-    fs::write(changed_path.join("attachment.bin"), b"changed").unwrap();
+    let fixture=FixtureRoot::new("legacy-review"); let root=&fixture.0;
+    legacy_fixture(root,&[("oldest",1),("older",2),("newest",3)]);
+    assert_eq!(quarantine_legacy_snapshots(root,&HashSet::new(),0,100).unwrap()["quarantined"],2);
+    let records=load_legacy_quarantine_records(root).unwrap();
+    let changed=records.iter().find(|r| r["snapshotName"]=="oldest").unwrap();
+    let (_,path)=legacy_record_paths(root,changed).unwrap();
+    fs::write(path.join("unrecognized.bin"),b"preserve").unwrap();
+    let result=purge_legacy_quarantine(root,&HashSet::new(),58,100+QUARANTINE_DAYS*86_400_000).unwrap();
+    assert_eq!(result["purged"],1); assert_eq!(result["reviewCount"],1); assert!(path.exists());
+}
 
-    let purge_at = 100 + QUARANTINE_DAYS * 86_400_000;
-    let purged = purge_legacy_quarantine(&root, &pinned, 10, purge_at).unwrap();
-    assert_eq!(purged["purged"], 1);
-    assert_eq!(purged["reviewCount"], 1);
-    assert!(changed_path.exists());
-    let summary = legacy_quarantine_summary(&root, purge_at).unwrap();
-    assert_eq!(summary["quarantinedCount"], 0);
-    assert_eq!(summary["reviewCount"], 1);
-    fs::remove_dir_all(root).unwrap();
+#[test]
+fn backup_growth_hundred_mixed_formats_share_retention_and_preserve_pins() {
+    let fixture=FixtureRoot::new("mixed-hundred"); let root=&fixture.0; let now=Utc::now().timestamp_millis();
+    for index in 0..100 {
+        let path=valid_snapshot(root,&format!("mixed-{index:03}"),"auto_sync",now-100+index,Some(index+1));
+        if index%2==0 {let mut m=json_file(&path.join("manifest.json")).unwrap();m["version"]=json!(4);fs::write(path.join("manifest.json"),m.to_string()).unwrap();}
+    }
+    let pins=HashSet::from([1,2,99,100]);
+    prune_snapshots(root,now,&pins).unwrap();
+    quarantine_legacy_snapshots(root,&pins,0,now).unwrap();
+    assert_eq!(snapshot_manifests(root,false).len(),12);
+    for name in ["mixed-000","mixed-001","mixed-098","mixed-099"] {assert!(root.join("snapshots").join(name).exists());}
+    let before=load_legacy_quarantine_records(root).unwrap();
+    quarantine_legacy_snapshots(root,&pins,0,now+1000).unwrap();
+    assert_eq!(load_legacy_quarantine_records(root).unwrap(),before);
+    let latest=root.join("snapshots/mixed-098/manifest.json");
+    assert!(crate::backup::authoritative_restore_manifest(&latest,&json_file(&latest).unwrap(),"tenant-a").is_ok());
+}
+
+#[test]
+fn backup_growth_capacity_read_is_read_only_and_partial_purge_resumes() {
+    let fixture=FixtureRoot::new("read-and-resume"); let root=&fixture.0;
+    legacy_fixture(root,&[("older",1),("newest",2)]);
+    quarantine_legacy_snapshots(root,&HashSet::new(),0,100).unwrap();
+    let journal=legacy_quarantine_manifest_path(root);
+    let bytes=fs::read(&journal).unwrap();
+    legacy_quarantine_summary(root,200).unwrap();
+    assert_eq!(fs::read(&journal).unwrap(),bytes);
+    let records=load_legacy_quarantine_records(root).unwrap();
+    let (_,path)=legacy_record_paths(root,&records[0]).unwrap();
+    let inventory=purge::inventory(&path).unwrap();
+    fs::remove_file(path.join(inventory[0]["path"].as_str().unwrap())).unwrap();
+    let result=purge::remove(&path,&inventory).unwrap();
+    assert_eq!(result["ok"],true); assert!(!path.exists());
 }
 
 struct FixtureRoot(PathBuf);
@@ -525,7 +491,8 @@ fn conflicting_journal_sequences_fail_closed_and_orphans_remain_reviewable() {
     let summary = legacy_quarantine_summary(root, 100).unwrap();
     assert_eq!(summary["reviewCount"], 1);
     assert_eq!(summary["quarantinedCount"], 0);
-    let records = load_legacy_quarantine_records(root).unwrap();
+    assert!(!journal_root.join("manifest.json").exists());
+    let records = read_legacy_quarantine_records(root,100).unwrap();
     assert_eq!(records[0]["reviewReason"], "orphaned_quarantine_item");
     assert_eq!(records[0]["bytes"], 13);
     write_journal(&journal_root.join("manifest.json"), 9, &records);

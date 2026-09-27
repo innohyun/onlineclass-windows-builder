@@ -189,6 +189,9 @@ impl Lab {
         })
     }
     fn publish(&self, device: usize) -> Result<(), String> {
+        self.publish_format(device, 5)
+    }
+    fn publish_format(&self, device: usize, format: i64) -> Result<(), String> {
         self.apply(device, true)?;
         let cp = self.cp();
         crate::shared_archive::with_test_root(&self.stores[device].data_dir, || {
@@ -197,7 +200,7 @@ impl Lab {
                 "synthetic-qa-only",
                 checkpoint_generation(cp.as_ref()),
                 "announced",
-                5,
+                format,
             )
         })
     }
@@ -234,6 +237,27 @@ impl Lab {
                 "ok"
             );
         }
+    }
+}
+
+#[test]
+fn backup_growth_fifty_unchanged_polls_and_alternating_v4_devices_do_not_republish() {
+    let lab = Lab::new(20260927);
+    lab.stores[0].evidence_reconcile("qa-lab", &json!([])).unwrap();
+    lab.publish_format(0,4).unwrap();
+    lab.apply(1,true).unwrap();
+    lab.publish_format(1,4).unwrap();
+    let generation=checkpoint_generation(lab.cp().as_ref());
+    let counts=lab.stores.iter().map(|store| backup::list_backups(store,"qa-lab".into(),1000).unwrap()["backups"].as_array().unwrap().len()).collect::<Vec<_>>();
+    for index in 0..50 {
+        let device=index%2;
+        lab.stores[device].evidence_reconcile("qa-lab",&json!([])).unwrap();
+        lab.publish_format(device,4).unwrap();
+    }
+    assert_eq!(checkpoint_generation(lab.cp().as_ref()),generation);
+    for (index,store) in lab.stores.iter().enumerate() {
+        assert_eq!(backup::list_backups(store,"qa-lab".into(),1000).unwrap()["backups"].as_array().unwrap().len(),counts[index]);
+        assert_eq!(store.conn.lock().unwrap().query_row("PRAGMA integrity_check",[],|row| row.get::<_,String>(0)).unwrap(),"ok");
     }
 }
 impl Drop for Lab {

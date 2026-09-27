@@ -92,8 +92,9 @@ impl SqliteStore {
         tenant: &str,
         receipts: &Value,
     ) -> Result<Value, String> {
-        let keys = trusted_keys()?;
-        for receipt in receipts.as_array().ok_or("observation_receipts_required")? {
+        let receipts = receipts.as_array().ok_or("observation_receipts_required")?;
+        let keys = if receipts.is_empty() {Value::Null} else {trusted_keys()?};
+        for receipt in receipts {
             verify(
                 receipt,
                 tenant,
@@ -107,17 +108,23 @@ impl SqliteStore {
         let entries = inventory["entries"].as_array().unwrap();
         let conn = self.conn.lock().map_err(|_| "db_lock_failed")?;
         let prior=conn.query_row("SELECT payload_json FROM observation_evidence_reconciliation WHERE tenant_id=?1 AND state_id='inventory'",params![tenant],|r|r.get::<_,String>(0)).optional().map_err(|e|e.to_string())?;
-        let mut missing = prior
-            .and_then(|r| serde_json::from_str::<Value>(&r).ok())
+        let prior_state = prior.and_then(|r| serde_json::from_str::<Value>(&r).ok());
+        let mut missing = prior_state.as_ref()
             .and_then(|r| r["missing"].as_array().cloned())
             .unwrap_or_default();
-        for receipt in receipts.as_array().unwrap() {
+        for receipt in receipts {
             let entry = json!({"receiptId":receipt["payload"]["receiptId"],"commitmentSha256":receipt["payload"]["commitmentSha256"]});
             if !entries.contains(&entry) && !missing.contains(&entry) {
                 missing.push(entry);
             }
         }
         missing.retain(|entry| !entries.contains(entry));
+        // A poll timestamp is not a data change. Rewriting this synced row on
+        // every receipt check creates a full snapshot and a two-device echo.
+        if let Some(mut prior) = prior_state.filter(|state| state["missing"] == json!(missing)) {
+            prior["checkedAtMs"] = json!(now_ms());
+            return Ok(json!({"ok":true,"reconciliation":prior}));
+        }
         let now = now_ms();
         let state = json!({"checkedAtMs":now,"missing":missing});
         conn.execute("INSERT INTO observation_evidence_reconciliation VALUES(?1,'inventory',?2,?3) ON CONFLICT(tenant_id,state_id) DO UPDATE SET payload_json=excluded.payload_json,created_at_ms=excluded.created_at_ms",params![tenant,state.to_string(),now]).map_err(|e|e.to_string())?;

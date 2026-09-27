@@ -15,10 +15,34 @@ pub(super) fn install_schema(conn: &Connection) -> Result<(), String> {
         maintenance_at_ms INTEGER NOT NULL DEFAULT 0,
         acked_generation INTEGER NOT NULL DEFAULT 0,
         acked_root TEXT NOT NULL DEFAULT ''
+    );
+    CREATE TABLE IF NOT EXISTS local_store_backup_maintenance (
+        tenant_id TEXT PRIMARY KEY,
+        state_json TEXT NOT NULL DEFAULT '{}',
+        policy_json TEXT NOT NULL DEFAULT 'null'
     );",
     )
     .map_err(|e| format!("db_sync_runtime_schema_failed:{e}"))?;
     super::artifact_recovery::install_schema(conn)
+}
+
+pub(crate) fn snapshot_policy(store: &SqliteStore, tenant_id: &str) -> Result<Value, String> {
+    let conn = store.conn.lock().map_err(|_| "db_lock_failed")?;
+    let raw: Option<String> = conn.query_row("SELECT policy_json FROM local_store_backup_maintenance WHERE tenant_id=?1", params![tenant_id], |row| row.get(0))
+        .optional().map_err(|_| "backup_policy_read_failed")?;
+    serde_json::from_str(raw.as_deref().unwrap_or("null")).map_err(|_| "backup_policy_invalid".into())
+}
+
+pub(crate) fn remember_snapshot_policy(store: &SqliteStore, tenant_id: &str, response: &Value) -> Result<i64, String> {
+    let mut policy = response.get("snapshotPolicy").cloned().filter(Value::is_object)
+        .unwrap_or_else(|| json!({"maxWritableSnapshotVersion":4,"reason":"snapshot_policy_missing"}));
+    let version = policy.get("maxWritableSnapshotVersion").and_then(Value::as_i64).ok_or("backup_policy_version_invalid")?;
+    if !matches!(version, 4 | 5) { return Err("backup_policy_version_unsupported".into()); }
+    policy["checkedAtMs"] = json!(now_ms());
+    let conn = store.conn.lock().map_err(|_| "db_lock_failed")?;
+    conn.execute("INSERT INTO local_store_backup_maintenance (tenant_id,policy_json) VALUES (?1,?2) ON CONFLICT(tenant_id) DO UPDATE SET policy_json=excluded.policy_json", params![tenant_id,policy.to_string()])
+        .map_err(|_| "backup_policy_write_failed")?;
+    Ok(version)
 }
 
 pub(crate) fn pending_publication(
@@ -278,7 +302,7 @@ struct CachedManifest {
 static MANIFEST_CACHE: OnceLock<Mutex<HashMap<PathBuf, CachedManifest>>> = OnceLock::new();
 
 // Only for discovery/listing. Verification must always read the actual bytes.
-pub(super) fn listed_manifest(path: &Path) -> Result<Value, String> {
+pub(crate) fn listed_manifest(path: &Path) -> Result<Value, String> {
     let metadata =
         fs::metadata(path).map_err(|e| format!("backup_manifest_metadata_failed:{e}"))?;
     let modified = metadata

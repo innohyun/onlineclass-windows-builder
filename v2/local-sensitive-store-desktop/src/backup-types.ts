@@ -36,6 +36,7 @@ export type ManualBackupItem = {
   createdAtMs?: number;
   manifestPath?: string;
   snapshotBytes?: number;
+  bytesComplete?: boolean;
   source?: BackupSource;
 };
 
@@ -131,7 +132,14 @@ export type BackupStorageOverview = {
   scanComplete?: boolean;
   scannedAtMs?: number;
   scanErrors?: string[];
-  snapshotVersion?: number;
+  supportedSnapshotVersion?: number;
+  latestBackupVersion?: number | null;
+  snapshotPolicy?: SnapshotPolicy | null;
+  maintenance?: BackupMaintenance;
+  cleanupPreview?: { ok?: boolean; error?: string; items?: CleanupItem[] };
+  otherEntries?: Array<{ relativePath?: string; type?: string; bytes?: number }>;
+  stagingEntries?: Array<{ relativePath?: string; bytes?: number; owner?: {pcName?: string; createdAtMs?: number}; state?: string }>;
+  legacyQuarantineItems?: Array<{snapshotName?: string; generation?: number; status?: string; action?: string; reason?: string; bytes?: number; purgeAfterMs?: number}> | null;
   currentOriginalBytes?: number;
   currentOriginalCount?: number;
   uniqueObjectCount?: number;
@@ -151,13 +159,29 @@ export type BackupStorageOverview = {
   };
   legacyReclaimableBytes?: number;
   legacyCleanupCandidateCount?: number;
-  legacyQuarantineCount?: number;
+  legacyQuarantineCount?: number | null;
   legacyQuarantineBytes?: number;
-  legacyQuarantinePurgeAfterMs?: number;
-  legacyQuarantineReviewCount?: number;
+  legacyQuarantinePurgeAfterMs?: number | null;
+  legacyQuarantineReviewCount?: number | null;
   legacyQuarantineError?: string | null;
   largestFiles?: Array<{ kind?: string; name?: string; localPath?: string; bytes?: number }>;
   error?: string;
+};
+
+export type SnapshotPolicy = {
+  maxWritableSnapshotVersion?: number;
+  reason?: string;
+  checkedAtMs?: number;
+  blockingDeviceCount?: number;
+  blockingDevices?: Array<{deviceId?: string; deviceName?: string; snapshotFormatMax?: number; lastSeenAt?: number}>;
+};
+export type BackupMaintenance = {
+  ok?: boolean; running?: boolean; lastAttemptAtMs?: number; lastSuccessAtMs?: number; nextRetryAtMs?: number; deferredReason?: string;
+  stages?: Record<string,{ok?: boolean; error?: string; deleted?: number; deletedBytes?: number; quarantined?: number; quarantinedBytes?: number; purged?: number; purgedBytes?: number; reviewCount?: number}>;
+};
+export type CleanupItem = {
+  manifestPath?: string; version?: number; kind?: string; generation?: number; createdAtMs?: number; deviceName?: string;
+  bytes?: number; bytesComplete?: boolean; verification?: string; action?: string; plannedAction?: string; reason?: string;
 };
 
 export type LegacyCleanupPreview = {

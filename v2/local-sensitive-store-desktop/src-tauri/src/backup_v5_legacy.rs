@@ -2,39 +2,11 @@ use super::journal::*;
 use super::*;
 
 fn legacy_cleanup_candidates(
-    tenant_dir: &Path,
-    pinned_generations: &HashSet<i64>,
-) -> Vec<(PathBuf, i64, i64)> {
-    let mut legacy = snapshot_manifests(tenant_dir, false)
-        .into_iter()
-        .filter_map(|path| {
-            let manifest = json_file(&path)?;
-            let version = manifest.get("version").and_then(Value::as_i64).unwrap_or(0);
-            if version >= SNAPSHOT_VERSION
-                || manifest.get("kind").and_then(Value::as_str) == Some("manual")
-            {
-                return None;
-            }
-            let generation = manifest
-                .get("generation")
-                .and_then(Value::as_i64)
-                .unwrap_or(0);
-            let created = manifest
-                .get("createdAtMs")
-                .and_then(Value::as_i64)
-                .unwrap_or(0);
-            Some((path, created, generation))
-        })
-        .collect::<Vec<_>>();
-    legacy.sort_by(|left, right| right.1.cmp(&left.1));
-    legacy
-        .into_iter()
-        .enumerate()
-        .filter(|(index, (_, _, generation))| {
-            *index > 0 && (*generation == 0 || !pinned_generations.contains(generation))
-        })
-        .map(|(_, item)| item)
-        .collect()
+    tenant_dir: &Path, pins: &HashSet<i64>, now: i64, verify: bool,
+) -> Result<Vec<(PathBuf, i64, i64)>, String> {
+    Ok(retention::retention_plan(tenant_dir, now, pins, verify)?.into_iter()
+        .filter(|entry| !entry.keep && entry.manifest["version"] == 4 && entry.manifest["kind"] != "manual")
+        .map(|entry| (entry.path, entry.manifest["createdAtMs"].as_i64().unwrap_or(0), entry.manifest["generation"].as_i64().unwrap_or(0))).collect())
 }
 
 pub(crate) fn legacy_cleanup_summary_from_scan(
@@ -42,7 +14,7 @@ pub(crate) fn legacy_cleanup_summary_from_scan(
     pinned_generations: &HashSet<i64>,
     scan: &StorageScan,
 ) -> Value {
-    let candidates = legacy_cleanup_candidates(tenant_dir, pinned_generations);
+    let candidates = match legacy_cleanup_candidates(tenant_dir, pinned_generations, scan.scanned_at_ms, false) { Ok(items) => items, Err(error) => return json!({"ok":false,"error":error}) };
     let reclaimable_bytes = candidates
         .iter()
         .filter_map(|(manifest, _, _)| {
@@ -61,7 +33,7 @@ pub(crate) fn legacy_cleanup_summary_from_scan(
 }
 
 pub(crate) fn legacy_quarantine_summary(tenant_dir: &Path, now_ms: i64) -> Result<Value, String> {
-    let records = load_reconciled_legacy_quarantine_records(tenant_dir, now_ms)?;
+    let records = read_legacy_quarantine_records(tenant_dir, now_ms)?;
     let active = records
         .iter()
         .filter(|record| record.get("status").and_then(Value::as_str) == Some("quarantined"))
@@ -84,7 +56,10 @@ pub(crate) fn legacy_quarantine_summary(tenant_dir: &Path, now_ms: i64) -> Resul
         "quarantinedCount": active.len(),
         "quarantinedBytes": quarantined_bytes,
         "purgeAfterMs": purge_after_ms,
-        "reviewCount": review_count
+        "reviewCount": review_count,
+        "items": records.iter().map(|record| json!({"snapshotName":record["snapshotName"],"generation":record["generation"],"bytes":record["bytes"],
+            "purgeAfterMs":record["purgeAfterMs"],"reason":record["reviewReason"],"status":record["status"],
+            "action":if record["status"]=="quarantined" && record["purgeAfterMs"].as_i64().is_some_and(|at| at<=now_ms) {"verify_before_delete"} else {"review"}})).collect::<Vec<_>>()
     }))
 }
 
@@ -92,7 +67,10 @@ pub(crate) fn legacy_cleanup_preview(
     tenant_dir: &Path,
     pinned_generations: &HashSet<i64>,
 ) -> Value {
-    let candidates = legacy_cleanup_candidates(tenant_dir, pinned_generations);
+    let candidates = match legacy_cleanup_candidates(tenant_dir, pinned_generations, Utc::now().timestamp_millis(), true) {
+        Ok(items) => items,
+        Err(error) => return json!({"ok":false,"error":error}),
+    };
     let mut hasher = Sha256::new();
     let mut bytes = 0i64;
     let mut records = Vec::new();
@@ -120,7 +98,7 @@ pub(crate) fn apply_legacy_cleanup(
     tenant_dir: &Path,
     pinned_generations: &HashSet<i64>,
     preview_token: &str,
-    validated_v5_created_at_ms: i64,
+    validated_replacement_created_at_ms: i64,
     now_ms: i64,
 ) -> Result<Value, String> {
     let preview = legacy_cleanup_preview(tenant_dir, pinned_generations);
@@ -130,7 +108,7 @@ pub(crate) fn apply_legacy_cleanup(
     let result = quarantine_legacy_snapshots(
         tenant_dir,
         pinned_generations,
-        validated_v5_created_at_ms,
+        validated_replacement_created_at_ms,
         now_ms,
     )?;
     Ok(json!({
@@ -145,12 +123,9 @@ pub(crate) fn apply_legacy_cleanup(
 pub(crate) fn quarantine_legacy_snapshots(
     tenant_dir: &Path,
     pinned_generations: &HashSet<i64>,
-    validated_v5_created_at_ms: i64,
+    _validated_replacement_created_at_ms: i64,
     now_ms: i64,
 ) -> Result<Value, String> {
-    if validated_v5_created_at_ms <= 0 {
-        return Err("backup_legacy_quarantine_verified_v5_required".to_string());
-    }
     let mut records = load_reconciled_legacy_quarantine_records(tenant_dir, now_ms)?;
     let protected = records
         .iter()
@@ -165,11 +140,8 @@ pub(crate) fn quarantine_legacy_snapshots(
     let mut quarantined_count = 0i64;
     let mut quarantined_bytes = 0i64;
     for (manifest_path, created_at_ms, generation) in
-        legacy_cleanup_candidates(tenant_dir, pinned_generations)
+        legacy_cleanup_candidates(tenant_dir, pinned_generations, now_ms, true)?
     {
-        if created_at_ms > validated_v5_created_at_ms {
-            continue;
-        }
         let snapshot = manifest_path
             .parent()
             .ok_or_else(|| "backup_snapshot_parent_missing".to_string())?;
@@ -189,7 +161,7 @@ pub(crate) fn quarantine_legacy_snapshots(
         }
         let bytes = directory_size(snapshot);
         let id_seed =
-            format!("{snapshot_name}\0{created_at_ms}\0{generation}\0{fingerprint}\0{now_ms}");
+            format!("{snapshot_name}\0{created_at_ms}\0{generation}\0{fingerprint}");
         let id = format!("{:x}", Sha256::digest(id_seed.as_bytes()));
         let quarantine_relative = format!("{LEGACY_QUARANTINE_DIR}/items/{id}");
         let target = tenant_dir.join(&quarantine_relative);
@@ -200,6 +172,8 @@ pub(crate) fn quarantine_legacy_snapshots(
             fs::create_dir_all(parent)
                 .map_err(|error| format!("backup_legacy_quarantine_dir_failed:{error}"))?;
         }
+        let prior = records.iter().find(|record| record["originalRelativePath"] == original_relative && record["fingerprint"] == fingerprint).cloned();
+        records.retain(|record| record["id"] != id);
         records.push(json!({
             "id": id,
             "snapshotName": snapshot_name,
@@ -209,8 +183,8 @@ pub(crate) fn quarantine_legacy_snapshots(
             "bytes": bytes,
             "generation": generation,
             "createdAtMs": created_at_ms,
-            "quarantinedAtMs": now_ms,
-            "purgeAfterMs": now_ms.saturating_add(QUARANTINE_DAYS * 86_400_000),
+            "quarantinedAtMs": prior.as_ref().and_then(|r| r["quarantinedAtMs"].as_i64()).unwrap_or(now_ms),
+            "purgeAfterMs": prior.as_ref().and_then(|r| r["purgeAfterMs"].as_i64()).unwrap_or(now_ms.saturating_add(QUARANTINE_DAYS * 86_400_000)),
             "status": "pending",
             "updatedAtMs": now_ms
         }));
@@ -329,16 +303,17 @@ pub(crate) fn undo_legacy_quarantine(tenant_dir: &Path, now_ms: i64) -> Result<V
 pub(crate) fn purge_legacy_quarantine(
     tenant_dir: &Path,
     pinned_generations: &HashSet<i64>,
-    validated_v5_created_at_ms: i64,
+    validated_replacement_created_at_ms: i64,
     now_ms: i64,
 ) -> Result<Value, String> {
-    if validated_v5_created_at_ms <= 0 {
-        return Err("backup_legacy_quarantine_verified_v5_required".to_string());
+    if validated_replacement_created_at_ms <= 0 {
+        return Err("backup_quarantine_verified_replacement_required".to_string());
     }
+    let replacements = retention::retention_plan(tenant_dir, now_ms, pinned_generations, true)?;
     let mut records = load_reconciled_legacy_quarantine_records(tenant_dir, now_ms)?;
     let ids = records
         .iter()
-        .filter(|record| record.get("status").and_then(Value::as_str) == Some("quarantined"))
+        .filter(|record| matches!(record.get("status").and_then(Value::as_str), Some("quarantined" | "purging")))
         .filter(|record| {
             record
                 .get("purgeAfterMs")
@@ -350,6 +325,7 @@ pub(crate) fn purge_legacy_quarantine(
         .collect::<Vec<_>>();
     let mut purged = 0i64;
     let mut purged_bytes = 0i64;
+    let mut deferred = Vec::new();
     for id in ids {
         let Some(record) = records
             .iter()
@@ -370,15 +346,17 @@ pub(crate) fn purge_legacy_quarantine(
             if generation > 0 && pinned_generations.contains(&generation) {
                 return Err("generation_became_pinned".to_string());
             }
-            if created_at_ms > validated_v5_created_at_ms {
-                return Err("verified_v5_is_older".to_string());
-            }
             let (original, quarantined) = legacy_record_paths(tenant_dir, &record)?;
             if original.exists() || !quarantined.is_dir() {
                 return Err("purge_path_state_changed".to_string());
             }
-            let fingerprint = snapshot_fingerprint(&quarantined)?;
-            if record.get("fingerprint").and_then(Value::as_str) != Some(fingerprint.as_str()) {
+            let version = if record["purgeInventory"].is_array() {record["snapshotVersion"].as_i64().unwrap_or(0)} else {json_file(&quarantined.join("manifest.json")).ok_or("purge_manifest_unavailable")?["version"].as_i64().unwrap_or(0)};
+            if !matches!(version,2|3|4) {return Err("purge_version_unconfirmed".into());}
+            if version == 4 && !replacements.iter().any(|entry| entry.keep && entry.manifest["version"] == 4 && entry.manifest["createdAtMs"].as_i64().is_some_and(|at| at >= created_at_ms) && entry.identity.is_some()) {
+                return Err("verified_same_format_replacement_required".into());
+            }
+            if version < 4 && created_at_ms > validated_replacement_created_at_ms { return Err("verified_replacement_is_older".into()); }
+            if !record["purgeInventory"].is_array() && record.get("fingerprint").and_then(Value::as_str) != Some(snapshot_fingerprint(&quarantined)?.as_str()) {
                 return Err("purge_fingerprint_changed".to_string());
             }
             Ok(quarantined)
@@ -386,10 +364,11 @@ pub(crate) fn purge_legacy_quarantine(
         let quarantined = match validation {
             Ok(path) => path,
             Err(reason) => {
+                deferred.push(reason.clone());
                 set_legacy_record_status(
                     &mut records,
                     &id,
-                    "review_required",
+                    if reason.contains("fingerprint_changed") || reason.contains("path_state_changed") {"review_required"} else if record["purgeInventory"].is_array() {"purging"} else {"quarantined"},
                     Some(&reason),
                     now_ms,
                 );
@@ -397,21 +376,19 @@ pub(crate) fn purge_legacy_quarantine(
                 continue;
             }
         };
+        let inventory = if let Some(files)=record["purgeInventory"].as_array() {files.clone()} else {purge::inventory(&quarantined)?};
+        let version = record["snapshotVersion"].as_i64().or_else(|| json_file(&quarantined.join("manifest.json")).and_then(|m| m["version"].as_i64()));
+        let stored=records.iter_mut().find(|r| r["id"]==id).ok_or("backup_quarantine_record_missing")?;
+        stored["purgeInventory"]=json!(inventory); stored["snapshotVersion"]=json!(version);
         set_legacy_record_status(&mut records, &id, "purging", None, now_ms);
         save_legacy_quarantine_records(tenant_dir, &records, now_ms)?;
-        if let Err(error) = fs::remove_dir_all(&quarantined) {
-            set_legacy_record_status(
-                &mut records,
-                &id,
-                "review_required",
-                Some("purge_delete_failed"),
-                now_ms,
-            );
-            save_legacy_quarantine_records(tenant_dir, &records, now_ms)?;
-            return Err(format!("backup_legacy_quarantine_purge_failed:{error}"));
+        let result=purge::remove(&quarantined,&inventory).unwrap_or_else(|error| json!({"ok":false,"error":error}));
+        purged_bytes+=result["deletedBytes"].as_i64().unwrap_or(0);
+        if result["ok"] != true {
+            deferred.push(result["error"].as_str().unwrap_or("backup_purge_failed").to_string());
+            continue;
         }
         purged += 1;
-        purged_bytes += record.get("bytes").and_then(Value::as_i64).unwrap_or(0);
         set_legacy_record_status(&mut records, &id, "purged", None, now_ms);
         save_legacy_quarantine_records(tenant_dir, &records, now_ms)?;
     }
@@ -420,30 +397,11 @@ pub(crate) fn purge_legacy_quarantine(
         .filter(|record| record.get("status").and_then(Value::as_str) == Some("review_required"))
         .count();
     Ok(json!({
-        "ok": true,
+        "ok": deferred.is_empty(),
         "purged": purged,
         "purgedBytes": purged_bytes,
-        "reviewCount": review_count
+        "reviewCount": review_count,
+        "errors": deferred,
+        "error": if deferred.is_empty() {Value::Null} else {json!("backup_quarantine_purge_deferred")}
     }))
-}
-
-pub(crate) fn maintain_legacy_quarantine(
-    tenant_dir: &Path,
-    pinned_generations: &HashSet<i64>,
-    validated_v5_created_at_ms: i64,
-    now_ms: i64,
-) -> Result<Value, String> {
-    let purge = purge_legacy_quarantine(
-        tenant_dir,
-        pinned_generations,
-        validated_v5_created_at_ms,
-        now_ms,
-    )?;
-    let quarantine = quarantine_legacy_snapshots(
-        tenant_dir,
-        pinned_generations,
-        validated_v5_created_at_ms,
-        now_ms,
-    )?;
-    Ok(json!({ "ok": true, "purge": purge, "quarantine": quarantine }))
 }

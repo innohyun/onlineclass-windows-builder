@@ -763,6 +763,11 @@ pub(super) fn maintain_cache(
         return Ok(());
     }
     crate::backup_v5::prune_snapshots(&cache, now, pins)?;
+    crate::backup_v5::quarantine_legacy_snapshots(&cache, pins, 0, now)?;
+    if let Ok(at) = latest_verified_snapshot_created_at(store, tenant, &cache) {
+        let result = crate::backup_v5::purge_legacy_quarantine(&cache, pins, at, now)?;
+        if result["ok"] != true { return Err("backup_cache_quarantine_purge_deferred".into()); }
+    }
     // Cached attachments are referenced only by cached sealed snapshots; live
     // files are kept in a separate namespace. Unknown references fail closed.
     crate::backup_v5::quarantine_unreferenced_objects(&cache, &HashSet::new(), now)?;

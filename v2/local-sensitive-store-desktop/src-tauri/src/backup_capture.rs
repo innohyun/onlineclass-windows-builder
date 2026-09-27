@@ -11,6 +11,13 @@ impl Drop for StagingGuard {
     }
 }
 
+pub(super) struct StagingOperationGuard(pub(super) PathBuf, pub(super) PathBuf);
+impl Drop for StagingOperationGuard {
+    fn drop(&mut self) {
+        if !self.1.exists() { let _ = fs::remove_file(&self.0); }
+    }
+}
+
 pub(super) struct Capture {
     pub(super) sync: Value,
     pub(super) sequence: i64,

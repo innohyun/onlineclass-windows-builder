@@ -63,7 +63,16 @@ pub(crate) fn run_with_kind_version(
             .map_err(|e| format!("backup_staging_cleanup_failed:{e}"))?;
     }
     fs::create_dir_all(staging_dir.join("db")).map_err(|e| format!("backup_dir_failed:{e}"))?;
+    let operations = store.data_dir.join("backup-staging-operations");
+    fs::create_dir_all(&operations).map_err(|_| "backup_staging_journal_dir_failed")?;
+    let operation_record = operations.join(format!("{backup_id}.json"));
+    fs::write(&operation_record,json!({"stagingDir":staging_dir.to_string_lossy(),"createdAtMs":created_at_ms}).to_string())
+        .map_err(|_| "backup_staging_journal_write_failed")?;
+    let _operation_record = capture::StagingOperationGuard(operation_record,staging_dir.clone());
     let _staging = capture::StagingGuard(staging_dir.clone());
+    fs::write(staging_dir.join("operation.json"), json!({"operationId":backup_id,"pcName":crate::local_pc_name(),
+        "processId":std::process::id(),"createdAtMs":created_at_ms,"state":"creating"}).to_string())
+        .map_err(|_| "backup_staging_owner_write_failed")?;
     if snapshot_version == 4 {
         fs::create_dir_all(staging_dir.join("board-media"))
             .map_err(|e| format!("backup_media_dir_failed:{e}"))?;
@@ -472,6 +481,7 @@ pub(crate) fn run_with_kind_version(
         .map_err(|e| format!("backup_commit_encode_failed:{e}"))?;
     fs::write(staging_dir.join("commit.json"), format!("{commit_raw}\n"))
         .map_err(|e| format!("backup_commit_write_failed:{e}"))?;
+    fs::remove_file(staging_dir.join("operation.json")).map_err(|_| "backup_staging_owner_remove_failed")?;
     fs::rename(&staging_dir, &snapshot_dir)
         .map_err(|e| format!("backup_snapshot_commit_failed:{e}"))?;
     let manifest_path = snapshot_dir.join("manifest.json");
@@ -504,7 +514,7 @@ pub(crate) fn run_with_kind_version(
     // A committed backup is still usable when optional cleanup is deferred.
     // A pre-restore backup must never prune the selected restore source.
     if snapshot_ok && kind != "pre_restore" {
-        result["maintenance"] = maintenance::run_if_due(store, &tenant_id, created_at_ms, false)
+        result["maintenance"] = maintenance::after_backup(store, &tenant_id, created_at_ms, &result)
             .unwrap_or_else(|error| json!({ "ok": false, "error": error }));
     }
     let mut config = read_config(store);

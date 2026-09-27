@@ -1,8 +1,12 @@
+import { snapshotPolicyDescription } from "./backup-diagnostics";
+import type { SnapshotPolicy } from "./backup-types";
 import { invoke } from "@tauri-apps/api/core";
 
 export type DeviceSyncStatus = {
   ok: boolean;
   connected: boolean;
+  supportedSnapshotVersion?: number;
+  snapshotPolicy?: SnapshotPolicy | null;
   tenantId?: string;
   credentialAvailable?: boolean;
   oneDriveConfigured?: boolean;
@@ -294,6 +298,10 @@ export function renderDeviceSyncStatus(status: DeviceSyncStatus | null) {
       : "이 PC는 확인된 최신 세대까지 반영했습니다. 서버의 다른 기기 확인과 OneDrive 파일 전달 상태는 별도로 판단합니다. 충돌 건수는 누적 보관 기록입니다.";
     setText("deviceSyncStatus", `${delivery} 이 PC의 관찰 분기 집계는 0건이며, 증빙 검증과 다른 기기의 현재 내용 일치는 별도입니다.`);
   }
+  const statusNode = document.getElementById("deviceSyncStatus");
+  let policyNode = document.getElementById("deviceSyncSnapshotPolicy");
+  if (!policyNode && statusNode) { policyNode = document.createElement("p"); policyNode.id="deviceSyncSnapshotPolicy"; policyNode.style.whiteSpace="pre-wrap"; statusNode.after(policyNode); }
+  if (policyNode) policyNode.textContent = status?.connected ? snapshotPolicyDescription(status.snapshotPolicy) : "";
   updateActionState();
 }
 

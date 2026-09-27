@@ -471,10 +471,11 @@ fn backup_maintenance_error_does_not_invalidate_committed_snapshot() {
     mark_sync_latest(&store, "qa-sync", 5, "announced").unwrap();
     let snapshot = run_now(&store, "qa-sync".into()).unwrap();
     assert_eq!(snapshot["ok"], true);
-    assert_eq!(
-        snapshot["maintenance"]["error"],
-        "backup_sync_pin_context_stale"
-    );
+    assert_eq!(snapshot["maintenance"]["queued"], true);
+    let failed=maintenance::run_if_due(&store,"qa-sync",now_ms(),true).unwrap();
+    assert_eq!(failed["stages"]["safety"]["error"], "backup_sync_pin_context_stale");
+    assert!(failed["lastSuccessAtMs"].is_null());
+    assert_eq!(failed["nextRetryAtMs"].as_i64().unwrap()-failed["lastAttemptAtMs"].as_i64().unwrap(),60_000);
     let path = PathBuf::from(snapshot["manifestPath"].as_str().unwrap());
     authoritative_restore_manifest(&path, &read_manifest(&path).unwrap(), "qa-sync").unwrap();
     assert_eq!(
@@ -486,12 +487,13 @@ fn backup_maintenance_error_does_not_invalidate_committed_snapshot() {
 }
 
 #[test]
-fn manual_backup_creation_enforces_limit_even_when_daily_maintenance_already_ran() {
+fn manual_backup_creation_queues_batch_retention_even_when_daily_maintenance_already_ran() {
     let (root, store) = fixture();
     edit(&store, "manual retention", 1);
     for _ in 0..11 {
         assert_eq!(run_now(&store, "qa-sync".into()).unwrap()["ok"], true);
     }
+    maintenance::run_if_due(&store,"qa-sync",now_ms(),true).unwrap();
     let listed = list_backups(&store, "qa-sync".into(), 50).unwrap();
     let manual_count = listed["backups"]
         .as_array()
@@ -502,6 +504,33 @@ fn manual_backup_creation_enforces_limit_even_when_daily_maintenance_already_ran
     assert_eq!(manual_count, 10);
     drop(store);
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn backup_growth_failed_stages_retry_without_repeating_successful_scans() {
+    let (root,store)=fixture();
+    edit(&store,"synthetic retry",1);
+    run_now(&store,"qa-sync".into()).unwrap();
+    let tenant=configured_tenant_dir(&store,"qa-sync").unwrap();
+    let staging=tenant.join("snapshots/another-device.staging");
+    fs::create_dir_all(&staging).unwrap();
+    let journal=tenant.join("legacy-snapshot-quarantine/manifest.json");
+    fs::create_dir_all(journal.parent().unwrap()).unwrap();
+    fs::write(&journal,b"{incomplete").unwrap();
+    let now=now_ms();
+    let failed=maintenance::run_if_due(&store,"qa-sync",now,true).unwrap();
+    assert_eq!(failed["ok"],false);
+    assert_eq!(failed["stages"]["snapshots"]["ok"],true);
+    assert_eq!(failed["stages"]["objects"]["ok"],false);
+    assert_eq!(failed["stages"]["legacyQuarantine"]["ok"],false);
+    assert_eq!(maintenance::run_if_due(&store,"qa-sync",now+30_000,false).unwrap()["skipped"],true);
+    // Only the test's own empty staging and broken journal are removed.
+    fs::remove_dir(&staging).unwrap(); fs::remove_file(&journal).unwrap();
+    let recovered=maintenance::run_if_due(&store,"qa-sync",now+61_000,false).unwrap();
+    assert_eq!(recovered["ok"],true,"{recovered}");
+    assert_eq!(recovered["stages"]["snapshots"]["lastAttemptAtMs"],failed["stages"]["snapshots"]["lastAttemptAtMs"]);
+    assert_eq!(recovered["lastSuccessAtMs"],now+61_000);
+    drop(store); fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

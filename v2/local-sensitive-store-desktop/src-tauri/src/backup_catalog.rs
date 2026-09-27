@@ -96,7 +96,10 @@ pub(crate) fn status(store: &SqliteStore, tenant_id: String) -> Result<Value, St
         "latestBackup": latest_backup,
         "backups": backups,
         "securityMode": "plain_warning",
-        "mediaMode": "content_addressed_objects_v5"
+        "supportedSnapshotVersion": crate::backup_v5::SNAPSHOT_VERSION,
+        "snapshotPolicy": snapshot_policy(store, &tenant_id)?,
+        "maintenance": maintenance::maintenance_status(store, &tenant_id)?,
+        "mediaMode": "snapshot_format_dependent"
     }))
 }
 
@@ -157,8 +160,7 @@ fn manual_backup_summaries(
         .into_iter()
         .filter_map(|path| {
             let manifest = listed_manifest(&path).ok()?;
-            if manifest.get("version").and_then(Value::as_i64)
-                != Some(crate::backup_v5::SNAPSHOT_VERSION)
+            if !matches!(manifest.get("version").and_then(Value::as_i64), Some(4 | 5))
                 || manifest.get("kind").and_then(Value::as_str) != Some("manual")
                 || manifest.get("tenantId").and_then(Value::as_str) != Some(tenant_id)
             {
@@ -175,6 +177,7 @@ fn manual_backup_summaries(
                 "createdAtMs": manifest.get("createdAtMs").and_then(Value::as_i64).unwrap_or(0),
                 "manifestPath": path.to_string_lossy(),
                 "snapshotBytes": snapshot_bytes,
+                "bytesComplete": scan.scan_complete,
                 "source": manifest.get("source").cloned().unwrap_or_else(|| json!({}))
             }))
         })
@@ -196,7 +199,23 @@ pub(crate) fn storage_overview(store: &SqliteStore, tenant_id: String) -> Result
     }
     let tenant_dir = configured_tenant_dir(store, &tenant_id)?;
     let _operation = root_operation(store, &tenant_dir)?;
-    let scan = crate::backup_v5::scan_storage(&tenant_dir);
+    let mut scan = crate::backup_v5::scan_storage(&tenant_dir);
+    // Holding the root lock proves that no writer in this installation is
+    // capturing now. Only a local operation journal can identify its leftovers;
+    // age and another PC's owner marker are never proof of abandonment.
+    for entry in &mut scan.staging_entries {
+        if let Some(relative) = entry["relativePath"].as_str() {
+            let path = tenant_dir.join(relative);
+            if let Some(id) = path.file_name().and_then(|name| name.to_str()).and_then(|name| name.strip_suffix(".staging")) {
+                let local = store.data_dir.join("backup-staging-operations").join(format!("{id}.json"));
+                if fs::read(local).ok().and_then(|raw| serde_json::from_slice::<Value>(&raw).ok())
+                    .is_some_and(|record| record["stagingDir"].as_str() == path.to_str()) {
+                    entry["state"] = json!("interrupted_local");
+                    entry["reason"] = json!("local_operation_ended_artifacts_preserved");
+                }
+            }
+        }
+    }
     let manual_backups = manual_backup_summaries(&tenant_dir, &tenant_id, &scan)?;
     let cleanup = crate::backup_v5::legacy_cleanup_summary_from_scan(
         &tenant_dir,
@@ -236,7 +255,13 @@ pub(crate) fn storage_overview(store: &SqliteStore, tenant_id: String) -> Result
     Ok(json!({
         "ok": true,
         "tenantId": tenant_id,
-        "snapshotVersion": crate::backup_v5::SNAPSHOT_VERSION,
+        "supportedSnapshotVersion": crate::backup_v5::SNAPSHOT_VERSION,
+        "latestBackupVersion": scan.latest_snapshot_version,
+        "snapshotPolicy": snapshot_policy(store, &tenant_id)?,
+        "maintenance": maintenance::maintenance_status(store, &tenant_id)?,
+        "cleanupPreview": crate::backup_v5::retention_preview(&tenant_dir, scan.scanned_at_ms, &pinned_sync_generations(store, &tenant_id)?, &scan).unwrap_or_else(|error| json!({"ok":false,"error":error})),
+        "otherEntries": scan.other_entries,
+        "stagingEntries": scan.staging_entries,
         "currentOriginalBytes": current_original_bytes,
         "currentOriginalCount": current_original_count,
         "uniqueObjectCount": scan.object_count,
@@ -254,10 +279,11 @@ pub(crate) fn storage_overview(store: &SqliteStore, tenant_id: String) -> Result
         "manualBackups": manual_backups,
         "legacyReclaimableBytes": cleanup.get("reclaimableBytes").cloned().unwrap_or(json!(0)),
         "legacyCleanupCandidateCount": cleanup.get("candidateCount").cloned().unwrap_or(json!(0)),
-        "legacyQuarantineCount": quarantine.get("quarantinedCount").cloned().unwrap_or(json!(0)),
+        "legacyQuarantineCount": quarantine.get("quarantinedCount").cloned().unwrap_or(Value::Null),
         "legacyQuarantineBytes": scan.storage_breakdown.get("legacyQuarantineBytes").cloned().unwrap_or(json!(0)),
-        "legacyQuarantinePurgeAfterMs": quarantine.get("purgeAfterMs").cloned().unwrap_or(json!(0)),
-        "legacyQuarantineReviewCount": quarantine.get("reviewCount").cloned().unwrap_or(json!(0)),
+        "legacyQuarantinePurgeAfterMs": quarantine.get("purgeAfterMs").cloned().unwrap_or(Value::Null),
+        "legacyQuarantineReviewCount": quarantine.get("reviewCount").cloned().unwrap_or(Value::Null),
+        "legacyQuarantineItems": quarantine.get("items").cloned().unwrap_or(Value::Null),
         "legacyQuarantineError": quarantine.get("error").cloned().unwrap_or(Value::Null),
         "largeFileThresholdBytes": 100 * 1024 * 1024,
         "largestFiles": largest_files,
@@ -364,7 +390,7 @@ pub(crate) fn delete_manual_backup(
         return Err("backup_manual_delete_scope_invalid".to_string());
     }
     let manifest = read_manifest(&manifest_path)?;
-    if manifest.get("version").and_then(Value::as_i64) != Some(crate::backup_v5::SNAPSHOT_VERSION) {
+    if !matches!(manifest.get("version").and_then(Value::as_i64), Some(4 | 5)) {
         return Err("backup_manual_delete_version_required".to_string());
     }
     if manifest.get("tenantId").and_then(Value::as_str) != Some(tenant_id.as_str()) {
@@ -430,7 +456,7 @@ pub(crate) fn apply_legacy_cleanup(
     let _operation = root_operation(store, &tenant_dir)?;
     store.restore_ready(&tenant_id)?;
     maintenance::require_pin_context(store, &tenant_id, now_ms())?;
-    let verified_v5_created_at_ms = latest_verified_v5_created_at(store, &tenant_id, &tenant_dir)?;
+    let verified_v5_created_at_ms = latest_verified_snapshot_created_at(store, &tenant_id, &tenant_dir)?;
     crate::backup_v5::apply_legacy_cleanup(
         &tenant_dir,
         &pinned_sync_generations(store, &tenant_id)?,
@@ -451,7 +477,7 @@ pub(crate) fn undo_legacy_cleanup(store: &SqliteStore, tenant_id: String) -> Res
     crate::backup_v5::undo_legacy_quarantine(&tenant_dir, now_ms())
 }
 
-pub(super) fn latest_verified_v5_created_at(
+pub(super) fn latest_verified_snapshot_created_at(
     _store: &SqliteStore,
     tenant_id: &str,
     tenant_dir: &Path,
@@ -460,8 +486,7 @@ pub(super) fn latest_verified_v5_created_at(
         .into_iter()
         .filter_map(|path| {
             let manifest = read_manifest(&path).ok()?;
-            if manifest.get("version").and_then(Value::as_i64)
-                != Some(crate::backup_v5::SNAPSHOT_VERSION)
+            if !matches!(manifest.get("version").and_then(Value::as_i64), Some(4 | 5))
                 || manifest.get("ok").and_then(Value::as_bool) != Some(true)
                 || manifest.get("tenantId").and_then(Value::as_str) != Some(tenant_id)
             {
@@ -480,7 +505,7 @@ pub(super) fn latest_verified_v5_created_at(
             return Ok(created_at_ms);
         }
     }
-    Err("backup_legacy_quarantine_verified_v5_required".to_string())
+    Err("backup_quarantine_verified_replacement_required".to_string())
 }
 
 pub(super) fn manifest_paths_in_dir(dir: &Path) -> Result<Vec<PathBuf>, String> {

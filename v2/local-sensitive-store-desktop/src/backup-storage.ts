@@ -1,3 +1,4 @@
+import { renderBackupDiagnostics } from './backup-diagnostics';
 import { invoke } from '@tauri-apps/api/core';
 import type { BackupStorageOverview, ManualBackupItem } from './backup-types';
 
@@ -21,7 +22,9 @@ const PREVIEW_STORAGE: BackupStorageOverview = {
     stagingBytes: 9_000_000,
     otherBytes: 1_000_000,
   },
-  snapshotVersion: 5,
+  supportedSnapshotVersion: 5,
+  latestBackupVersion: 5,
+  snapshotPolicy: {maxWritableSnapshotVersion:5,reason:"all_active_devices_support_v5"},
   currentOriginalCount: 248,
   currentOriginalBytes: 2_840_000_000,
   uniqueObjectCount: 183,
@@ -55,21 +58,21 @@ function required<T extends HTMLElement>(id: string) {
 }
 
 function text(id: string, value: string) { required(id).textContent = value || '-'; }
-function numeric(value?: number) { return Number(value || 0) || 0; }
-function numberText(value?: number) { return String(numeric(value)); }
-function byteText(value?: number) {
+function numeric(value?: number | null) { return Number(value || 0) || 0; }
+function numberText(value?: number | null) { return String(numeric(value)); }
+function byteText(value?: number | null) {
   const bytes = Math.max(0, numeric(value));
   if (bytes < 1024) return `${Math.round(bytes)} B`;
   if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`;
   if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
   return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
 }
-function dateText(value?: number) {
+function dateText(value?: number | null) {
   const timestamp = numeric(value);
   if (!timestamp) return '';
   return new Intl.DateTimeFormat('ko-KR', { month: 'long', day: 'numeric' }).format(new Date(timestamp));
 }
-function dateTimeText(value?: number) {
+function dateTimeText(value?: number | null) {
   const timestamp = numeric(value);
   if (!timestamp) return '시각 정보 없음';
   return new Intl.DateTimeFormat('ko-KR', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(timestamp));
@@ -123,11 +126,12 @@ export function initBackupStorage(options: Options) {
     text('backupManualSummary', storage?.ok ? `${numberText(count)}/${numberText(limit)}개 · ${complete ? byteText(bytes) : '확인 필요'}` : '-');
     const backups = Array.isArray(storage?.manualBackups) ? storage.manualBackups : [];
     required('backupManualBackups').innerHTML = backups.length
-      ? backups.map((backup, index) => `<article class="backup-manual-item"><span><strong>${escapeHtml(dateTimeText(backup.createdAtMs))} · ${byteText(backup.snapshotBytes)}</strong><small>${escapeHtml(backup.source?.pcName || 'PC 정보 없음')} · ${escapeHtml(backup.source?.os || '운영체제 정보 없음')}${backup.ok === false ? ' · 확인 필요' : ''}</small></span><button type="button" data-manual-backup-index="${index}">삭제</button></article>`).join('')
+      ? backups.map((backup, index) => `<article class="backup-manual-item"><span><strong>${escapeHtml(dateTimeText(backup.createdAtMs))} · ${complete && backup.bytesComplete !== false ? byteText(backup.snapshotBytes) : typeof backup.snapshotBytes === "number" ? `${byteText(backup.snapshotBytes)} 이상 · 일부 집계` : "확인 필요"}</strong><small>${escapeHtml(backup.source?.pcName || 'PC 정보 없음')} · ${escapeHtml(backup.source?.os || '운영체제 정보 없음')}${backup.ok === false ? ' · 확인 필요' : ''}</small></span><button type="button" data-manual-backup-index="${index}">삭제</button></article>`).join('')
       : `<p>${storage?.ok && complete ? '보관 중인 수동 백업이 없습니다.' : '수동 백업 목록을 확인하지 못했습니다.'}</p>`;
   };
 
   const render = (storage: BackupStorageOverview | null, error = '') => {
+    renderBackupDiagnostics(required("backupStoragePanel"), storage);
     snapshot = storage;
     snapshotTenantId = options.getTenantId();
     const configured = options.isConfigured();
@@ -146,7 +150,7 @@ export function initBackupStorage(options: Options) {
     }
     const breakdown = storage.storageBreakdown;
     const complete = storage.scanComplete === true && Boolean(breakdown) && Number.isFinite(storage.totalLogicalBytes);
-    const storageBytes = (value?: number) => {
+    const storageBytes = (value?: number | null) => {
       if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return '확인 필요';
       if (!complete) return value > 0 ? `${byteText(value)} 이상` : '확인 필요';
       return byteText(value);
@@ -155,8 +159,8 @@ export function initBackupStorage(options: Options) {
     const manualLimit = numeric(storage.retention?.manual) || 10;
     const manualOverLimit = numeric(storage.manualSnapshotCount) > manualLimit;
     const quarantineError = String(storage.legacyQuarantineError || '');
-    const healthy = complete && storage.snapshotVersion === 5 && !reviewCount && !quarantineError && !manualOverLimit;
-    badge(healthy ? 'v5 자동 관리' : complete ? '확인 필요' : '용량 일부 미확인', healthy ? 'ok' : 'warning');
+    const healthy = complete && storage.maintenance?.ok === true && !reviewCount && !quarantineError && !manualOverLimit;
+    badge(healthy ? '자동 정리 정상' : complete ? '확인 필요' : '용량 일부 미확인', healthy ? 'ok' : 'warning');
     text('backupStorageStatus', !complete
       ? '일부 파일을 읽지 못해 전체 용량을 확정할 수 없습니다. 폴더 접근과 OneDrive 상태를 확인한 뒤 새로고침해 주세요.'
       : quarantineError
@@ -165,7 +169,7 @@ export function initBackupStorage(options: Options) {
           ? `수동 백업이 ${numberText(storage.manualSnapshotCount)}개입니다. 확인할 수 없는 항목은 자동 삭제하지 않으므로 목록에서 직접 확인해 주세요.`
         : reviewCount
           ? `파일 상태가 달라 자동 삭제하지 않은 이전 백업 ${numberText(reviewCount)}개가 있습니다.`
-          : '정상 v5 백업을 확인한 뒤 안전한 이전 백업만 30일 동안 자동 격리합니다.');
+          : 'v4·v5 공통 보관 정책을 적용합니다. 백업·동기화·자동 정리 결과는 각각 확인해 주세요.');
     text('backupStorageTotal', storageBytes(storage.totalLogicalBytes));
     text('backupStorageScannedAt', storage.scannedAtMs
       ? `마지막 확인 ${new Intl.DateTimeFormat('ko-KR', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(storage.scannedAtMs))}${complete ? '' : ' · 일부 미확인'}`
@@ -181,7 +185,7 @@ export function initBackupStorage(options: Options) {
     text('backupStorageOther', storageBytes(breakdown?.otherBytes));
     const quarantineCount = numeric(storage.legacyQuarantineCount);
     const purgeDate = dateText(storage.legacyQuarantinePurgeAfterMs);
-    text('backupStorageReclaimable', `${numberText(quarantineCount)}개 · ${storageBytes(breakdown?.legacyQuarantineBytes)}`);
+    text('backupStorageReclaimable', `${quarantineError || storage.legacyQuarantineCount == null ? "개수 확인 필요" : `${numberText(quarantineCount)}개`} · ${storageBytes(breakdown?.legacyQuarantineBytes)}`);
     renderManualBackups(storage, complete);
     text('backupStorageQuarantineNote', purgeDate
       ? `격리된 이전 백업은 ${purgeDate} 이후 앱 실행 중 안전 조건을 확인한 뒤 정리합니다. 정리 전까지 이 용량은 계속 포함됩니다.`

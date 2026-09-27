@@ -30,13 +30,15 @@ mod legacy;
 mod retention;
 #[path = "backup_v5_storage.rs"]
 mod storage;
+#[path = "backup_quarantine_purge.rs"]
+mod purge;
 
 pub(crate) use legacy::{
     apply_legacy_cleanup, legacy_cleanup_preview,
-    legacy_cleanup_summary_from_scan, legacy_quarantine_summary, maintain_legacy_quarantine,
+    legacy_cleanup_summary_from_scan, legacy_quarantine_summary,
     purge_legacy_quarantine, quarantine_legacy_snapshots, undo_legacy_quarantine,
 };
-pub(crate) use retention::{prune_manual_snapshots, prune_snapshots};
+pub(crate) use retention::{prune_manual_snapshots, prune_snapshots, retention_preview, retention_check};
 pub(crate) use storage::{scan_storage, StorageScan};
 
 fn json_file(path: &Path) -> Option<Value> {
