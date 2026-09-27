@@ -44,6 +44,7 @@ const CAPABILITIES: &[&str] = &[
     "classaimate_mcp_student_drafts_read_v1",
     "classaimate_mcp_student_selection_v1",
     "classaimate_mcp_student_traits_v1",
+    "classaimate_mcp_record_edit_v1",
     "classaimate_mcp_teaching_sources_v1",
     "classaimate_mcp_teaching_source_pages_v1",
     "classaimate_mcp_teaching_source_fallback_v1",
@@ -330,6 +331,8 @@ fn read_local(store: &SqliteStore, tenant: &str, owner: &str, frame: &Value) -> 
         .ok_or_else(|| "INVALID_LOCAL_READ_REQUEST".to_string())?;
     let workspace = frame["workspace"].as_str().unwrap_or("");
     let operation = frame["operation"].as_str().unwrap_or("");
+    if ["life_records","lesson_observations"].contains(&workspace) && operation == "observation_evidence_get" { return store.evidence_detail(tenant, frame["input"]["docId"].as_str().ok_or("INVALID_LOCAL_READ_REQUEST")?, false); }
+    if workspace == "student_record" && operation == "student_record_exact_get" { return crate::classaimate_mcp_record_edit::read(store, tenant, &frame["input"]); }
     if workspace == "student_record" && operation == "student_drafts_get" {
         return classaimate_mcp_write_jobs::student_drafts::read_current(store, tenant, &frame["input"]);
     }
@@ -341,7 +344,7 @@ fn read_local(store: &SqliteStore, tenant: &str, owner: &str, frame: &Value) -> 
     }
     if operation == "write_receipt_get" {
         let allowed = match input.get("operation").and_then(Value::as_str).unwrap_or("") {
-            "student_record_save_drafts" | "student_record_traits_save" => workspace == "student_record",
+            "student_record_save_drafts" | "student_record_traits_save" | "student_record_edit" => workspace == "student_record",
             "counseling_record_save_draft" | "counseling_record_prepare_create" => workspace == "counseling_record",
             "lesson_observations_manage" => workspace == "lesson_observations",
             "life_records_manage" => workspace == "life_records",

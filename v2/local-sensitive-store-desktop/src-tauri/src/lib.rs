@@ -28,6 +28,7 @@ mod student_record_mcp;
 mod student_record_workspace;
 mod classaimate_mcp_materials_markdown;
 mod classaimate_mcp_write_jobs;
+mod classaimate_mcp_record_edit;
 mod classaimate_mcp_observations;
 mod classaimate_mcp_life_records;
 mod classaimate_mcp_worker;
@@ -77,7 +78,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-09-24.1-teaching-source-pdf-fallback";
+pub(crate) const SERVICE_VERSION: &str = "2026-09-27.1-mcp-record-audit";
 const WORK_MEETING_ROOT_PAGE_ID: &str = "classaimate:work-meeting-minutes";
 const WORK_MEETING_ROOT_TITLE: &str = "업무 회의록";
 const WORK_MEETING_ROOT_INTRO: &str = "모바일에서 확정한 업무 회의록이 자동으로 들어옵니다.";
@@ -4280,6 +4281,9 @@ impl SqliteStore {
             format!("{assignment_id}__{student_id}"),
             "eval_result_id_required",
         )?;
+        if input.get("v3SourceHash").is_some() && result_id != format!("{assignment_id}__{student_id}") {
+            return Err("eval_result_identity_mismatch".to_string());
+        }
         let date_key = normalize_date_key(
             input.get("dateKey")
                 .or_else(|| input.get("recordedDate"))
@@ -4303,6 +4307,13 @@ impl SqliteStore {
         }
         let payload_json = payload_json(&input, "eval_result_encode_failed")?;
         let conn = self.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
+        let existing: Option<(String, String)> = conn.query_row(
+            "SELECT assignment_id,student_id FROM eval_results WHERE tenant_id=?1 AND result_id=?2",
+            params![tenant_id, result_id], |row| Ok((row.get(0)?, row.get(1)?)),
+        ).optional().map_err(|e| format!("db_eval_result_read_failed:{e}"))?;
+        if existing.is_some_and(|(assignment, student)| assignment != assignment_id || student != student_id) {
+            return Err("eval_result_identity_mismatch".to_string());
+        }
         conn.execute(
             "INSERT INTO eval_results
              (tenant_id, result_id, assignment_id, student_id, date_key, payload_json, updated_at_ms)

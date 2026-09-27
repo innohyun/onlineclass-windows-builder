@@ -17,9 +17,10 @@ pub(crate) mod receipt_verification;
 #[path = "classaimate_mcp_student_drafts.rs"]
 pub(crate) mod student_drafts;
 
-const OPERATIONS: [&str; 12] = [
+const OPERATIONS: [&str; 13] = [
     "student_record_save_drafts",
     "student_record_traits_save",
+    "student_record_edit",
     "counseling_record_save_draft",
     "counseling_record_prepare_create",
     "work_notes_save_draft",
@@ -678,6 +679,7 @@ fn restructure_work_note(store: &TransactionStore<'_>, tenant: &str, data: &Valu
 
 fn verify_nonimage_readback(store: &TransactionStore<'_>, tenant: &str, operation: &str, data: &Value) -> Result<(), String> {
     match operation {
+        "student_record_edit" => crate::classaimate_mcp_record_edit::verify(store.conn, tenant, data)?,
         "student_record_traits_save" => {
             let raw: String = store.conn.query_row("SELECT payload_json FROM student_record_draft_sets WHERE tenant_id=?1 AND draft_set_id=?2", params![tenant,data["workspaceId"].as_str()], |row| row.get(0)).map_err(|_| "LOCAL_STORE_WRITE_FAILED")?;
             if decode(raw)?["workspace"]["behaviorInputs"][data["studentCode"].as_str().ok_or("MCP_STUDENT_TRAITS_INVALID")?] != data["behaviorInput"] { return Err("LOCAL_STORE_WRITE_FAILED".into()); }
@@ -831,6 +833,7 @@ pub(crate) fn apply_with_assets(store: &SqliteStore, input: &Value, assets: &Has
         .map_err(|error|format!("db_mcp_write_transaction_failed:{error}"))?;
     let scoped = TransactionStore { conn: &transaction };
     let saved = match operation {
+        "student_record_edit" => crate::classaimate_mcp_record_edit::save(&transaction, &tenant, data)?,
         "student_record_save_drafts" => save_student(&scoped, &tenant, data)?,
         "student_record_traits_save" => crate::student_record_workspace::save_traits(&transaction, &tenant, data)?,
         "counseling_record_save_draft" => save_counseling(&scoped, &tenant, data)?,
