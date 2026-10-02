@@ -6870,7 +6870,7 @@ async fn restore_local_backup(
     request_id: Option<String>,
 ) -> Result<Value, String> {
     // Correlation only: this opaque UI nonce grants no data or mutation authority.
-    let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let request_id = request_id.unwrap_or_else(|| format!("{:032x}", rand::random::<u128>()));
     if request_id.is_empty() || request_id.len() > 80 || !request_id.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-') {
         return Ok(json!({ "ok": false, "error": "backup_restore_request_id_invalid" }));
     }
