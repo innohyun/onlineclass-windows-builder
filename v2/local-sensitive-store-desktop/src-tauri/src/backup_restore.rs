@@ -1589,7 +1589,7 @@ mod tests {
         restore(&store, json!({
             "tenantId": "tenant-a",
             "manifestPath": manifest_path.to_string_lossy()
-        })).expect("restore legacy v2 manual backup");
+        }), &mut ProgressTracker::new(None)).expect("restore legacy v2 manual backup");
         assert!(observation_row(&store, "legacy-v2").unwrap().0.contains("legacy manual backup"));
         drop(store);
         fs::remove_dir_all(base).expect("remove legacy v2 test directory");
@@ -1633,7 +1633,7 @@ mod tests {
             "DELETE FROM lesson_observations WHERE tenant_id = 'tenant-a' AND doc_id = 'missing-current'", [],
         ).expect("delete current row");
 
-        let restored = restore(&store, json!({ "tenantId": "tenant-a", "manifestPath": manifest_path })).expect("restore backup");
+        let restored = restore(&store, json!({ "tenantId": "tenant-a", "manifestPath": manifest_path }), &mut ProgressTracker::new(None)).expect("restore backup");
         let restored_missing = observation_row(&store, "missing-current").expect("restored missing row");
         assert_eq!(restored_missing.1, 100);
         assert!(restored_missing.0.contains("backup copy"));
@@ -1673,7 +1673,7 @@ mod tests {
         restore(&store, json!({
             "tenantId": "tenant-a",
             "manifestPath": selected.get("manifestPath").and_then(Value::as_str).unwrap_or("")
-        })).expect("restore attachment");
+        }), &mut ProgressTracker::new(None)).expect("restore attachment");
         let mut restored = crate::work_note_attachments::open(&store, "tenant-a".to_string(), "attachment-a".to_string()).expect("open restored attachment");
         let mut bytes = Vec::new();
         restored.file.read_to_end(&mut bytes).expect("read restored attachment");
@@ -1706,6 +1706,7 @@ mod tests {
                 "tenantId": "tenant-a",
                 "manifestPath": selected.get("manifestPath").and_then(Value::as_str).unwrap_or("")
             }),
+            &mut ProgressTracker::new(None),
         )
         .expect_err("manual restore must reject equal revision conflict");
         assert_eq!(error, "lesson_plan_binding_revision_conflict");

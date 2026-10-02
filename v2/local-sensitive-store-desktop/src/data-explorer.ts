@@ -249,6 +249,10 @@ export function recordStatusLabel(record: LocalDataRecord) {
   if (mode === "custom_text") return "서술형 평가";
   if (mode === "level") return "단계형 평가";
   const status = firstText(record.payload, ["status", "kind"]);
+  const teacherStateLabels: Record<string, string> = record.sectionKey === "observations"
+    ? { good: "강점", warning: "계속 관찰", help: "도움 필요", none: "일반" }
+    : record.sectionKey === "teacher-counseling-sessions" ? { completed: "상담 완료", follow_up: "후속 지도" } : {};
+  if (teacherStateLabels[status]) return teacherStateLabels[status];
   const labels: Record<string, string> = {
     draft: "초안",
     recorded: "기록 완료",
