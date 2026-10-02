@@ -8,7 +8,7 @@ import { isMacDesktop } from "./settings-dashboard";
 const SHELL_HEIGHT = 56;
 const TEACHER_WEBVIEW_LABEL = "teacher-home";
 const TEACHER_HOME_URL = "https://t.classaimate.com/admin/";
-const TUTORIAL_KEY = "classaimateDesktopShellTutorial:v17";
+const TUTORIAL_KEY = "classaimateDesktopShellTutorial:v19";
 
 type ShellMode = "teacher" | "local";
 export type DesktopActivationIntent = "show-main" | "quick-observation";
@@ -237,21 +237,21 @@ export function initDesktopShell(options: DesktopShellOptions = {}): DesktopShel
     { target: required<HTMLElement>("deskNewDocument"), text: "새로 만들기에서 수업자료·업무 노트와 빠른 관찰 기록을 시작합니다. 학생 학습자료 작성·검토·공개는 기존 교사 홈으로 연결합니다. 인터넷 연결이 필요한 작업과 이 PC 저장은 구분해서 표시합니다. 이 안내는 문서를 만들거나 저장하지 않습니다." },
     { target: required<HTMLElement>("deskScreenIndex"), text: "화면 목록에서 휴지통·수정 이력·서식함·AI 변경 제안을 포함한 24개 작업 흐름을 찾습니다. 최근 문서의 별표는 이 PC의 즐겨찾기를 바꿉니다. 원문은 문서 저장소에서 다시 읽고, 즐겨찾기에는 문서 식별자만 보관합니다." },
     {
-      target: teacherButton,
+      target: required<HTMLElement>("deskOpenTeacher"),
       text: "교사 홈은 현재 사용 중인 웹 화면을 그대로 엽니다. TV 현황판·발표 화면처럼 독립 실행이 필요한 기능은 로그인 상태를 유지한 별도 앱 창으로 열립니다.",
     },
     {
-      target: localButton,
+      target: required<HTMLElement>("deskCurrentStore"),
       text: "로컬 자료함은 같은 SQLite를 수업자료·기존 학생 자료·업무자료·학생별 보기·빠른 관찰로 나눠 쓰는 공간입니다. 승인된 ChatGPT 작업은 이 앱이 연결하며 AI 설정 탭을 계속 열어 둘 필요는 없습니다. 원문 저장·영수증·재조회가 확인돼야 완료입니다. 연결이 끊겨도 생성 결과는 암호화해 최대 24시간 보존하지만 조회·작업 승인 기한은 자동 연장하지 않습니다.",
     },
     {
-      target: localButton,
+      target: required<HTMLElement>("deskCurrentStore"),
       text: isMacDesktop()
-        ? "Mac 로그인 시 자동 실행은 기본으로 꺼져 있습니다. 설정에서 켤 수 있고, 창을 닫은 뒤에는 메뉴 막대에서 다시 열 수 있습니다. 인증정보는 macOS 키체인에 보관합니다. 내장 교사 홈은 승인된 학급의 로컬 요청만 이 앱을 통해 전달합니다. 새로운 파일 접근이나 기기 권한을 허용하지 않습니다. PC 연결과 백업은 별개입니다. 백업 폴더 오류가 있어도 로컬 자료는 사용할 수 있고 기기 간 동기화만 보류됩니다. 이 안내는 자동 실행이나 자료 복원을 대신 실행하지 않습니다."
+        ? "Mac 로그인 시 자동 실행은 기본으로 꺼져 있습니다. 설정에서 켤 수 있고, 창을 닫은 뒤에는 메뉴 막대에서 다시 열 수 있습니다. 인증정보는 macOS 키체인에 보관합니다. 내장 교사 홈은 승인된 학급의 로컬 요청만 이 앱을 통해 전달합니다. 새로운 파일 접근이나 기기 권한을 허용하지 않습니다. PC 연결과 백업은 별개입니다. 백업 폴더 오류가 있어도 로컬 자료는 사용할 수 있고 백업·기기 동기화는 보류됩니다. 이 안내는 자동 실행이나 자료 복원을 대신 실행하지 않습니다."
         : "일반 바로가기는 현재 화면을, 빠른 관찰기록 바로가기는 이 앱의 관찰 화면을 곧바로 엽니다. 데이터나 백업이 복제되지는 않습니다. 기기 동기화는 최신 세대에 필요한 OneDrive 파일만 다운로드 요청합니다. 요청 거절 오류(380)가 나면 해당 파일 읽기로 한 번 더 요청하며, 폴더 전체를 다운로드하거나 항상 유지로 바꾸지 않습니다. 다운로드 후 검증을 마친 뒤 로컬 자료와 보관본에 반영합니다. 대기·실패 시 현재 자료는 유지됩니다. 백업·복원의 오류 안내를 확인하고 지금 동기화에서 다시 시도할 수 있습니다. 이 안내는 동기화나 복원을 대신 실행하지 않습니다.",
     },
     {
-      target: localButton,
+      target: required<HTMLElement>("deskCurrentStore"),
       text: "백업·복원에서 기기 동기화 단계를 확인할 수 있습니다. 게시 완료는 로컬 보관본과 서버 메타데이터가 준비됐다는 뜻입니다. 파일 다운로드와 미도착·무결성 실패를 구분합니다. 최신 파일이 미도착하면 이 PC의 변경 게시도 대기하며 미게시 건수를 확인할 수 있습니다. 10분 이상·3회 이상 미도착 시 게시한 기기의 OneDrive 상태도 확인합니다. 복구 후보가 있으면 동기화 시 동일한 내용인지 재검증하며, 수동 복원 완료는 기기 동기화 완료와 별개입니다. OneDrive 전달 상태와 다른 기기의 검증·적용 확인은 별도로 표시합니다. 전달 확인은 현재 기록 내용의 일치를 뜻하지 않습니다. 관찰 이력 분기는 양쪽 원장을 보존한 별도 상태이며 관찰 상세에서 확인합니다. 분기 집계 0건도 증빙 검증 완료를 뜻하지 않고, 확인 실패·구버전 필드 누락은 분기 없음으로 표시하지 않습니다. 복구 필요 안내가 나오면 해당 학급의 자료 변경·동기화를 중단하고 원본과 복구 파일을 보존합니다. 이전 오류만 남고 현재 미완료 복구 작업이 없다고 확인되면 지금 동기화로 다시 확인할 수 있습니다. 이 안내는 동기화·다운로드·복원을 대신 실행하지 않습니다.",
     },
   ];
@@ -260,10 +260,11 @@ export function initDesktopShell(options: DesktopShellOptions = {}): DesktopShel
     document.querySelectorAll(".desktop-shell-tutorial-target").forEach((node) => node.classList.remove("desktop-shell-tutorial-target"));
     tutorialSteps.forEach((step) => step.target.classList.toggle("desktop-shell-tutorial-target", step.target === tutorialSteps[tutorialIndex].target));
     const requestedTarget = tutorialSteps[tutorialIndex].target;
-    const target = requestedTarget.getClientRects().length ? requestedTarget : required<HTMLElement>("deskNewDocument");
+    const rect = requestedTarget.getBoundingClientRect();
+    const target = rect.width > 0 && rect.height > 0 ? requestedTarget : required<HTMLElement>("deskNewDocument");
     requestedTarget.classList.toggle("desktop-shell-tutorial-target", target === requestedTarget);
     target.classList.add("desktop-shell-tutorial-target");
-    target.scrollIntoView({ block: "nearest", inline: "nearest" });
+    target.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "instant" });
     tutorialBody.textContent = tutorialSteps[tutorialIndex].text;
     tutorialStep.textContent = `${tutorialIndex + 1} / ${tutorialSteps.length}`;
     tutorialPrevious.disabled = tutorialIndex === 0;

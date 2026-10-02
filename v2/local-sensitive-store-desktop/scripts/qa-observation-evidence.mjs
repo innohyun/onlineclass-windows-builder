@@ -1,15 +1,21 @@
+import { launchQaChromium } from '../../tools/v3-web/qa-browser-options.mjs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 
 // Run from the integrated repository to reuse its Playwright installation.
 const { chromium } = createRequire(path.join(process.cwd(), 'package.json'))('playwright');
-const desktop = path.resolve(import.meta.dirname, '..');
+const desktop = path.resolve(process.cwd(), 'local-sensitive-store-desktop');
+const sourceCommit=execFileSync('git',['rev-parse','HEAD'],{cwd:process.cwd(),encoding:'utf8'}).trim();
+const sourceDirtyPaths=execFileSync('git',['status','--porcelain','--untracked-files=no'],{cwd:process.cwd(),encoding:'utf8'}).trim().split('\n').filter(Boolean);
 const dist = path.join(desktop, 'dist');
 const output = path.resolve(process.env.OBSERVATION_QA_OUTPUT || path.join(desktop, '../artifacts/observation-evidence-desktop'));
+assert.equal((await fetch('http://127.0.0.1:8794/api/v3/health')).status,200,'canonical preview must be healthy');
 await mkdir(output, { recursive: true });
-const browser = await chromium.launch({ channel: 'chrome', headless: true });
-const evidence = { origin: 'http://127.0.0.1:8794', captures: [], errors: [] };
+const { browser, browserMetadata } = await launchQaChromium(chromium);
+const evidence = { sourceCommit, sourceDirtyPaths, browser: browserMetadata, origin: 'http://127.0.0.1:8794', scope: 'Built actual UI in read-only synthetic preview. Captures are implementation QA, not approved imagegen mockups or proof of native save/Windows IME.', captures: [], errors: [] };
 try {
   for (const viewport of [{ width: 1040, height: 720 }, { width: 640, height: 520 }]) {
     const page = await browser.newPage({ viewport });
@@ -29,11 +35,16 @@ try {
     });
     await page.goto(`${evidence.origin}/?designPreview=quick-observation`, { waitUntil: 'networkidle' });
     await page.evaluate(() => { document.body.classList.add('is-desktop-shell'); document.querySelector('#desktopShellBar').hidden = false; document.querySelector('#desktopLocalArchive')?.classList.add('is-active'); });
+    const privacy=page.locator('section[data-app-view="quick-observation"] [data-student-privacy-toggle]');
+    assert.equal(await privacy.getAttribute('aria-checked'),'true','privacy starts ON in each app instance');
+    assert.equal(await page.locator('#quickObservationNote').isDisabled(),true);
+    assert.doesNotMatch(await page.locator('#quickObservationRoster').innerText(),/이서윤/);
+    await privacy.click(); assert.equal(await privacy.getAttribute('aria-checked'),'false');
     await page.locator('.quick-student-tile').first().click();
     await page.locator('#quickObservationContext button[data-value="recess"]').click();
     if (await page.locator('#quickObservationTimePrecision').inputValue() !== 'unknown') errors.push('unknown-not-default');
     if (!await page.locator('#quickObservationTime').isDisabled()) errors.push('unknown-time-not-disabled');
-    await page.locator('#quickObservationDate').fill('2026-09-07');
+    await page.locator('#quickObservationDate').fill('2026-10-02');
     await page.locator('#quickObservationTimePrecision').selectOption('approximate');
     await page.locator('#quickObservationTime').fill('13:25');
     await page.locator('#quickObservationNote').fill('쉬는 시간에 있었던 일을 다음 날 기록하는 확인용 메모');
@@ -52,6 +63,7 @@ try {
     await page.locator('#quickObservationHelp').click();
     const tutorial = [];
     for (let step = 1; step <= 5; step++) {
+      if(step===2){await page.locator('#quickObservationTutorialPrevious').click(); assert.equal(await page.locator('#quickObservationTutorialStep').innerText(),'1 / 5'); await page.locator('#quickObservationTutorialNext').click();}
       await page.locator('#quickObservationTutorialStep').getByText(`${step} / 5`, { exact: true }).waitFor();
       const state = await page.evaluate(() => {
         const target = document.querySelector('.quick-tutorial-target')?.getBoundingClientRect();
@@ -68,9 +80,16 @@ try {
       if (step === 3) await page.screenshot({ path: path.join(output, `tutorial-occurrence-${viewport.width}x${viewport.height}.png`) });
       await page.locator('#quickObservationTutorialNext').click();
     }
+    const enteredNote=await page.locator('#quickObservationNote').inputValue();
+    await privacy.click(); assert.equal(await privacy.getAttribute('aria-checked'),'true');
+    assert.equal(await page.locator('#quickObservationNote').inputValue(),'','privacy removes sensitive input DOM while retaining current-window draft');
+    assert.equal(await page.locator('#quickObservationSave').isDisabled(),true);
+    await privacy.click(); assert.equal(await page.locator('#quickObservationNote').inputValue(),enteredNote);
     await page.locator('#quickObservationSave').click();
     await page.getByText('시안 모드에서는 실제 저장하지 않습니다.').waitFor();
-    evidence.captures.push({ viewport, screenshot, geometry, tutorial });
+    assert.equal(await page.locator('#quickObservationNote').inputValue(),enteredNote,'read-only save boundary preserves input');
+    assert.equal(await page.locator('#quickObservationForm').getAttribute('aria-busy'),'false');
+    evidence.captures.push({ viewport, screenshot, geometry, tutorial, privacy:'default ON, OFF input, ON DOM removal, OFF continuation', save:'synthetic preview deliberately read-only; input preserved' });
     evidence.errors.push(...errors.map(error => `${viewport.width}x${viewport.height}:${error}`));
     await page.close();
   }

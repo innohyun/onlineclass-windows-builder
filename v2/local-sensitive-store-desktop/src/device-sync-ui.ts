@@ -1,6 +1,8 @@
 import { snapshotPolicyDescription } from "./backup-diagnostics";
 import type { SnapshotPolicy } from "./backup-types";
 import { invoke } from "@tauri-apps/api/core";
+import { deriveDeviceSyncPresentation } from "./device-sync-presentation";
+import { isDeskRestoreBlocked } from "./desk-restore-lock";
 
 export type DeviceSyncStatus = {
   ok: boolean;
@@ -206,7 +208,7 @@ export function deviceSyncErrorMessage(error?: string, recoveryRequired?: boolea
 }
 
 function updateActionState(busy = false) {
-  busy = busy || syncRun !== null;
+  busy = busy || syncRun !== null || isDeskRestoreBlocked();
   const unavailable = !snapshot?.connected || !snapshot.credentialAvailable || !snapshot.oneDriveConfigured || Boolean(snapshot.backupError) || snapshot.recoveryRequired === true;
   document.querySelectorAll<HTMLButtonElement>('button[data-action="run-device-sync"]').forEach((button) => {
     button.disabled = busy || unavailable;
@@ -215,6 +217,45 @@ function updateActionState(busy = false) {
     button.hidden = snapshot?.connected === true && snapshot.credentialAvailable === true;
     button.disabled = busy;
   });
+}
+
+function mountSyncStages() {
+  const card = element("deviceSyncCard");
+  if (document.getElementById("deviceSyncStages")) return;
+  const stages = document.createElement("ol");
+  stages.id = "deviceSyncStages";
+  stages.className = "device-sync-stages";
+  stages.setAttribute("aria-label", "기기 동기화 단계별 확인");
+  const metrics = card.querySelector(".backup-device-sync-metrics");
+  if (metrics) {
+    const details = document.createElement("details");
+    details.className = "device-sync-details";
+    const summary = document.createElement("summary");
+    summary.textContent = "세대·검증·충돌 상세";
+    metrics.before(details); details.append(summary, metrics); details.before(stages);
+  } else card.append(stages);
+  for (const stage of deriveDeviceSyncPresentation(null).stages) {
+    const row = document.createElement("li"); row.id = `deviceSync${stage.id}Stage`;
+    row.innerHTML = `<span class="device-sync-step-number" aria-hidden="true">${stages.children.length + 1}</span><div><strong id="deviceSync${stage.id}StageLabel"></strong><p id="deviceSync${stage.id}StageDetail"></p></div><span id="deviceSync${stage.id}StageStatus" class="status-badge badge-neutral"></span>`;
+    stages.append(row);
+  }
+  window.addEventListener("desk:restore-lock-changed", () => updateActionState());
+}
+
+export function getDeviceSyncPresentation() {
+  const view = deriveDeviceSyncPresentation(snapshot);
+  return { ...view, canRun: view.canRun && !isDeskRestoreBlocked() };
+}
+
+function renderSyncStages() {
+  mountSyncStages();
+  for (const stage of getDeviceSyncPresentation().stages) {
+    setText(`deviceSync${stage.id}StageLabel`, stage.label);
+    setText(`deviceSync${stage.id}StageDetail`, stage.detail);
+    const badge = element(`deviceSync${stage.id}StageStatus`);
+    badge.textContent = stage.status; badge.className = `status-badge badge-${stage.tone}`;
+    element(`deviceSync${stage.id}Stage`).dataset.state = stage.tone;
+  }
 }
 
 export function renderDeviceSyncStatus(status: DeviceSyncStatus | null) {
@@ -232,9 +273,12 @@ export function renderDeviceSyncStatus(status: DeviceSyncStatus | null) {
   if (status?.recoveryRequired) {
     setBadge("복구 확인 필요", "error");
     setText("deviceSyncStatus", deviceSyncErrorMessage("restore_recovery_required"));
+  } else if (status?.backupError && status.connected && status.credentialAvailable) {
+    setBadge("백업 폴더 확인 필요", "warning");
+    setText("deviceSyncStatus", deriveDeviceSyncPresentation(status).detail);
   } else if (status?.syncPhase === "ack_pending" || failure.startsWith("device_sync_ack_pending:")) {
     setBadge("기기 확인 전송 대기", "warning");
-    setText("deviceSyncStatus", "이 PC의 자료 적용은 끝났지만 서버에 기기 확인을 전달하지 못했습니다. 확인 전송을 재시도하며, 아직 검증 완료로 표시하지 않습니다.");
+    setText("deviceSyncStatus", `${deriveDeviceSyncPresentation(status).detail} 확인 전송을 재시도하며, 아직 검증 완료로 표시하지 않습니다.`);
   } else if (artifact && status?.connected && status.credentialAvailable && status.oneDriveConfigured && !status.backupError) {
     setBadge(artifact.label, artifact.tone);
     setText("deviceSyncStatus", artifact.message);
@@ -250,7 +294,10 @@ export function renderDeviceSyncStatus(status: DeviceSyncStatus | null) {
     setText("deviceSyncStatus", pending
       ? ONE_DRIVE_DOWNLOAD_PENDING_MESSAGE
       : `기기 동기화 상태를 확인하지 못했습니다: ${deviceSyncErrorMessage(status.error, status.recoveryRequired)}`);
-  } else if (!status?.connected) {
+  } else if (!status) {
+    setBadge("확인 전", "warning");
+    setText("deviceSyncStatus", "기기 동기화 상태를 아직 확인하지 못했습니다. 상태를 새로고침해 주세요.");
+  } else if (!status.connected) {
     setBadge("PC 연결 필요", "warning");
     setText("deviceSyncStatus", "교사 설정에서 이 PC를 연결하면 OneDrive 최신 내용을 자동으로 맞춥니다.");
   } else if (!status.credentialAvailable) {
@@ -258,7 +305,7 @@ export function renderDeviceSyncStatus(status: DeviceSyncStatus | null) {
     setText("deviceSyncStatus", "기기 동기화 자격 증명을 확인할 수 없습니다. 교사 설정에서 PC를 다시 연결해 주세요.");
   } else if (status.backupError) {
     setBadge("백업 폴더 확인 필요", "warning");
-    setText("deviceSyncStatus", "PC 연결은 완료되었습니다. 백업 폴더에 접근할 수 없어 기기 간 동기화만 보류합니다. 로컬 자료는 계속 사용할 수 있으며, 백업·복원에서 폴더 연결과 접근 권한을 확인해 주세요.");
+    setText("deviceSyncStatus", "PC 연결은 완료되었습니다. 백업 폴더에 접근할 수 없어 백업과 기기 간 동기화를 보류합니다. 로컬 자료는 계속 사용할 수 있습니다. 백업 폴더 연결과 접근 권한을 확인해 주세요.");
   } else if (!status.oneDriveConfigured) {
     setBadge("OneDrive 설정 필요", "warning");
     setText("deviceSyncStatus", "학교 OneDrive 안의 백업 폴더를 선택하면 자동 동기화를 시작합니다.");
@@ -292,16 +339,20 @@ export function renderDeviceSyncStatus(status: DeviceSyncStatus | null) {
     setBadge("관찰 분기 확인 필요", "warning");
     setText("deviceSyncStatus", "이 PC의 관찰 이력 분기 상태를 확인하지 못했습니다. 구버전 앱의 필드 누락이나 자료 확인 오류를 분기 없음으로 처리하지 않습니다. 기기 전달 확인과 현재 기록 내용의 일치 여부는 별도입니다.");
   } else {
-    setBadge("최신 상태", "ok");
+    const confirmed = deriveDeviceSyncPresentation(status);
+    setBadge(confirmed.label, confirmed.tone === "neutral" ? "warning" : confirmed.tone);
     const delivery = status.lastSuccessAtMs
-      ? `${formatDateTime(status.lastSuccessAtMs)}에 자료와 보관본의 최신 상태를 확인했습니다. 충돌 건수는 누적 보관 기록입니다.`
-      : "이 PC는 확인된 최신 세대까지 반영했습니다. 서버의 다른 기기 확인과 OneDrive 파일 전달 상태는 별도로 판단합니다. 충돌 건수는 누적 보관 기록입니다.";
+      ? `${formatDateTime(status.lastSuccessAtMs)}에 동기화 작업 성공을 확인했습니다. 확인된 반영 세대와 다른 PC 확인은 아래에서 각각 표시합니다. 충돌 건수는 누적 보관 기록입니다.`
+      : confirmed.detail;
     setText("deviceSyncStatus", `${delivery} 이 PC의 관찰 분기 집계는 0건이며, 증빙 검증과 다른 기기의 현재 내용 일치는 별도입니다.`);
   }
   const statusNode = document.getElementById("deviceSyncStatus");
   let policyNode = document.getElementById("deviceSyncSnapshotPolicy");
   if (!policyNode && statusNode) { policyNode = document.createElement("p"); policyNode.id="deviceSyncSnapshotPolicy"; policyNode.style.whiteSpace="pre-wrap"; statusNode.after(policyNode); }
   if (policyNode) policyNode.textContent = status?.connected ? snapshotPolicyDescription(status.snapshotPolicy) : "";
+  renderSyncStages();
+  const details = document.querySelector("#deviceSyncCard .device-sync-details");
+  if (policyNode && details && policyNode.parentElement !== details) details.append(policyNode);
   updateActionState();
 }
 
@@ -316,7 +367,18 @@ export async function loadDeviceSyncStatus() {
 }
 
 export async function runDeviceSyncNow(afterRun: () => Promise<unknown>) {
+  if (isDeskRestoreBlocked()) {
+    setBadge("복원 작업 중", "warning");
+    setText("deviceSyncStatus", "복원 작업을 마칠 때까지 기기 동기화를 시작할 수 없습니다.");
+    return;
+  }
   if (syncRun) return syncRun;
+  if (!getDeviceSyncPresentation().canRun) {
+    const view = getDeviceSyncPresentation();
+    setText("deviceSyncStatus", view.detail);
+    updateActionState();
+    return;
+  }
   statusRevision += 1;
   updateActionState(true);
   setBadge("확인·검증 중", "warning");

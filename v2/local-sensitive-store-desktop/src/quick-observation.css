@@ -217,3 +217,31 @@
 .quick-occurrence-fields > div { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; margin-top: 10px; }
 .quick-occurrence-fields > div > label { flex: 1 1 120px; }
 .quick-occurrence-fields > small { display: block; margin-top: 8px; color: #64748b; }
+
+/* Shared with the inline composer; normal body text stays legible at desktop scale. */
+.quick-observation-view { font-size: 16px; }
+.quick-observation-heading p { font-size: 15px; flex-wrap: wrap; }
+.quick-observation-title-row span { font-size: 14px; }
+.quick-observation-heading button, .quick-roster-card header button, .quick-chip-row button { min-height: 44px; font-size: 15px; }
+.quick-roster-card h2, .quick-recent-card h2 { font-size: 18px; }
+.quick-roster-search { height: 46px; }
+.quick-roster-search input { font-size: 16px; }
+.quick-student-tile strong { font-size: 15px; }
+.quick-student-tile small, #quickObservationSelected { font-size: 14px; }
+.quick-composer-card legend, .quick-note-field > span { font-size: 16px; }
+.quick-note-field textarea { min-height: 150px; font-size: 16px; }
+.quick-observation-details label { font-size: 14px; }
+.quick-observation-details summary { font-size: 16px; }
+.quick-observation-details input, .quick-observation-details select { height: 44px; font-size: 16px; }
+.quick-observation-alert, .quick-observation-form-status, .quick-occurrence-fields > small { font-size: 15px; line-height: 1.65; }
+.quick-observation-save { min-height: 48px; font-size: 16px; }
+.quick-observation-form-status[data-tone="bad"] { padding: 12px; border: 1px solid #efb5ae; border-radius: 9px; background: #fff3f1; }
+.quick-composer-card[aria-busy="true"] { outline: 2px solid #c8daf9; }
+.quick-composer-card :disabled, .quick-roster-card :disabled { cursor: default; opacity: .65; }
+.quick-student-tile:has(input:disabled) { cursor: default; }
+.quick-student-tile:has(input:focus-visible) { outline: 3px solid #9fc5ff; outline-offset: 2px; }
+#quickObservationRecent strong, #quickObservationRecent span, #quickObservationRecent time { font-size: 14px; line-height: 1.65; }
+.quick-observation-tutorial p { font-size: 16px; line-height: 1.65; }
+.quick-observation-tutorial footer button { min-height: 44px; }
+@media (max-width: 1120px) { .quick-observation-layout { grid-template-columns: minmax(300px, 1fr) minmax(300px, 1fr); } }
+@media (max-width: 860px) { .quick-observation-layout { grid-template-columns: minmax(0, 1fr); } .quick-observation-heading { flex-wrap: wrap; } }

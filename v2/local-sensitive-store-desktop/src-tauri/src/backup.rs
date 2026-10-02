@@ -14,6 +14,9 @@ use std::time::Duration;
 #[path = "backup_restore.rs"]
 mod restore_runtime;
 pub(crate) use restore_runtime::{recovery_preflight, recovery_restore};
+#[path = "backup_restore_progress.rs"]
+mod restore_progress;
+pub(crate) use restore_progress::{RestoreErrorKind, RestorePhase, RestoreProgress};
 #[cfg(test)]
 #[path = "backup_optimization_tests.rs"]
 mod optimization_tests;
@@ -1152,10 +1155,24 @@ pub(crate) fn restore_preview(store: &SqliteStore, body: Value) -> Result<Value,
 }
 
 pub(crate) fn restore(store: &SqliteStore, body: Value) -> Result<Value, String> {
-    let tenant_id = normalize_tenant_id(body.get("tenantId"));
-    let _operation = root_operation(store, &configured_tenant_dir(store, &tenant_id)?)?;
-    store.restore_ready(&tenant_id)?;
-    restore_runtime::restore(store, body)
+    restore_with_progress(store, body, None)
+}
+
+pub(crate) fn restore_with_progress(
+    store: &SqliteStore,
+    body: Value,
+    callback: Option<&mut dyn FnMut(RestoreProgress)>,
+) -> Result<Value, String> {
+    let mut progress = restore_progress::ProgressTracker::new(callback);
+    progress.checkpoint(RestorePhase::VerifyStage);
+    let result = (|| {
+        let tenant_id = normalize_tenant_id(body.get("tenantId"));
+        let _operation = root_operation(store, &configured_tenant_dir(store, &tenant_id)?)?;
+        store.restore_ready(&tenant_id)?;
+        restore_runtime::restore(store, body, &mut progress)
+    })();
+    progress.complete(&result);
+    result
 }
 
 pub(crate) fn restore_generation(

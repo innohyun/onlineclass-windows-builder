@@ -1,0 +1,23 @@
+.backup-storage-panel { scroll-margin-top: 24px; border-radius: 14px; padding: 24px; background: #fff; }
+.backup-storage-panel h2 { font-size: 22px; }
+.backup-storage-total { padding: 20px; border: 1px solid #deebfb; border-radius: 10px; background: #f5f9ff; }
+.backup-storage-total strong { font-size: 32px; }
+.backup-storage-compact { display: grid; gap: 0; margin: 0; border: 1px solid #e1e9f4; border-radius: 10px; overflow: hidden; }
+.backup-storage-compact > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px; padding: 14px 18px; }
+.backup-storage-compact > div + div { border-top: 1px solid #e9eef6; }
+.backup-storage-compact dt { color: #344d69; font-size: 14px; }
+.backup-storage-compact dd { margin: 0; color: #132a44; font-size: 15px; font-weight: 750; }
+.backup-storage-breakdown-details { padding: 12px 0; }
+.backup-storage-breakdown-details summary { color: #53708f; font-size: 13px; cursor: pointer; }
+.backup-storage-breakdown-details p, .backup-manual-protection-note { color: #697c91; font-size: 12px; line-height: 1.6; }
+.backup-storage-breakdown-details .backup-storage-metrics { margin-top: 14px; }
+.backup-manual-manager { padding: 18px; border-color: #dae5f4; border-radius: 10px; background: #fff; }
+.backup-manual-manager h3 { font-size: 18px; }
+.backup-manual-item { padding: 14px; border-radius: 8px; }
+.backup-manual-item strong, .backup-manual-item small { white-space: normal; overflow-wrap: anywhere; text-overflow: clip; }
+.backup-manual-item strong { font-size: 14px; line-height: 1.5; }
+.backup-manual-item small { font-size: 12px; }
+.backup-storage-reference { border-radius: 9px; background: #f6f9fd; padding: 16px; }
+.backup-storage-quarantine-note { color: #65788e; }
+.backup-storage-panel summary:focus-visible, .backup-storage-panel button:focus-visible { outline: 3px solid #a9cbff; outline-offset: 3px; }
+@media (max-width: 620px) { .backup-storage-panel { padding: 18px 14px; } .backup-storage-compact > div { padding: 12px; gap: 10px; } .backup-storage-compact dt { font-size: 12px; } .backup-storage-compact dd { font-size: 13px; } .backup-manual-manager { padding: 12px; } }

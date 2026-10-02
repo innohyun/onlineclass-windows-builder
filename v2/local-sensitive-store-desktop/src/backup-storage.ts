@@ -1,9 +1,11 @@
 import { renderBackupDiagnostics } from './backup-diagnostics';
 import { invoke } from '@tauri-apps/api/core';
 import type { BackupStorageOverview, ManualBackupItem } from './backup-types';
+import { summarizeBackupStorage } from './backup-storage-summary';
+import { isDeskRestoreBlocked } from './desk-restore-lock';
 
 type Options = { getTenantId: () => string; isConfigured: () => boolean; onBackupsChanged?: () => void | Promise<void> };
-const TUTORIAL_KEY = 'localBackupStorageTutorial:v4';
+const TUTORIAL_KEY = 'localBackupStorageTutorial:v5';
 const CACHE_MS = 30_000;
 const DESIGN_PREVIEW = new URLSearchParams(window.location.search).get('designPreview') === 'backup';
 const PREVIEW_STORAGE: BackupStorageOverview = {
@@ -93,6 +95,21 @@ export function backupKindLabel(kind?: string) {
 }
 
 export function initBackupStorage(options: Options) {
+  const panel = required('backupStoragePanel');
+  if (!document.getElementById('backupStorageCompactBreakdown')) {
+    const compact = document.createElement('dl'); compact.id = 'backupStorageCompactBreakdown'; compact.className = 'backup-storage-compact';
+    compact.innerHTML = [['Database', 'DB 사본'], ['Attachments', '공유 첨부파일'], ['Archives', '보관본'], ['Other', '기타·이전 백업'], ['Quarantine', '정리 과정의 격리 파일']].map(([id, label]) => `<div><dt>${label}</dt><dd id="backupStorageCompact${id}">확인 전</dd></div>`).join('');
+    required('backupStorageTotalSummary').after(compact);
+    const details = document.createElement('details'); details.className = 'backup-storage-breakdown-details';
+    const summary = document.createElement('summary'); summary.textContent = '상세 항목과 합산 기준';
+    required('backupStorageBreakdown').before(details); details.append(summary, required('backupStorageBreakdown'));
+    const explanation = document.createElement('p'); explanation.textContent = '기타에는 백업 정보, 이전 방식 백업 전체, 생성 중 임시 파일과 기타 파일이 포함됩니다. 격리 파일은 정리 전까지 합계에 포함됩니다.'; details.append(explanation);
+    const protectedNote = document.createElement('p'); protectedNote.className = 'backup-manual-protection-note'; protectedNote.textContent = '수동 백업만 개별 삭제할 수 있습니다. 자동·기기 동기화·복원 전 보호 백업은 이 목록에서 삭제하지 않습니다.'; required('backupManualManager').append(protectedNote);
+    const previous = document.createElement('button'); previous.id = 'backupStorageTutorialPrevious'; previous.type = 'button'; previous.textContent = '이전'; required('backupStorageTutorialNext').before(previous);
+    const deleteNote = required('backupManualDeleteConfirmDialog').querySelector('form > p');
+    if (deleteNote) deleteNote.textContent = '선택한 수동 백업의 DB 사본과 백업 정보를 삭제합니다. 현재 자료와 다른 백업이 사용하는 공유 첨부파일은 유지됩니다. 앱 안에서 되돌릴 수 없습니다.';
+    required('backupManualDeleteBytes').previousElementSibling!.textContent = 'DB 사본 논리 크기';
+  }
   let snapshot: BackupStorageOverview | null = null;
   let snapshotTenantId = '';
   let revision = 0;
@@ -110,12 +127,12 @@ export function initBackupStorage(options: Options) {
     const refreshButton = required<HTMLButtonElement>('backupStorageRefresh');
     refreshButton.disabled = !options.isConfigured() || busy || undoBusy || deleteBusy;
     refreshButton.textContent = busy ? '용량 확인 중…' : '용량 새로고침';
-    required('backupStoragePanel').setAttribute('aria-busy', String(busy || undoBusy || deleteBusy));
-    required<HTMLButtonElement>('backupLegacyUndo').disabled = busy || undoBusy || deleteBusy
+    panel.setAttribute('aria-busy', String(busy || undoBusy || deleteBusy));
+    required<HTMLButtonElement>('backupLegacyUndo').disabled = busy || undoBusy || deleteBusy || isDeskRestoreBlocked()
       || snapshotTenantId !== options.getTenantId() || !snapshot?.ok
       || !numeric(snapshot.legacyQuarantineCount) || Boolean(snapshot.legacyQuarantineError);
     required('backupManualBackups').querySelectorAll<HTMLButtonElement>('[data-manual-backup-index]').forEach((button) => {
-      button.disabled = busy || undoBusy || deleteBusy;
+      button.disabled = busy || undoBusy || deleteBusy || isDeskRestoreBlocked();
     });
   };
 
@@ -135,6 +152,10 @@ export function initBackupStorage(options: Options) {
     snapshot = storage;
     snapshotTenantId = options.getTenantId();
     const configured = options.isConfigured();
+    const compact = summarizeBackupStorage(storage);
+    for (const [id, bytes] of [['Database', compact.database], ['Attachments', compact.attachments], ['Archives', compact.archives], ['Other', compact.other], ['Quarantine', compact.quarantine]] as const) {
+      text(`backupStorageCompact${id}`, compact.complete ? byteText(bytes) : '확인 필요');
+    }
     if (!configured || !storage?.ok) {
       const failed = Boolean(storage || error);
       badge(configured ? failed ? '확인 필요' : '확인 중' : '폴더 필요', configured && failed ? 'warning' : 'neutral');
@@ -149,7 +170,7 @@ export function initBackupStorage(options: Options) {
       updateActions(); return;
     }
     const breakdown = storage.storageBreakdown;
-    const complete = storage.scanComplete === true && Boolean(breakdown) && Number.isFinite(storage.totalLogicalBytes);
+    const complete = compact.complete;
     const storageBytes = (value?: number | null) => {
       if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return '확인 필요';
       if (!complete) return value > 0 ? `${byteText(value)} 이상` : '확인 필요';
@@ -162,7 +183,7 @@ export function initBackupStorage(options: Options) {
     const healthy = complete && storage.maintenance?.ok === true && !reviewCount && !quarantineError && !manualOverLimit;
     badge(healthy ? '자동 정리 정상' : complete ? '확인 필요' : '용량 일부 미확인', healthy ? 'ok' : 'warning');
     text('backupStorageStatus', !complete
-      ? '일부 파일을 읽지 못해 전체 용량을 확정할 수 없습니다. 폴더 접근과 OneDrive 상태를 확인한 뒤 새로고침해 주세요.'
+      ? '전체 파일과 합산 항목을 모두 확인하지 못해 전체 용량을 확정할 수 없습니다. 폴더 접근과 OneDrive 상태를 확인한 뒤 새로고침해 주세요.'
       : quarantineError
         ? `자동 격리 기록을 확인해야 합니다: ${quarantineError}`
       : manualOverLimit
@@ -243,17 +264,18 @@ export function initBackupStorage(options: Options) {
   const deleteManualBackup = async (backup: ManualBackupItem) => {
     const tenantId = options.getTenantId();
     const manifestPath = String(backup.manifestPath || '').trim();
-    if (!tenantId || !manifestPath || deleteBusy || snapshotTenantId !== tenantId) return;
+    if (!tenantId || !manifestPath || deleteBusy || snapshotTenantId !== tenantId || isDeskRestoreBlocked()) return;
     const dialog = required<HTMLDialogElement>('backupManualDeleteConfirmDialog');
+    if (dialog.open) return;
     dialog.returnValue = '';
     text('backupManualDeleteDate', dateTimeText(backup.createdAtMs));
     text('backupManualDeleteSource', [backup.source?.pcName, backup.source?.os].filter(Boolean).join(' · ') || 'PC 정보 없음');
-    text('backupManualDeleteBytes', byteText(backup.snapshotBytes));
+    text('backupManualDeleteBytes', backup.bytesComplete === false ? '확인 필요' : byteText(backup.snapshotBytes));
     const confirmed = await new Promise<boolean>((resolve) => {
       dialog.addEventListener('close', () => resolve(dialog.returnValue === 'confirm'), { once: true });
       dialog.showModal();
     });
-    if (!confirmed || tenantId !== options.getTenantId()) return;
+    if (!confirmed || tenantId !== options.getTenantId() || isDeskRestoreBlocked()) return;
     deleteBusy = true; updateActions();
     try {
       const result = await invoke<{ ok?: boolean; deletedBytes?: number; error?: string }>('delete_manual_backup', { tenantId, manifestPath });
@@ -275,14 +297,14 @@ export function initBackupStorage(options: Options) {
   const undoCleanup = async () => {
     const tenantId = options.getTenantId();
     const quarantineCount = numeric(snapshot?.legacyQuarantineCount);
-    if (!tenantId || !quarantineCount || undoBusy || snapshotTenantId !== tenantId) return;
+    if (!tenantId || !quarantineCount || undoBusy || snapshotTenantId !== tenantId || isDeskRestoreBlocked()) return;
     undoBusy = true; updateActions();
     const dialog = required<HTMLDialogElement>('backupCleanupConfirmDialog');
     dialog.returnValue = '';
     text('backupCleanupConfirmSummary', `30일 보관 중인 이전 방식 백업 ${numberText(quarantineCount)}개(${byteText(snapshot?.legacyQuarantineBytes)})를 원래 위치로 복원합니다.`);
     try {
       const confirmed = await new Promise<boolean>((resolve) => { dialog.addEventListener('close', () => resolve(dialog.returnValue === 'confirm'), { once: true }); dialog.showModal(); });
-      if (!confirmed || tenantId !== options.getTenantId()) return;
+      if (!confirmed || tenantId !== options.getTenantId() || isDeskRestoreBlocked()) return;
       const result = await invoke<{ ok?: boolean; restored?: number; restoredBytes?: number; reviewCount?: number; error?: string }>('undo_legacy_backup_cleanup', { tenantId });
       if (!result?.ok) throw new Error(result?.error || 'backup_cleanup_undo_failed');
       invalidate(); await refresh(true);
@@ -329,6 +351,7 @@ export function initBackupStorage(options: Options) {
     step.target.classList.add('local-reader-tutorial-target'); text('backupStorageTutorialStep', `${tutorialIndex + 1} / ${tutorialSteps.length}`);
     text('backupStorageTutorialTitle', step.title); text('backupStorageTutorialCopy', step.copy);
     required<HTMLButtonElement>('backupStorageTutorialNext').textContent = tutorialIndex === tutorialSteps.length - 1 ? '완료' : '다음'; tutorial.hidden = false;
+    required<HTMLButtonElement>('backupStorageTutorialPrevious').disabled = tutorialIndex === 0;
     // Reserve room below the target for the explanatory panel on narrow screens.
     step.target.scrollIntoView({ block: 'start', behavior: 'instant' });
     positionTutorial();
@@ -356,7 +379,8 @@ export function initBackupStorage(options: Options) {
   required('backupStorageHelp').addEventListener('click', openTutorial);
   required('backupStorageTutorialClose').addEventListener('click', () => closeTutorial(false));
   required('backupStorageTutorialNext').addEventListener('click', () => { if (tutorialIndex >= tutorialSteps.length - 1) closeTutorial(true); else { tutorialIndex += 1; renderTutorial(); } });
-  document.querySelector<HTMLElement>('[data-app-view-target="backup"]')?.addEventListener('click', () => { if (localStorage.getItem(TUTORIAL_KEY) !== 'complete') window.setTimeout(openTutorial, 0); });
+  required('backupStorageTutorialPrevious').addEventListener('click', () => { if (tutorialIndex > 0) { tutorialIndex -= 1; renderTutorial(); } });
+  window.addEventListener('desk:restore-lock-changed', updateActions);
   document.addEventListener('click', (event) => {
     const view = (event.target as HTMLElement | null)?.closest<HTMLElement>('[data-app-view-target]')?.dataset.appViewTarget;
     if (view && view !== 'backup') closeTutorial();

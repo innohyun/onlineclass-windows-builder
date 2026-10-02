@@ -1,0 +1,37 @@
+.backup-device-sync-strip { display: flex; flex-direction: column; align-items: stretch; gap: 18px; padding: 24px; background: #fff; border: 1px solid #dce6f2; border-radius: 14px; }
+.backup-device-sync-primary h2 { font-size: 21px; }
+.backup-device-sync-primary p { line-height: 1.6; }
+.device-sync-stages { list-style: none; display: grid; margin: 0; padding: 0; }
+.device-sync-stages > li { display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; align-items: center; gap: 18px; min-height: 82px; border-top: 1px solid #e7edf5; padding: 14px 8px; }
+.device-sync-step-number { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; color: #41566f; background: #edf3fa; font-weight: 750; }
+.device-sync-stages strong { color: #122640; font-size: 16px; }
+.device-sync-stages p { margin: 5px 0 0; color: #647690; line-height: 1.5; font-size: 13px; overflow-wrap: anywhere; }
+.device-sync-stages .status-badge { text-align: center; min-width: 110px; padding: 8px 12px; white-space: normal; }
+.device-sync-stages [data-state="ok"] .device-sync-step-number { color: #fff; background: #159858; }
+.device-sync-stages [data-state="warning"] .device-sync-step-number { color: #9b6300; background: #fff1ce; }
+.device-sync-stages [data-state="error"] .device-sync-step-number { color: #c52d3b; background: #ffe9ec; }
+.device-sync-details { border: 1px solid #e3ebf5; border-radius: 9px; padding: 12px 16px; }
+.device-sync-details > summary { color: #536780; font-size: 13px; font-weight: 650; cursor: pointer; }
+.device-sync-details .backup-device-sync-metrics { margin-top: 14px; }
+.backup-device-sync-actions { flex-wrap: wrap; }
+.backup-device-sync-actions button { min-height: 42px; }
+.device-auth-panel { align-items: stretch; text-align: left; }
+.device-auth-panel.settings-auth-panel { width: 100%; min-height: 0; padding: 28px; justify-items: stretch; }
+.device-auth-panel > p:not(.device-auth-kicker) { max-width: none; }
+.device-auth-panel .device-auth-icon { align-self: flex-start; justify-self: start; }
+.device-auth-steps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); list-style: none; padding: 0; margin: 26px 0; gap: 12px; }
+.device-auth-steps li { display: grid; grid-template-columns: 32px minmax(0, 1fr); gap: 6px 10px; align-items: center; padding: 16px 12px; border: 1px solid #e0e8f3; border-radius: 10px; color: #152d48; background: #f8fbff; }
+.device-auth-steps li > span { grid-row: 1 / 3; display: grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; color: #55718d; background: #e8eff7; font-weight: 750; }
+.device-auth-steps strong { font-size: 13px; overflow-wrap: anywhere; }
+.device-auth-steps small { color: #6c8098; }
+.device-auth-steps [data-state="complete"] { background: #effaf4; border-color: #bde5ce; }
+.device-auth-steps [data-state="complete"] > span { background: #129c58; color: #fff; }
+.device-auth-steps [data-state="current"] { border-color: #80afff; background: #f0f6ff; }
+.device-auth-steps [data-state="error"] { border-color: #f0abb3; background: #fff2f3; }
+.device-auth-complete-actions { margin-top: 18px; display: flex; flex-wrap: wrap; gap: 10px; }
+.device-auth-complete-actions > p { width: 100%; margin: 0 0 6px; line-height: 1.6; color: #536e88; }
+.device-auth-complete-actions[hidden], .device-auth-panel[hidden] { display: none; }
+.device-auth-panel[data-state="device_sync_failed"] .device-auth-icon, .device-auth-panel[data-state="expired"] .device-auth-icon { color: #bc2d3b; background: #ffeef0; }
+.device-sync-details summary:focus-visible, .device-auth-panel button:focus-visible { outline: 3px solid #a9cbff; outline-offset: 3px; }
+@media (max-width: 900px) { .device-auth-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 620px) { .backup-device-sync-strip { padding: 18px 14px; } .device-sync-stages > li { gap: 10px; grid-template-columns: 32px minmax(0, 1fr); } .device-sync-stages .status-badge { grid-column: 2; justify-self: start; min-width: 0; } .device-auth-steps { grid-template-columns: 1fr; } .device-auth-panel .device-auth-actions, .device-auth-complete-actions { flex-direction: column; align-items: stretch; } }

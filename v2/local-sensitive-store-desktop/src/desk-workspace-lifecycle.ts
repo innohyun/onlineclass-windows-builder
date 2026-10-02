@@ -1,13 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import { initDeskNavigation } from "./desk-navigation";
 import { initDocumentWorkspace } from "./document-workspace";
-import { loadHomeOverview, type initHomeDashboard } from "./home-dashboard";
+import { loadHomeOverview, type ViewContext, type initHomeDashboard } from "./home-dashboard";
 import { initLocalWorkspaces } from "./local-workspaces";
 import type { initDesktopShell } from "./desktop-shell";
 
 export function initTeacherDeskDocuments(options: {
   getTenantId: () => string;
   openTeacherHome: (path: string) => void | Promise<void>;
+  navigate: (view: string, context?: ViewContext) => Promise<boolean>;
 }) {
   const localWorkspaces = initLocalWorkspaces({
     getTenantId: options.getTenantId,
@@ -15,6 +16,9 @@ export function initTeacherDeskDocuments(options: {
   });
   const documentWorkspace = initDocumentWorkspace({
     getTenantId: options.getTenantId,
+    mount: document.getElementById("deskDocumentHost")!,
+    onOpen: input => options.navigate("document-workspace", {workspace: input.workspace}),
+    onClose: workspace => options.navigate(workspace === "lessonMaterials" ? "lesson-materials" : "work-materials").then(() => undefined),
     openTeacherHome: (path) => { void options.openTeacherHome(path); },
     onChanged: () => { void localWorkspaces.refresh(); void loadHomeOverview(options.getTenantId()); },
   });
@@ -33,7 +37,7 @@ export function bindTeacherDeskLifecycle(options: {
   window.addEventListener("desk:close-error", () => deskNavigation.notify("저장 확인 중 문제가 생겨 앱을 닫지 않았습니다. 편집 내용과 저장 상태를 확인해 주세요."));
   void desktopShell.startCloseHandling(canLeave).catch(() => deskNavigation.notify("앱 종료 보호를 준비하지 못했습니다. 문서를 저장한 뒤 창을 닫아 주세요."));
   void desktopShell.startActivationHandling(async (intent) => {
-    const shortcutTarget = document.querySelector<HTMLButtonElement>('.sidebar-link[data-app-view-target="quick-observation"]');
+    const shortcutTarget = document.querySelector<HTMLButtonElement>('.sidebar-quick[data-app-view-target="quick-observation"]');
     if (!shortcutTarget) throw new Error("quick_observation_target_missing");
     if (!await homeDashboard.navigate("quick-observation")) return;
     await waitForPaint();

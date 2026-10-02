@@ -196,14 +196,14 @@
 
 .student-records-column {
   display: grid;
-  grid-template-rows: 88px minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
 }
 
 .student-records-head {
   display: grid;
   align-content: center;
   gap: 7px;
-  padding: 0 28px;
+  padding: 18px 28px;
   border-bottom: 1px solid #e5e9f0;
 }
 
@@ -618,4 +618,55 @@
   .student-detail-meta div { grid-template-columns: 82px minmax(0, 1fr); }
   .student-attachment-row { grid-template-columns: 34px minmax(0, 1fr); }
   .student-attachment-row button { grid-column: 1 / -1; width: 100%; }
+}
+
+/* Accepted teacher-desk proposals: readable three-column workbench and optional single composer. */
+.student-timeline-view { font-size: 16px; padding: 28px 30px; }
+.student-view-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.student-view-heading h1 { margin-right: auto; font-size: 30px; }
+.student-view-heading p { width: 100%; order: 8; font-size: 16px; }
+.student-view-heading button, .student-kind-tabs button, .student-list-message button, .student-privacy-toggle { min-height: 44px; padding: 9px 14px; border: 1px solid #d6e1f0; border-radius: 9px; font-size: 15px; cursor: pointer; }
+.student-privacy-toggle { color: #225fb9; background: #eef5ff; white-space: nowrap; }
+.student-privacy-toggle[aria-checked="false"] { color: #7b4a0b; background: #fff7e7; }
+.student-timeline-workbench { grid-template-columns: minmax(190px, .6fr) minmax(300px, 1fr) minmax(340px, 1.1fr); min-height: 620px; }
+.student-timeline-workbench.is-detail-collapsed { grid-template-columns: minmax(190px, .6fr) minmax(300px, 2.1fr); }
+.student-roster-column .student-timeline-search { margin: 16px 12px; }
+.student-roster-column .student-search-field { height: 46px; min-width: 0; padding-inline: 9px; }
+.student-roster-column .student-search-field input { width: 100%; min-width: 0; font-size: 15px; }
+.student-roster-row { min-height: 56px; }
+.student-roster-row strong, .student-roster-row > span { font-size: 16px; }
+.student-roster-notice { margin: 14px; color: #62738b; font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
+.student-kind-tabs { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 16px; }
+.student-kind-tabs button { color: #4c607f; background: #fff; }
+.student-kind-tabs button[aria-pressed="true"] { color: #fff; border-color: #286dea; background: #286dea; }
+.student-timeline-copy strong { font-size: 16px; line-height: 1.55; }
+.student-timeline-copy small { font-size: 14px; }
+.student-list-message { display: flex; flex-direction: column; align-items: center; gap: 12px; line-height: 1.6; font-size: 16px; }
+.student-detail-meta { font-size: 15px; }
+.student-detail-body h3, .student-attachments h3 { font-size: 17px; }
+.student-detail-body p { font-size: 16px; line-height: 1.8; overflow-wrap: anywhere; white-space: pre-wrap; }
+.student-attachment-row strong { font-size: 15px; }
+.student-attachment-row small, .student-local-status { font-size: 14px; }
+.student-attachment-row button { min-height: 44px; font-size: 15px; }
+.student-detail-column.has-quick-panel > :not(#studentTimelineQuickObservationPanel) { display: none; }
+.student-quick-panel > header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.student-quick-panel > header h2 { margin: 0; font-size: 22px; }
+.student-quick-panel > button { margin: 8px 6px 8px 0; }
+.student-quick-target { font-size: 16px; font-weight: 700; color: #1a335a; }
+.student-quick-panel .quick-composer-card { box-shadow: none; border: 0; padding: 0; }
+.student-quick-panel .quick-observation-save { width: 100%; }
+@media (max-width: 1180px) {
+  .student-timeline-workbench { grid-template-columns: 180px minmax(270px, 1fr) minmax(300px, 1fr); }
+  .student-detail-column { padding: 20px; }
+}
+@media (max-width: 1080px) {
+  .student-timeline-view { padding: 24px 18px; }
+  .student-timeline-workbench, .student-timeline-workbench.is-detail-collapsed { grid-template-columns: minmax(150px, .6fr) minmax(0, 1.4fr); }
+  .student-detail-column { grid-column: 1 / -1; border-top: 1px solid #dce4f0; }
+}
+@media (max-width: 620px) {
+  .student-timeline-workbench, .student-timeline-workbench.is-detail-collapsed { grid-template-columns: minmax(0, 1fr); }
+  .student-view-heading h1 { font-size: 26px; }
+  .student-roster-column, .student-records-column { border-right: 0; }
+  .student-roster-list { display: flex; overflow-x: auto; }
 }

@@ -37,10 +37,10 @@
 }
 
 .health-summary {
-  min-height: 252px;
+  min-height: 180px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  grid-template-rows: minmax(124px, auto) auto;
+  grid-template-rows: minmax(86px, auto) auto;
   align-items: center;
   border-radius: 10px;
   padding: 24px 28px 0;
@@ -49,20 +49,20 @@
 .health-summary-main {
   min-width: 0;
   display: grid;
-  grid-template-columns: 88px minmax(0, 1fr);
-  gap: 28px;
+  grid-template-columns: 58px minmax(0, 1fr);
+  gap: 20px;
   align-items: center;
 }
 
 .health-summary-icon {
-  width: 88px;
-  height: 88px;
+  width: 58px;
+  height: 58px;
   display: grid;
   place-items: center;
   border-radius: 50%;
   color: #ffffff;
   background: var(--health-green);
-  font-size: 43px;
+  font-size: 28px;
   box-shadow: inset 0 -9px 20px rgba(0, 104, 61, 0.12);
 }
 
@@ -93,7 +93,7 @@
 .health-summary-main h2 {
   margin: 9px 0 7px;
   color: var(--health-ink);
-  font-size: clamp(25px, 2.35vw, 34px);
+  font-size: clamp(23px, 2vw, 30px);
   line-height: 1.2;
   letter-spacing: -0.045em;
 }
@@ -182,29 +182,30 @@
 
 .health-panel-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
   margin-top: 18px;
 }
 
 .health-panel {
   min-width: 0;
-  min-height: 446px;
+  min-height: 250px;
   display: flex;
   flex-direction: column;
-  padding: 29px 25px 40px;
+  padding: 20px 24px;
+  border-radius: 12px;
 }
 
 .health-panel:first-child {
-  border-radius: 10px 0 0 10px;
+  border-radius: 12px;
 }
 
 .health-panel:last-child {
-  border-radius: 0 10px 10px 0;
+  border-radius: 12px;
 }
 
 .health-panel + .health-panel {
-  border-left: 0;
+  border-left: 1px solid var(--health-border);
 }
 
 .health-panel.is-warning {
@@ -255,7 +256,7 @@
 
 .health-panel-description {
   min-height: 24px;
-  margin: 22px 0 18px;
+  margin: 16px 0 12px;
   color: #5f708a;
   font-size: 15px;
   line-height: 1.6;
@@ -263,9 +264,9 @@
 
 .health-detail-list {
   display: grid;
-  gap: 16px;
+  gap: 10px;
   margin: 0;
-  padding-top: 20px;
+  padding-top: 12px;
   border-top: 1px solid var(--health-soft-border);
 }
 
@@ -425,7 +426,7 @@
   }
 
   .health-panel-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 12px;
   }
 
@@ -440,6 +441,7 @@
 }
 
 @media (max-width: 860px) {
+  .health-panel-grid { grid-template-columns: 1fr; }
   .health-view {
     padding-top: 30px;
   }

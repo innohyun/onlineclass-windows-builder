@@ -26,6 +26,18 @@
   gap: 20px;
 }
 
+.settings-dashboard-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: stretch; }
+.settings-dashboard-grid > .settings-wide-panel { margin-top: 0; }
+.settings-dashboard-grid > .settings-panel { min-height: 280px; }
+.settings-dashboard-grid .settings-detail-list div { grid-template-columns: 130px minmax(0, 1fr); }
+.settings-dashboard-grid .settings-backup-details { margin-top: 24px; }
+.settings-dashboard-grid .desk-display-preferences { padding: 22px 24px; }
+.settings-dashboard-grid .desk-display-preferences label { min-width: 0; display: flex; gap: 16px; align-items: center; justify-content: space-between; padding-block: 14px; }
+.settings-dashboard-grid .desk-display-preferences label + label { border-top: 1px solid #e7edf5; }
+.settings-dashboard-grid .desk-display-preferences label > span { min-width: 0; display: grid; gap: 5px; }
+.settings-dashboard-grid .desk-display-preferences small { color: #6c7f98; line-height: 1.5; }
+.settings-dashboard-grid .desk-display-preferences input { flex: 0 0 22px; width: 22px; height: 22px; accent-color: #0668ed; }
+
 .settings-panel,
 .settings-wide-panel,
 .settings-security-strip,
@@ -226,7 +238,9 @@
 .settings-advanced-panel[open] summary > i { transform: rotate(180deg); }
 .settings-advanced-panel .advanced-grid { border-top: 1px solid #e7edf5; padding: 18px 24px 22px; }
 
-.settings-version-footer { display: flex; gap: 6px; margin: 9px 0 0 3px; color: #718099; font-size: 10px; }
+.settings-version-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 12px 0 0; border: 1px solid var(--settings-line); border-radius: 10px; padding: 18px 22px; color: #596e89; background: #fff; font-size: 13px; }
+.settings-version-footer a { margin-left: auto; color: #0668ed; }
+.settings-reconnect-note { margin: 15px 0 0; color: #60758d; line-height: 1.6; font-size: 12px; }
 
 .settings-disconnect-dialog { width: min(470px, calc(100vw - 32px)); border: 0; border-radius: 14px; padding: 0; color: var(--settings-navy); box-shadow: 0 28px 80px rgba(7, 22, 48, .28); }
 .settings-disconnect-dialog::backdrop { background: rgba(9, 23, 48, .55); backdrop-filter: blur(2px); }
@@ -248,6 +262,7 @@
 }
 
 @media (max-width: 900px) {
+  .settings-dashboard-grid { grid-template-columns: 1fr; }
   .settings-primary-grid { grid-template-columns: 1fr; }
   .settings-panel { min-height: 320px; }
   .settings-security-strip > div { grid-template-columns: 1fr; }
@@ -255,6 +270,7 @@
 }
 
 @media (max-width: 620px) {
+  .settings-dashboard-grid .settings-detail-list div { grid-template-columns: 1fr; }
   .settings-view-heading { margin-bottom: 18px; }
   .settings-panel,
   .settings-wide-panel,

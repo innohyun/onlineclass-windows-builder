@@ -209,3 +209,24 @@
   .device-conflict-change-values > div + div { border-top: 1px solid #e5e7ea; border-left: 0; }
   .device-conflict-viewer > footer { padding-inline: 12px; }
 }
+.device-conflict-viewer { color:#182f54; background:#f5f8ff; border-radius:12px; }
+.device-conflict-viewer > header h1 { font-size:28px; letter-spacing:-.025em; }
+.device-conflict-viewer > header { flex-wrap:wrap; }
+.device-conflict-layout { grid-template-columns:minmax(240px,.75fr) minmax(0,1.65fr); gap:18px; }
+.device-conflict-layout > section { min-width:0; border-radius:12px; background:#fff; }
+.device-conflict-detail-column { min-width:0; display:flex; flex-direction:column; border:1px solid #d4e1f3; border-radius:12px; background:#fff; }
+.device-conflict-detail-column > article { border:0; box-shadow:none; }
+.device-conflict-detail-column .device-conflict-actions { justify-content:flex-end; flex-wrap:wrap; margin-top:auto; padding:16px 18px; border-top:1px solid #e0e8f3; }
+.device-conflict-actions button { white-space:normal; min-height:42px; }
+.device-conflict-row.is-active { background:#eaf2ff; border-color:#3f82f6; }
+.device-conflict-boundary,.device-conflict-privacy { margin-top:16px; padding:14px 16px; border:1px solid #b9d3fc; border-radius:8px; background:#edf5ff; font-size:12px; line-height:1.75; color:#315e9c; }
+.device-conflict-privacy { background:#f4f7fb; border-color:#d4e1f3; }
+.device-conflict-detail-column pre,.device-conflict-detail-column td { overflow-wrap:anywhere; }
+@media(max-width:950px) { .device-conflict-layout { grid-template-columns:1fr; } .device-conflict-layout > section { max-height:320px; overflow:auto; } }
+
+.device-conflict-viewer { inset:72px 0 0 var(--desk-sidebar-width,220px); z-index:90; grid-template-rows:auto auto minmax(0,1fr) auto; }
+@media(max-width:760px) { .device-conflict-viewer { inset:60px 0 0; } }
+.device-conflict-detail-column { min-height:0; overflow:hidden; }
+.device-conflict-detail-column > article { flex:1; min-height:0; overflow:auto; }
+.device-conflict-detail-column .device-conflict-actions { flex:none; margin-top:0; }
+@media(max-width:950px) { .device-conflict-layout { overflow:auto; grid-template-rows:minmax(160px,250px) minmax(320px,1fr); } .device-conflict-detail-column { min-height:360px; } }

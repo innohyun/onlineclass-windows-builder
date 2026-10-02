@@ -1,5 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
+import { isDeskRestoreBlocked } from './desk-restore-lock';
+import { isStudentPrivacyEnabled, createStudentPrivacyToggle } from './desk-privacy';
 
 type ConflictPreview = {
   title?: string;
@@ -88,10 +90,17 @@ let getTenantId: () => string = () => '';
 let rows: ConflictRow[] = [];
 let selected = new Set<string>();
 let activeId = '';
-const tutorialVersion = 'device-sync-conflicts-v2';
+let detailEpoch = 0;
+let listEpoch = 0;
+let actionEpoch = 0;
+let activeTenant = '';
+let activeDetail: ConflictDetail | null = null;
+let busy = false;
+let returnFocus: HTMLElement | null = null;
+const tutorialVersion = 'device-sync-conflicts-v3';
 const tutorialSteps = [
   { target: 'deviceConflictList', title: '어떤 기록인지 먼저 확인', copy: '내부 테이블명과 긴 식별자 대신 자료 종류, 학생·제목·날짜를 보여 줍니다.' },
-  { target: 'deviceConflictDetail', title: '바뀐 내용만 비교', copy: '두 PC에서 달랐던 항목을 이전 값과 현재 적용 값으로 나누어 읽기 쉽게 보여 줍니다. 원문은 고급 정보에서 확인할 수 있습니다.' },
+  { target: 'deviceConflictDetail', title: '바뀐 내용만 비교', copy: '학생 기록 가림을 해제하면 보관된 이전 값과 현재 적용 값을 비교할 수 있습니다. 검토 완료는 원장 분기나 수업 연결의 복원 차단을 해제하지 않습니다.' },
   { target: 'deviceConflictReview', title: '확인한 기록 정리', copy: '필요하면 원문 파일을 내보내고 검토 완료로 표시하세요. 삭제는 검토한 선택 기록에만 허용됩니다.' },
 ];
 let tutorialIndex = -1;
@@ -217,6 +226,7 @@ function readableFields(tableName: string, value: unknown) {
 }
 
 function previewText(row: ConflictRow) {
+  if (isStudentPrivacyEnabled()) return row.preview?.dateKey || '제목·학생 정보 가림';
   const preview = row.preview || {};
   const student = [preview.classNo ? `${preview.classNo}번` : '', preview.studentName || (preview.studentCode ? `학생 ${preview.studentCode}` : '')].filter(Boolean).join(' · ');
   const title = [preview.emoji, preview.title].filter(Boolean).join(' ').trim();
@@ -234,6 +244,7 @@ function renderStats(stats: ConflictStats = { unreviewed: 0, retained: 0, lifeti
 
 function renderList() {
   const list = el('deviceConflictList');
+  const scroll = list.scrollTop;
   list.replaceChildren();
   if (!rows.length) {
     const empty = document.createElement('p');
@@ -249,6 +260,7 @@ function renderList() {
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
     checkbox.checked = selected.has(row.conflictId);
+    checkbox.disabled = busy || isDeskRestoreBlocked();
     checkbox.dataset.conflictSelect = row.conflictId;
     checkbox.setAttribute('aria-label', `${label(row.tableName)} 충돌 선택`);
     const button = document.createElement('button');
@@ -268,14 +280,17 @@ function renderList() {
     item.append(checkbox, button);
     list.append(item);
   }
+  list.scrollTop = scroll;
   updateActions();
 }
 
 function updateActions() {
   const chosen = rows.filter((row) => selected.has(row.conflictId));
-  el<HTMLButtonElement>('deviceConflictReview').disabled = !chosen.length || chosen.every((row) => row.reviewedAtMs);
-  el<HTMLButtonElement>('deviceConflictExport').disabled = !chosen.length;
-  el<HTMLButtonElement>('deviceConflictDelete').disabled = !chosen.length || chosen.some((row) => !row.reviewedAtMs);
+  const blocked = busy || isDeskRestoreBlocked() || isStudentPrivacyEnabled() || activeTenant !== getTenantId().trim();
+  el('deviceConflictList').querySelectorAll<HTMLInputElement>('[data-conflict-select]').forEach(input => { input.disabled = blocked; });
+  el<HTMLButtonElement>('deviceConflictReview').disabled = blocked || !chosen.length || chosen.every((row) => row.reviewedAtMs);
+  el<HTMLButtonElement>('deviceConflictExport').disabled = blocked || !chosen.length;
+  el<HTMLButtonElement>('deviceConflictDelete').disabled = blocked || !chosen.length || chosen.some((row) => !row.reviewedAtMs);
 }
 
 function rawJsonPanel(title: string, value: unknown) {
@@ -334,43 +349,66 @@ function renderReadableComparison(tableName: string, previous: unknown, current:
 }
 
 async function openDetail(conflictId: string) {
+  if (el('deviceConflictViewer').hidden) return;
+  const token = ++detailEpoch;
+  const tenantId = getTenantId().trim();
+  if (tenantId !== activeTenant) return;
   activeId = conflictId;
+  activeDetail = null;
   renderList();
   el('deviceConflictDetail').textContent = '충돌 기록을 읽기 쉽게 정리하고 있습니다.';
-  const result = await invoke<ConflictDetailResult>('get_device_sync_conflict', { tenantId: getTenantId(), conflictId });
+  const result = await invoke<ConflictDetailResult>('get_device_sync_conflict', { tenantId, conflictId });
+  if (token !== detailEpoch || activeId !== conflictId || tenantId !== getTenantId().trim()) return;
   if (result?.ok === false || !result.conflict) throw new Error(result.error || 'device_sync_conflict_detail_failed');
+  activeDetail = result.conflict;
+  renderDetail();
+}
+
+function renderDetail() {
+  if (!activeDetail) return;
+  const conflict = activeDetail;
   const detail = el('deviceConflictDetail');
   detail.replaceChildren();
-  const activeRow = rows.find((row) => row.conflictId === conflictId);
+  const activeRow = rows.find((row) => row.conflictId === conflict.conflictId);
   const header = document.createElement('header');
   const heading = document.createElement('h2');
-  heading.textContent = `${label(result.conflict.tableName)} · ${activeRow ? previewText(activeRow) : '저장된 기록'}`;
+  heading.textContent = `${label(conflict.tableName)} · ${activeRow ? previewText(activeRow) : '저장된 기록'}`;
   const copy = document.createElement('p');
-  copy.textContent = `${dateText(result.conflict.capturedAtMs)}에 같은 기록의 내용이 달라 최신 동기화본을 적용했습니다. 이전 값은 확인용으로만 보관됩니다.`;
+  copy.textContent = `${dateText(conflict.capturedAtMs)} 발생 · 일반 충돌 보관. 현재 적용된 값이 이 PC의 저장본입니다.`;
   header.append(heading, copy);
   const notice = document.createElement('div');
   notice.className = 'device-conflict-notice';
   notice.innerHTML = '<strong>현재 적용된 값이 앱에서 사용됩니다.</strong><span>보관된 이전 값은 자동으로 복원되거나 현재 기록을 덮어쓰지 않습니다.</span>';
+  const boundary = document.createElement('aside');
+  boundary.className = 'device-conflict-boundary';
+  boundary.textContent = '학생 관찰 원장 분기와 수업 연결 충돌은 별도 검증이 필요합니다. 여기서 검토 완료로 표시해도 복원 차단은 해제되지 않습니다.';
+  if (isStudentPrivacyEnabled()) {
+    const hidden = document.createElement('p'); hidden.className = 'device-conflict-privacy'; hidden.textContent = '학생 기록 가림이 켜져 있습니다. 이름과 원문을 확인하거나 검토하려면 가림을 해제하세요.';
+    detail.append(header, notice, hidden, boundary); return;
+  }
   const advanced = document.createElement('details');
   advanced.className = 'device-conflict-advanced';
   const advancedTitle = document.createElement('summary');
   advancedTitle.textContent = '고급 정보(JSON) 보기';
   const generation = document.createElement('p');
-  generation.textContent = `동기화 세대 ${result.conflict.losingGeneration} → ${result.conflict.winningGeneration}`;
+  generation.textContent = `동기화 세대 ${conflict.losingGeneration} → ${conflict.winningGeneration}`;
   const raw = document.createElement('div');
   raw.className = 'device-conflict-raw-grid';
-  raw.append(rawJsonPanel('보관된 원문', result.conflict.losingPayload), rawJsonPanel('현재 원문', result.conflict.currentPayload));
+  raw.append(rawJsonPanel('보관된 원문', conflict.losingPayload), rawJsonPanel('현재 원문', conflict.currentPayload));
   advanced.append(advancedTitle, generation, raw);
-  detail.append(header, notice, renderReadableComparison(result.conflict.tableName, result.conflict.losingPayload, result.conflict.currentPayload), advanced);
+  detail.append(header, notice, renderReadableComparison(conflict.tableName, conflict.losingPayload, conflict.currentPayload), advanced, boundary);
 }
 
 async function refresh() {
+  const token = ++listEpoch;
   const tenantId = getTenantId().trim();
   if (!tenantId) throw new Error('연결된 학급이 없습니다.');
   setStatus('충돌 기록을 불러오고 있습니다.');
   const result = await invoke<ConflictListResult>('list_device_sync_conflicts', { tenantId });
+  if (token !== listEpoch || el('deviceConflictViewer').hidden || tenantId !== getTenantId().trim()) return;
   if (result?.ok === false) throw new Error(result.error || 'device_sync_conflict_list_failed');
   rows = result.records || [];
+  activeTenant = tenantId;
   selected = new Set([...selected].filter((id) => rows.some((row) => row.conflictId === id)));
   renderStats(result.stats);
   renderList();
@@ -379,34 +417,49 @@ async function refresh() {
   else if (rows[0]) await openDetail(rows[0].conflictId);
   else {
     activeId = '';
+    activeDetail = null; detailEpoch += 1;
     el('deviceConflictDetail').innerHTML = '<p class="device-conflict-empty">보관 중인 충돌 기록이 없습니다.</p>';
   }
 }
 
 async function reviewSelected() {
+  if (isDeskRestoreBlocked() || isStudentPrivacyEnabled() || activeTenant !== getTenantId().trim()) return;
   const conflictIds = [...selected];
+  const tenantId = activeTenant;
+  const token = actionEpoch;
   if (!conflictIds.length) return;
-  const result = await invoke<{ ok?: boolean; error?: string }>('review_device_sync_conflicts', { tenantId: getTenantId(), conflictIds });
+  const result = await invoke<{ ok?: boolean; error?: string }>('review_device_sync_conflicts', { tenantId, conflictIds });
+  if (token !== actionEpoch || el('deviceConflictViewer').hidden || tenantId !== getTenantId().trim()) return;
   if (result?.ok === false) throw new Error(result.error || 'device_sync_conflict_review_failed');
   setStatus(`${conflictIds.length}건을 검토 완료로 표시했습니다.`);
   await refresh();
 }
 
 async function exportSelected() {
+  if (isDeskRestoreBlocked() || isStudentPrivacyEnabled() || activeTenant !== getTenantId().trim()) return;
+  const tenantId = activeTenant;
+  const token = actionEpoch;
   const conflictIds = [...selected];
   if (!conflictIds.length) return;
   const targetPath = await save({ defaultPath: fileName(), filters: [{ name: 'JSON', extensions: ['json'] }] });
-  if (!targetPath) return;
-  const result = await invoke<{ ok?: boolean; count?: number; error?: string }>('export_device_sync_conflicts', { tenantId: getTenantId(), conflictIds, targetPath });
+  if (!targetPath || token !== actionEpoch || el('deviceConflictViewer').hidden || isDeskRestoreBlocked() || isStudentPrivacyEnabled() || tenantId !== getTenantId().trim()) return;
+  const result = await invoke<{ ok?: boolean; count?: number; error?: string }>('export_device_sync_conflicts', { tenantId, conflictIds, targetPath });
+  if (token !== actionEpoch || el('deviceConflictViewer').hidden || tenantId !== getTenantId().trim()) return;
   if (result?.ok === false) throw new Error(result.error || 'device_sync_conflict_export_failed');
   setStatus(`선택한 ${Number(result.count || conflictIds.length)}건의 원문 파일을 내보냈습니다.`);
 }
 
 async function deleteSelected() {
+  if (isDeskRestoreBlocked() || isStudentPrivacyEnabled() || activeTenant !== getTenantId().trim()) return;
   const conflictIds = [...selected];
+  const tenantId = activeTenant;
+  const token = actionEpoch;
   if (!conflictIds.length) return;
+  if (rows.filter(row => conflictIds.includes(row.conflictId)).some(row => !row.reviewedAtMs)) return;
   if (!window.confirm(`검토를 마친 충돌 기록 ${conflictIds.length}건을 이 PC에서 삭제할까요? 삭제한 보관 값은 복구할 수 없습니다.`)) return;
-  const result = await invoke<{ ok?: boolean; error?: string }>('delete_device_sync_conflicts', { tenantId: getTenantId(), conflictIds });
+  if (isDeskRestoreBlocked() || isStudentPrivacyEnabled() || tenantId !== getTenantId().trim()) return;
+  const result = await invoke<{ ok?: boolean; error?: string }>('delete_device_sync_conflicts', { tenantId, conflictIds });
+  if (token !== actionEpoch || el('deviceConflictViewer').hidden || tenantId !== getTenantId().trim()) return;
   if (result?.ok === false) throw new Error(result.error || 'device_sync_conflict_delete_failed');
   selected.clear();
   activeId = '';
@@ -415,7 +468,10 @@ async function deleteSelected() {
 }
 
 function run(action: () => Promise<void>) {
-  void action().catch((error) => setStatus(`처리 실패: ${String((error as Error)?.message || error)}`));
+  if (busy || isDeskRestoreBlocked()) return;
+  const token = ++actionEpoch;
+  busy = true; updateActions();
+  void action().catch(() => { if (token === actionEpoch) setStatus('처리하지 못했습니다. 현재 학급과 로컬 자료 상태를 확인한 뒤 다시 시도하세요.'); }).finally(() => { if (token === actionEpoch) { busy = false; updateActions(); } });
 }
 
 function renderTutorial() {
@@ -428,6 +484,14 @@ function renderTutorial() {
   el('deviceConflictTutorialCopy').textContent = step.copy;
   el('deviceConflictTutorialNext').textContent = tutorialIndex === tutorialSteps.length - 1 ? '완료' : '다음';
   el('deviceConflictTutorial').hidden = false;
+  const target = el(step.target);
+  target.scrollIntoView({ block: 'center', behavior: 'instant' });
+  const panel = el('deviceConflictTutorial');
+  const rect = target.getBoundingClientRect();
+  const box = panel.getBoundingClientRect();
+  panel.style.bottom = 'auto'; panel.style.right = 'auto';
+  panel.style.top = `${rect.bottom + box.height + 24 < innerHeight ? rect.bottom + 12 : Math.max(12, rect.top - box.height - 12)}px`;
+  panel.style.left = `${Math.max(12, Math.min(rect.left, innerWidth - box.width - 12))}px`;
 }
 
 function openTutorial() { tutorialIndex = 0; renderTutorial(); }
@@ -438,23 +502,44 @@ function closeTutorial() {
   if (panel) panel.hidden = true;
 }
 
+function hideViewer() {
+  detailEpoch += 1; listEpoch += 1; actionEpoch += 1;
+  busy = false;
+  el('deviceConflictViewer').hidden = true;
+  closeTutorial();
+}
+
 export function initDeviceSyncConflicts(options: { getTenantId: () => string }) {
   getTenantId = options.getTenantId;
+  const detail = el('deviceConflictDetail');
+  const column = document.createElement('div'); column.className = 'device-conflict-detail-column';
+  detail.replaceWith(column); column.append(detail);
+  const actions = document.querySelector('.device-conflict-actions'); if (actions) column.append(actions);
+  document.querySelector('#deviceConflictViewer > header')?.append(createStudentPrivacyToggle());
+  el('deviceConflictTitle').textContent = '충돌 기록 비교';
+  el('deviceConflictDelete').textContent = '검토 기록 삭제';
+  el('deviceConflictReview').textContent = '검토 완료로 표시';
+  el('deviceConflictExport').textContent = 'JSON 내보내기';
+  window.addEventListener('desk:student-privacy-changed', () => { renderList(); renderDetail(); updateActions(); });
+  window.addEventListener('desk:restore-lock-changed', updateActions);
+  window.addEventListener('desk:view-changed', hideViewer);
   el('deviceSyncConflictsOpen').addEventListener('click', () => {
+    if (isDeskRestoreBlocked()) return;
+    returnFocus = document.activeElement as HTMLElement | null;
     el('deviceConflictViewer').hidden = false;
     run(refresh);
-    if (localStorage.getItem(tutorialVersion) !== 'done') openTutorial();
+    try { if (localStorage.getItem(tutorialVersion) !== 'done') openTutorial(); } catch { openTutorial(); }
   });
-  el('deviceConflictClose').addEventListener('click', () => { el('deviceConflictViewer').hidden = true; closeTutorial(); });
+  el('deviceConflictClose').addEventListener('click', () => { if (isDeskRestoreBlocked()) return; hideViewer(); returnFocus?.focus({ preventScroll: true }); });
   el('deviceConflictHelp').addEventListener('click', openTutorial);
   el('deviceConflictTutorialClose').addEventListener('click', closeTutorial);
   el('deviceConflictTutorialNext').addEventListener('click', () => {
-    if (tutorialIndex >= tutorialSteps.length - 1) { localStorage.setItem(tutorialVersion, 'done'); closeTutorial(); }
+    if (tutorialIndex >= tutorialSteps.length - 1) { try { localStorage.setItem(tutorialVersion, 'done'); } catch { /* Keep the guide usable without storage. */ } closeTutorial(); }
     else { tutorialIndex += 1; renderTutorial(); }
   });
   el('deviceConflictList').addEventListener('change', (event) => {
     const input = (event.target as HTMLElement).closest<HTMLInputElement>('[data-conflict-select]');
-    if (!input?.dataset.conflictSelect) return;
+    if (!input?.dataset.conflictSelect || busy || isDeskRestoreBlocked()) return;
     if (input.checked) selected.add(input.dataset.conflictSelect);
     else selected.delete(input.dataset.conflictSelect);
     updateActions();

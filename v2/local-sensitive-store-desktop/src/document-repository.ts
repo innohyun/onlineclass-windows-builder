@@ -1,11 +1,14 @@
 import { invoke } from '@tauri-apps/api/core';
+import { isDeskRestoreBlocked } from './desk-restore-lock';
 
 export type DocumentBlock = Record<string, any>;
+export type LessonBinding = {tenantId:string;planId:string;pageId:string;planKind:string;dateKey:string;startPeriod:number;endPeriod:number;subject:string;bindingRevision:number;updatedAt:number};
 export type LocalDocument = {
   tenantId?: string; pageId: string; parentId?: string | null; title: string; emoji?: string;
   position?: number; properties: Record<string, any>; blocks: DocumentBlock[]; markdown: string;
   updatedAtMs?: number; revision?: number; expectedRevision?: number; systemKind?: string;
   editPolicy?: {titleEditable:boolean;structureEditable:boolean};
+  lessonBinding?:LessonBinding|null;
 };
 export type DocumentDraft = LocalDocument & { baseRevision: number; generation: number };
 export type HistoryCursor = {capturedAtMs:number;versionId:string};
@@ -25,14 +28,17 @@ const errors: Record<string, string> = {
   work_note_not_found: '문서를 찾을 수 없습니다. 휴지통과 현재 자료함을 확인해 주세요.',
   work_note_attachment_too_large: '끌어넣기는 20 MiB까지 지원합니다. 큰 파일은 상단 ‘파일 첨부’에서 선택해 주세요.',
 };
+export class DocumentUserError extends Error {}
 export function documentError(error: unknown): string {
+  if (error instanceof DocumentUserError) return error.message;
   const code = String((error as { code?: string; message?: string })?.code || (error as Error)?.message || error);
-  return errors[code] || (code.startsWith('work_note_') ? '문서를 처리하지 못했습니다. 작성한 내용을 유지한 채 다시 시도해 주세요.' : code);
+  return errors[code] || '문서를 처리하지 못했습니다. 작성한 내용을 유지한 채 다시 시도해 주세요.';
 }
 export const documentRevision = (page: LocalDocument) => Number(page.revision ?? page.updatedAtMs ?? 0);
 
 export function createDocumentRepository(request: NativeRequest = invoke) {
   async function checked(command: string, args: Record<string, unknown>): Promise<Result> {
+    if(isDeskRestoreBlocked() && ['ensure_local_work_note_workspace','save_local_work_note_document','mutate_local_work_note_document','save_local_work_note_draft','discard_local_work_note_draft','save_local_work_note_attachment','delete_local_work_note_attachment'].includes(command))throw new DocumentUserError('자료함 복원 상태를 확인하는 동안 문서 변경이 중단됩니다. 복원 화면에서 상태를 확인해 주세요.');
     const result = await request<Result>(command, args);
     if (!result || result.ok !== true) {
       const code = result?.error || 'work_note_request_failed';
@@ -42,8 +48,8 @@ export function createDocumentRepository(request: NativeRequest = invoke) {
   }
   function pageResult(result: Result, pageId?: string): LocalDocument {
     const page = result.page;
-    if (!page || (pageId && page.pageId !== pageId)) throw new Error('저장한 문서의 확인 결과가 일치하지 않습니다.');
-    return { ...page, ...(result.editPolicy?{editPolicy:result.editPolicy}:{}), properties: page.properties || {}, blocks: page.blocks || [], markdown: page.markdown || '',
+    if (!page || (pageId && page.pageId !== pageId)) throw new DocumentUserError('저장한 문서의 확인 결과가 일치하지 않습니다.');
+    return { ...page, ...(result.editPolicy?{editPolicy:result.editPolicy}:{}), ...(result.lessonBinding!==undefined?{lessonBinding:result.lessonBinding}:{}), properties: page.properties || {}, blocks: page.blocks || [], markdown: page.markdown || '',
       revision: Number(result.revision ?? page.revision ?? page.updatedAtMs ?? 0) };
   }
   return {
@@ -58,13 +64,13 @@ export function createDocumentRepository(request: NativeRequest = invoke) {
     },
     async save(tenantId: string, page: LocalDocument, expectedRevision: number): Promise<LocalDocument> {
       const result = await checked('save_local_work_note_document', { input: { ...page, tenantId, expectedRevision } });
-      if (result.verified !== true) throw new Error('저장 결과를 확인하지 못했습니다. 내용을 보관한 채 다시 확인해 주세요.');
+      if (result.verified !== true) throw new DocumentUserError('저장 결과를 확인하지 못했습니다. 내용을 보관한 채 다시 확인해 주세요.');
       return pageResult(result, page.pageId);
     },
     async mutate(tenantId: string, page: LocalDocument, action: string, extra: Record<string, unknown> = {}) {
       const result=await checked('mutate_local_work_note_document', { input: { tenantId, pageId: page.pageId,
         expectedRevision: documentRevision(page), action, ...extra } });
-      if(result.verified!==true)throw new Error('문서 변경 결과를 확인하지 못했습니다. 현재 문서를 다시 확인해 주세요.');
+      if(result.verified!==true)throw new DocumentUserError('문서 변경 결과를 확인하지 못했습니다. 현재 문서를 다시 확인해 주세요.');
       return result;
     },
     async trash(tenantId: string): Promise<LocalDocument[]> {
@@ -94,7 +100,7 @@ export function createDocumentRepository(request: NativeRequest = invoke) {
       const types:Record<string,string>={pdf:'application/pdf',png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',gif:'image/gif',webp:'image/webp',txt:'text/plain',md:'text/markdown',mp4:'video/mp4',mp3:'audio/mpeg',wav:'audio/wav'};
       const result=await checked('save_local_work_note_attachment',{input:{tenantId,pageId,sourcePath,fileName,
         attachmentId:crypto.randomUUID(),blockId:crypto.randomUUID(),contentType:types[fileName.split('.').pop()?.toLowerCase() || ''] || 'application/octet-stream'}});
-      if(!result.attachment?.attachmentId)throw new Error('첨부파일 저장을 확인하지 못했습니다.');
+      if(!result.attachment?.attachmentId)throw new DocumentUserError('첨부파일 저장을 확인하지 못했습니다.');
       return result.attachment;
     },
     async openAttachment(tenantId:string,attachmentId:string) {
@@ -105,7 +111,7 @@ export function createDocumentRepository(request: NativeRequest = invoke) {
       const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
       const result = await checked('save_local_work_note_attachment', { input: { tenantId, pageId, attachmentId,
         blockId, fileName: file.name, contentType: file.type || 'application/octet-stream', bytes } });
-      if (!result.attachment?.attachmentId) throw new Error('첨부파일 저장을 확인하지 못했습니다.');
+      if (!result.attachment?.attachmentId) throw new DocumentUserError('첨부파일 저장을 확인하지 못했습니다.');
       return result.attachment;
     },
     async attachmentBlob(tenantId: string, attachmentId: string): Promise<Blob> {

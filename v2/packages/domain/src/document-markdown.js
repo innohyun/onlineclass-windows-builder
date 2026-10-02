@@ -172,7 +172,8 @@ function listLine(value) {
   return match ? { indent: match[1].length, kind: 'ordered', start: Number(match[2]), text: match[3] } : null;
 }
 
-function parseList(lines, startIndex, baseIndent, kind, strict = false) {
+function parseList(lines, startIndex, baseIndent, kind, strict = false, nestingDepth = 0) {
+  if (strict && nestingDepth > 32) markdownInvalid('Markdown의 목록·인용·접기 구조 경로는 32단계 이하여야 합니다.');
   const items = [];
   let index = startIndex;
   let start = 1;
@@ -193,7 +194,7 @@ function parseList(lines, startIndex, baseIndent, kind, strict = false) {
         break;
       }
       if (child.indent <= baseIndent) break;
-      const nested = parseList(lines, index, child.indent, child.kind, strict);
+      const nested = parseList(lines, index, child.indent, child.kind, strict, nestingDepth + 2);
       children.push(nested.node);
       index = nested.index;
     }
@@ -339,7 +340,8 @@ function projectMarkdown(sourceIdValue, markdownValue, prefix) {
   return { blocks, markdown };
 }
 
-export function projectWorkNoteMarkdown(sourceIdValue, markdownValue, { strict = false } = {}) {
+export function projectWorkNoteMarkdown(sourceIdValue, markdownValue, { strict = false, nestingDepth = 0 } = {}) {
+  if (strict && nestingDepth > 32) markdownInvalid('Markdown의 목록·인용·접기 구조 경로는 32단계 이하여야 합니다.');
   const sourceId = String(sourceIdValue || '').trim();
   const markdown = String(markdownValue || '').replace(/\r/gu, '');
   const lines = markdown.split('\n');
@@ -373,7 +375,7 @@ export function projectWorkNoteMarkdown(sourceIdValue, markdownValue, { strict =
         if (lines[end].trim() === '</details>' && --depth === 0) break;
       }
       if (end >= lines.length) markdownInvalid('toggle의 닫는 </details>가 필요합니다.');
-      const children = projectWorkNoteMarkdown(`${sourceId}-${blocks.length}`, lines.slice(index + 2, end).join('\n'), { strict });
+      const children = projectWorkNoteMarkdown(`${sourceId}-${blocks.length}`, lines.slice(index + 2, end).join('\n'), { strict, nestingDepth: nestingDepth + 2 });
       blocks.push(projectedBlock('work-note-body', sourceId, blocks.length, 'toggle', {
         type: 'details', attrs: { open: true }, content: [
           { type: 'detailsSummary', content: inlineContent(summary[1]) },
@@ -390,7 +392,7 @@ export function projectWorkNoteMarkdown(sourceIdValue, markdownValue, { strict =
       }
       const callout = quoted[0].match(/^\[!NOTE\](?:\s+(.*))?$/u);
       if (callout) quoted.shift();
-      const children = projectWorkNoteMarkdown(`${sourceId}-${blocks.length}`, quoted.join('\n'), { strict });
+      const children = projectWorkNoteMarkdown(`${sourceId}-${blocks.length}`, quoted.join('\n'), { strict, nestingDepth: nestingDepth + 1 });
       blocks.push(projectedBlock('work-note-body', sourceId, blocks.length, callout ? 'callout' : 'quote', {
         type: callout ? 'callout' : 'blockquote',
         ...(callout ? { attrs: { icon: callout[1] || '💡', tone: 'purple' } } : {}),
@@ -414,7 +416,7 @@ export function projectWorkNoteMarkdown(sourceIdValue, markdownValue, { strict =
     }
     const firstListItem = listLine(line);
     if (firstListItem) {
-      const parsed = parseList(lines, index, firstListItem.indent, firstListItem.kind, strict);
+      const parsed = parseList(lines, index, firstListItem.indent, firstListItem.kind, strict, nestingDepth + 2);
       blocks.push(projectedBlock('work-note-body', sourceId, blocks.length, parsed.blockType, parsed.node));
       index = parsed.index;
       continue;

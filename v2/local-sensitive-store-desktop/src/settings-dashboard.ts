@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { isDeskRestoreBlocked } from "./desk-restore-lock";
 
 export type DesktopPreferences = {
   ok: boolean;
@@ -22,6 +23,7 @@ export type SettingsDashboardView = {
   accountLabel: string;
   backupConfigured: boolean;
   backupOk: boolean;
+  backupVerified?: boolean;
   backupLocation: string;
   backupLatest: string;
   appVersion: string;
@@ -79,16 +81,21 @@ export function renderSettingsPlatform(platform = navigator.platform) {
 }
 
 export function renderSettingsDashboard(view: SettingsDashboardView, platform = navigator.platform) {
+  mountSettingsLayout();
   const mac = isMacDesktop(platform);
   element("settingsConnectedContent").hidden = !view.connected;
-  element("deviceAuthPanel").hidden = view.connected;
+  const authPanel = element("deviceAuthPanel");
+  authPanel.hidden = view.connected && !(authPanel.dataset.state === "connected" && authPanel.dataset.completeDismissed !== "true");
   text("settingsTenantText", view.tenantLabel || "연결된 학급 없음");
   text("settingsAccountText", view.accountLabel || "-");
   text("settingsBackupLocationText", view.backupLocation || "-");
   text("settingsBackupLatestText", view.backupLatest || "-");
-  text("settingsAppVersionFooter", `앱 v${view.appVersion || "-"}`);
+  text("settingsAppVersionFooter", view.appVersion ? `설치 버전 ${view.appVersion}` : "설치 버전 확인 전");
 
-  if (view.connected && view.needsReconnect) {
+  if (!view.connected) {
+    setBadge("PC 연결 필요", "warning");
+    text("settingsConnectionDescription", "교사 로그인으로 이 PC를 연결하세요. 기존 자료는 유지됩니다.");
+  } else if (view.needsReconnect) {
     setBadge("재연결 필요", "warning");
     text("settingsConnectionDescription", "브라우저 로그인 정보가 만료되었습니다. 교사 로그인으로 다시 연결해 주세요.");
   } else {
@@ -98,18 +105,38 @@ export function renderSettingsDashboard(view: SettingsDashboardView, platform = 
 
   if (!view.backupOk) {
     setBackupBadge("확인 필요", "error");
-    text("settingsBackupDescription", mac ? "선택한 백업 폴더의 연결과 접근 권한을 확인해 주세요." : "OneDrive 연결 또는 백업 폴더 권한을 확인해 주세요.");
+    text("settingsBackupDescription", "백업과 기기 간 동기화를 보류합니다. 로컬 자료는 계속 사용할 수 있습니다. 폴더 연결과 접근 권한을 확인해 주세요.");
   } else if (!view.backupConfigured) {
     setBackupBadge("설정 필요", "warning");
     text("settingsBackupDescription", mac ? "이 Mac에서 사용할 백업 폴더를 선택해 주세요. OneDrive 설치는 필수가 아닙니다." : "학교 OneDrive 안에 백업 폴더를 선택해 주세요.");
+  } else if (view.backupVerified === false) {
+    setBackupBadge("첫 백업 필요", "warning");
+    text("settingsBackupDescription", "폴더 설정은 완료되었습니다. 첫 백업을 만든 뒤 결과를 확인해 주세요.");
   } else {
     setBackupBadge("정상", "ok");
     text("settingsBackupDescription", mac ? "선택한 폴더에 자동 백업하고 있습니다." : "학교 계정 OneDrive에 자동 백업하고 있습니다.");
   }
 }
 
+function mountSettingsLayout() {
+  const content = element("settingsConnectedContent");
+  let grid = document.getElementById("settingsDashboardGrid");
+  if (!grid) { grid = document.createElement("div"); grid.id = "settingsDashboardGrid"; grid.className = "settings-dashboard-grid"; content.prepend(grid); }
+  const panels = [document.getElementById("settingsConnectionPanel"), document.getElementById("settingsBehaviorTitle")?.closest(".settings-wide-panel"), document.getElementById("settingsBackupPanel"), document.getElementById("deskHideHomeTitles")?.closest("section")];
+  for (const panel of panels) if (panel && panel.parentElement !== grid) grid.append(panel);
+  const oldGrid = content.querySelector(".settings-primary-grid");
+  if (oldGrid && !oldGrid.children.length) oldGrid.remove();
+  const dialog = element<HTMLDialogElement>("settingsDisconnectDialog");
+  if (!dialog.querySelector(".settings-reconnect-note")) {
+    const note = document.createElement("p"); note.className = "settings-reconnect-note";
+    note.textContent = "다시 사용하려면 교사 로그인으로 이 PC를 연결하세요. 연결 해제는 자료 삭제가 아닙니다.";
+    dialog.querySelector("aside")?.after(note);
+  }
+}
+
 function confirmDisconnect() {
   const dialog = element<HTMLDialogElement>("settingsDisconnectDialog");
+  dialog.returnValue = "";
   return new Promise<boolean>((resolve) => {
     const settle = () => {
       dialog.removeEventListener("close", settle);
@@ -121,6 +148,7 @@ function confirmDisconnect() {
 }
 
 export function initSettingsDashboard(options: Options) {
+  mountSettingsLayout();
   renderSettingsPlatform();
   const startWithWindows = element<HTMLInputElement>("settingsStartWithWindows");
   const keepRunningOnClose = element<HTMLInputElement>("settingsKeepRunningOnClose");
@@ -181,18 +209,21 @@ export function initSettingsDashboard(options: Options) {
   keepRunningOnClose.addEventListener("change", () => void savePreference(keepRunningOnClose, "keepRunningOnClose"));
 
   element<HTMLButtonElement>("settingsOpenTeacherButton").addEventListener("click", async () => {
+    if (isDeskRestoreBlocked()) { setPreferenceStatus("복원 작업을 마칠 때까지 연결 승인을 시작할 수 없습니다.", "error"); return; }
     const button = element<HTMLButtonElement>("settingsOpenTeacherButton");
     button.disabled = true;
     setPreferenceStatus("현재 브라우저 연결 승인을 시작하고 있습니다.");
     try {
       await options.onAuthorizeBrowser();
     } finally {
-      button.disabled = false;
+      button.disabled = isDeskRestoreBlocked();
     }
   });
 
   element<HTMLButtonElement>("settingsDisconnectButton").addEventListener("click", async () => {
+    if (isDeskRestoreBlocked()) { setPreferenceStatus("복원 작업을 마칠 때까지 PC 연결을 해제할 수 없습니다.", "error"); return; }
     if (!await confirmDisconnect()) return;
+    if (isDeskRestoreBlocked()) { setPreferenceStatus("복원 작업 중에는 PC 연결을 유지합니다.", "error"); return; }
     const button = element<HTMLButtonElement>("settingsDisconnectButton");
     button.disabled = true;
     button.textContent = "연결 해제 중";
@@ -205,9 +236,13 @@ export function initSettingsDashboard(options: Options) {
     } catch (error) {
       setPreferenceStatus(`연결을 해제하지 못했습니다: ${String((error as Error)?.message || error)}`, "error");
     } finally {
-      button.disabled = false;
+      button.disabled = isDeskRestoreBlocked();
       button.textContent = "이 PC 연결 해제";
     }
+  });
+
+  window.addEventListener("desk:restore-lock-changed", () => {
+    for (const id of ["settingsOpenTeacherButton", "settingsDisconnectButton"]) element<HTMLButtonElement>(id).disabled = isDeskRestoreBlocked();
   });
 
   void loadPreferences();

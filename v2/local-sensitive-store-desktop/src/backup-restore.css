@@ -55,10 +55,10 @@
   display: grid;
   place-items: center;
   border-radius: 50%;
-  background: linear-gradient(145deg, #2bbb7c, #139458);
-  color: #fff;
+  background: #e8eef6;
   font-size: 17px;
-  box-shadow: 0 6px 16px rgba(25, 167, 106, .2);
+  color: #526782;
+  box-shadow: none;
 }
 
 .backup-health-primary h2 {
@@ -564,6 +564,23 @@
 }
 
 .backup-confirm-dialog::backdrop { background: rgba(9, 23, 48, .55); backdrop-filter: blur(2px); }
+.restore-confirm-ack { display:flex; gap:10px; align-items:flex-start; margin-top:16px; font-size:12px; line-height:1.65; text-align:left; color:#40516b; }
+.restore-confirm-ack input { flex:none; width:18px; height:18px; accent-color:#1768f0; margin-top:2px; }
+.restore-verification,.restore-progress { grid-column:1/-1; margin:0 24px 20px; padding:18px 20px; border:1px solid #cfdef5; border-radius:12px; background:#f4f8ff; color:#1b345d; }
+.restore-verification h3,.restore-progress h3 { margin:0 0 9px; font-size:16px; }
+.restore-verification p,.restore-progress p { margin:6px 0 0; font-size:12px; line-height:1.75; overflow-wrap:anywhere; }
+.restore-progress header { display:flex; align-items:center; gap:12px; }
+.restore-progress header h3 { margin:0; }
+.restore-progress ol { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; padding:0; margin:16px 0; list-style:none; }
+.restore-progress li { border:1px solid #d4e1f3; border-radius:8px; padding:11px; background:#fff; font-size:12px; }
+.restore-progress li[data-done="true"] { color:#17764f; border-color:#aedcc9; background:#effaf5; }
+.restore-progress-indicator { width:22px; height:22px; flex:none; border:3px solid #c7dafa; border-top-color:#1768f0; border-radius:50%; animation:restore-turn 1s linear infinite; }
+.restore-progress:not([data-state="working"]) .restore-progress-indicator { animation:none; border-color:#aebfd8; }
+.restore-progress[data-state="failed"] { background:#fff7ed; border-color:#f0cfaa; }
+.restore-progress[data-state="success"] { background:#effaf5; border-color:#aedcc9; }
+@keyframes restore-turn { to { transform:rotate(360deg); } }
+@media(prefers-reduced-motion:reduce) { .restore-progress-indicator { animation:none; } }
+@media(max-width:700px) { .restore-progress ol { grid-template-columns:1fr; } .restore-verification,.restore-progress { margin:0 16px 16px; } }
 .backup-confirm-dialog form { display: grid; justify-items: center; padding: 30px; text-align: center; }
 .backup-confirm-icon { width: 48px; height: 48px; display: grid; place-items: center; border-radius: 50%; background: #e9f2ff; color: var(--backup-blue); font-size: 20px; }
 .backup-confirm-icon.is-danger { color: #b42318; background: #fff0ee; }
@@ -696,3 +713,7 @@
   .backup-workbench-footer { padding: 18px 16px; }
   .backup-confirm-dialog form { padding: 25px 20px; }
 }
+
+.backup-health-primary:has(#backupBadge.badge-ok) .backup-health-icon { background:#139458; color:#fff; }
+.backup-health-primary:has(#backupBadge.badge-warning) .backup-health-icon { background:#fff3dc; color:#986400; }
+.backup-health-primary:has(#backupBadge.badge-error) .backup-health-icon { background:#ffebe9; color:#ba332c; }

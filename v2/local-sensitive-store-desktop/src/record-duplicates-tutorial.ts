@@ -1,11 +1,11 @@
-const TUTORIAL_KEY = "localRecordDuplicatesTutorial:v1";
+const TUTORIAL_KEY = "localRecordDuplicatesTutorial:v2";
 
 export function initDuplicatesTutorial(dialog: HTMLDialogElement, prepare: () => void) {
   const panel = dialog.querySelector<HTMLElement>("#recordDuplicatesTutorial")!;
   const steps = [
     ["recordDuplicatesScope", "검색 범위", "현재 학급의 전체 기간을 확인합니다. 학생별 보기에서 열면 선택한 학생으로 범위를 좁힐 수 있습니다."],
     ["recordDuplicatesScan", "읽기 전용 검색", "중복 검색은 자료를 바꾸지 않습니다. 학생·기록일·본문·기록 맥락이 정확히 같은 관찰을 찾습니다."],
-    ["recordDuplicatesSummary", "남길 기록과 보관할 기록", "검색 결과에서 원문, 저장 시간, 남길 한 건과 보관 대상을 확인합니다. 학생기록 근거로 사용 중인 자료는 보호합니다."],
+    ["recordDuplicatesGroupDetail", "남길 기록과 보관할 기록", "묶음을 선택하면 대표 기록과 보관할 중복을 나란히 비교합니다. 학생 기록 가림을 해제해야 원문을 읽고 정리할 수 있습니다. 학생기록 근거로 연결된 자료는 보호합니다."],
     ["recordDuplicatesApply", "검토한 중복 정리", "선택한 중복만 보관합니다. 원문과 이력은 유지되며, 변경된 자료가 있으면 다시 검토해야 합니다. 이 안내는 검색이나 정리를 실행하지 않습니다."],
     ["recordDuplicatesHistoryTab", "정리 내역과 되돌리기", "앱을 다시 실행해도 정리 내역을 확인할 수 있습니다. 정리 이후 자료가 바뀌지 않았을 때 해당 정리를 되돌릴 수 있습니다."],
   ];

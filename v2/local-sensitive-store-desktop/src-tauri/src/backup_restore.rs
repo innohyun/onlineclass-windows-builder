@@ -1,10 +1,14 @@
 use super::*;
+use super::restore_progress::ProgressTracker;
 use rusqlite::{params_from_iter, types::Value as SqlValue, OptionalExtension};
 use std::collections::{HashMap, HashSet};
 
 #[cfg(test)]
 #[path = "backup_restore_path_tests.rs"]
 mod path_tests;
+#[cfg(test)]
+#[path = "backup_restore_progress_runtime_tests.rs"]
+mod progress_tests;
 
 #[derive(Debug)]
 struct RestoreMediaPlan {
@@ -251,6 +255,7 @@ fn stage_restore_media(
     Ok((staging_root, plans, media_missing, attachment_missing, source_missing))
 }
 
+#[cfg(test)]
 fn restore_with_prebackup<F>(store: &SqliteStore, body: Value, create_safety_backup: F) -> Result<Value, String>
 where
     F: FnOnce(&SqliteStore, String) -> Result<Value, String>,
@@ -263,6 +268,17 @@ mod recovery_policy;
 pub(crate) use recovery_policy::{recovery_preflight, recovery_restore};
 
 fn restore_with_policy<F>(store: &SqliteStore, body: Value, create_safety_backup: F, school_preferred: bool) -> Result<Value, String>
+where
+    F: FnOnce(&SqliteStore, String) -> Result<Value, String>,
+{
+    let mut progress = ProgressTracker::new(None);
+    progress.checkpoint(RestorePhase::VerifyStage);
+    let result = restore_with_policy_progress(store, body, create_safety_backup, school_preferred, &mut progress);
+    progress.complete(&result);
+    result
+}
+
+fn restore_with_policy_progress<F>(store: &SqliteStore, body: Value, create_safety_backup: F, school_preferred: bool, progress: &mut ProgressTracker<'_>) -> Result<Value, String>
 where
     F: FnOnce(&SqliteStore, String) -> Result<Value, String>,
 {
@@ -285,6 +301,13 @@ where
     {
         return Err("pre_restore_backup_failed:safety_backup_incomplete".to_string());
     }
+    // Keep legacy restore acceptance unchanged, but only report verification
+    // when its existing missing/failed summaries are exactly zero.
+    if [&safety_media, &safety_attachments, &safety_sources].into_iter().all(|summary|
+        ["missing", "failed"].into_iter().all(|key| summary.get(key).and_then(Value::as_i64).unwrap_or(0) == 0)) {
+        progress.protected_backup_verified(&safety_backup);
+    }
+    progress.checkpoint(RestorePhase::VerifyStage);
     let manifest_path = PathBuf::from(preview.get("manifestPath").and_then(|value| value.as_str()).unwrap_or(""));
     let manifest = read_manifest(&manifest_path)?;
     let authoritative = authoritative_restore_manifest(&manifest_path, &manifest, &tenant_id)?;
@@ -339,6 +362,8 @@ where
         if manual_restore_has_lesson_binding_conflict(&transaction, &tenant_id)? { return Err("lesson_plan_binding_revision_conflict".into()); }
         if school_preferred { recovery_policy::check_attached(&transaction, &tenant_id, &authoritative)?; }
         check_media_rows(&transaction, &tenant_id, &media_plans)?;
+        // Archive application can change live files before the SQLite merge.
+        progress.checkpoint(RestorePhase::MergeStarted);
         archive_result = if school_preferred {
             recovery_policy::apply_archives(store, &body, &manifest_path, &authoritative, &tenant_id)?
         } else { crate::backup_v4::apply_archives(&manifest_path, &authoritative, &tenant_id)? };
@@ -444,10 +469,10 @@ where
     }))
 }
 
-pub(super) fn restore(store: &SqliteStore, body: Value) -> Result<Value, String> {
-    restore_with_prebackup(store, body, |store, tenant_id| {
+pub(super) fn restore(store: &SqliteStore, body: Value, progress: &mut ProgressTracker<'_>) -> Result<Value, String> {
+    restore_with_policy_progress(store, body, |store, tenant_id| {
         run_with_kind(store, tenant_id, "pre_restore", None)
-    })
+    }, false, progress)
 }
 
 #[derive(Clone, Debug)]

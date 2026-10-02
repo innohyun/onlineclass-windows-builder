@@ -72,13 +72,13 @@ use std::time::Duration;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager,
+    Emitter, Manager,
 };
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-09-27.1-mcp-record-audit";
+pub(crate) const SERVICE_VERSION: &str = "2026-10-02.1-teacher-desk-ux";
 const WORK_MEETING_ROOT_PAGE_ID: &str = "classaimate:work-meeting-minutes";
 const WORK_MEETING_ROOT_TITLE: &str = "업무 회의록";
 const WORK_MEETING_ROOT_INTRO: &str = "모바일에서 확정한 업무 회의록이 자동으로 들어옵니다.";
@@ -6863,18 +6863,31 @@ async fn preview_local_backup_restore(
 
 #[tauri::command]
 async fn restore_local_backup(
+    window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
     tenant_id: String,
     manifest_path: String,
+    request_id: Option<String>,
 ) -> Result<Value, String> {
+    // Correlation only: this opaque UI nonce grants no data or mutation authority.
+    let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    if request_id.is_empty() || request_id.len() > 80 || !request_id.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-') {
+        return Ok(json!({ "ok": false, "error": "backup_restore_request_id_invalid" }));
+    }
     let store = match state.store.lock().ok().and_then(|store| store.clone()) {
         Some(store) => store,
         None => return Ok(json!({ "ok": false, "error": "local_store_unavailable" })),
     };
-    Ok(match tauri::async_runtime::spawn_blocking(move || backup::restore(
-        &store,
-        json!({ "tenantId": tenant_id, "manifestPath": manifest_path }),
-    )).await {
+    Ok(match tauri::async_runtime::spawn_blocking(move || {
+        // The callback may run under the SQLite lock. Emit the bounded observation only.
+        let mut publish = |progress: backup::RestoreProgress| {
+            if let Ok(mut payload) = serde_json::to_value(progress) {
+                if let Some(object) = payload.as_object_mut() { object.insert("requestId".to_string(), json!(request_id)); }
+                let _ = window.emit_to(tauri::EventTarget::WebviewWindow { label: window.label().to_string() }, "desktop-backup-restore-progress", payload);
+            }
+        };
+        backup::restore_with_progress(&store, json!({ "tenantId": tenant_id, "manifestPath": manifest_path }), Some(&mut publish))
+    }).await {
         Ok(Ok(value)) => value,
         Ok(Err(error)) => json!({ "ok": false, "error": error }),
         Err(_) => json!({ "ok": false, "error": "backup_restore_failed" }),

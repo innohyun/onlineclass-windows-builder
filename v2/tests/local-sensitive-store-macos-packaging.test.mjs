@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -114,7 +114,11 @@ function fixture(t, options = {}) {
         const mountpoint = args[args.indexOf("-mountpoint") + 1];
         assert.deepEqual(args.slice(0, 5), ["attach", "-readonly", "-nobrowse", "-mountpoint", mountpoint]);
         for (const name of readdirSync(createdSourceFolder)) {
-          cpSync(path.join(createdSourceFolder, name), path.join(mountpoint, name), { recursive: true });
+          // A mounted DMG preserves its /Applications link even on hosts without that directory.
+          const source = path.join(createdSourceFolder, name);
+          const mounted = path.join(mountpoint, name);
+          if (lstatSync(source).isSymbolicLink()) symlinkSync(readlinkSync(source), mounted);
+          else cpSync(source, mounted, { recursive: true, dereference: false, verbatimSymlinks: true });
         }
         if (options.changeMountedApp) write(path.join(mountpoint, `${appName}.app/Contents/Resources/changed`), "changed");
       } else if (args[0] === "detach") {

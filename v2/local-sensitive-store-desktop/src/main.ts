@@ -1,3 +1,5 @@
+import { renderDeskSummary, formatDateTime, tenantLabel, accountLabel, normalizeStorageMode, cloudSyncModeLabel, isCredentialMissing, reconnectMessage, credentialStorageLabel, latestSyncTime, latestBackupTime, type ServiceStatus, type CloudSyncStatus, type DeviceConnectionStatus } from "./desk-status-renderer";
+import { formatBackupDateTime, backupSourceSummary, backupFolderLabel, normalizeBackupList } from "./backup-display-utils";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import "./vendor/fontawesome/css/fontawesome.min.css";
@@ -18,13 +20,21 @@ import "./desktop-shell.css";
 import "./local-workspaces.css";
 import "./quick-observation.css";
 import "./desk-shell.css";
+import "./teacher-desk-ux.css";
+import "./device-sync-ui.css";
+import "./backup-storage.css";
+import { initDeskStudentPanel } from "./desk-student-panel";
+import { beginDeskRestore, isDeskRestoreBlocked } from "./desk-restore-lock";
 import { mountDeskViews } from "./desk-navigation";
+import { initDeskPageGuide } from "./desk-page-guide";
 import { bindTeacherDeskLifecycle, initTeacherDeskDocuments } from "./desk-workspace-lifecycle";
 import { initDeskRecordEditor } from "./desk-record-editor";
 import { initSharedArchive } from "./shared-archive";
-import { initHomeDashboard, loadHomeOverview, renderHomeStatus } from "./home-dashboard";
+import { initHomeDashboard, loadHomeOverview } from "./home-dashboard";
 import { createDeviceAuthorizationController, type DeviceAuthorizationResult } from "./device-authorization";
 import { initRecordBrowsers } from "./record-browsers";
+import { createBackupRestoreProgress } from "./backup-restore-progress";
+import { renderBackupRestorePanel as renderRestorePanel, renderRestoreProgress } from "./backup-restore-renderer";
 import { confirmBackupRestore } from "./backup-restore-confirmation";
 import { initBackupRestorePreview } from "./backup-restore-preview";
 import { initSharedArchivePreview } from "./shared-archive-preview";
@@ -32,7 +42,7 @@ import { initArchiveBoardExplorer } from "./archive-board-explorer";
 import { initWorkNoteReader } from "./work-note-reader";
 import { initDeviceSyncConflicts } from "./device-sync-conflicts";
 import { initHealthDashboardPreview } from "./health-dashboard-preview";
-import { initSettingsDashboard, renderSettingsDashboard } from "./settings-dashboard";
+import { initSettingsDashboard } from "./settings-dashboard";
 import { initSettingsDashboardPreview } from "./settings-dashboard-preview";
 import { loadDeviceSyncStatus, renderDeviceSyncStatus, runDeviceSyncNow } from "./device-sync-ui";
 import { initDesktopShell } from "./desktop-shell";
@@ -44,55 +54,6 @@ declare const __APP_VERSION__: string;
 
 const APP_VERSION = String(__APP_VERSION__ || "").trim() || "0.0.0";
 const designPreview = new URLSearchParams(window.location.search).get("designPreview");
-
-type ServiceStatus = {
-  ok: boolean;
-  service: string;
-  version: string;
-  pcName?: string;
-  os?: string;
-  arch?: string;
-  host: string;
-  port: number;
-  endpoint: string;
-  dataDir: string;
-  dbPath: string;
-  keyPath: string;
-  pairingKey: string;
-  error?: string;
-};
-
-type CloudSyncStatus = {
-  ok: boolean;
-  connected: boolean;
-  tenantId?: string;
-  uid?: string;
-  accountEmail?: string;
-  accountDisplayName?: string;
-  tenantName?: string;
-  observationStorageMode?: string;
-  lastRunAtMs?: number;
-  lastSyncAtMs?: number;
-  lastImported?: number;
-  lastDeleted?: number;
-  lastMarked?: number;
-  lastPending?: number;
-  lastFailed?: number;
-  lastConflicts?: number;
-  lastError?: string;
-  lastErrorCode?: string;
-  credentialMissing?: boolean;
-  credentialStorage?: string;
-  needsReconnect?: boolean;
-  reconnectMessage?: string;
-  disabledReason?: string;
-};
-
-type DeviceConnectionStatus = DeviceAuthorizationResult & {
-  connected?: boolean;
-  uid?: string;
-  connectedAtMs?: number;
-};
 
 type BadgeTone = "ok" | "warning" | "error" | "neutral";
 type ActionName = "open-settings" | "open-data-directory" | "refresh-status" | "run-sync" | "run-device-sync" | "repair-device-sync" | "run-backup" | "choose-backup-folder" | "restore-backup";
@@ -107,10 +68,11 @@ let backupLoadError = "";
 let backupList: BackupItem[] = [];
 let selectedBackupManifestPath = "";
 let backupPreview: BackupPreview | null = null;
+let backupPreviewGeneration = 0;
 let backupRestoreMessage = "";
 let backupRestoreTone: BadgeTone = "neutral";
 const busyActions = new Set<ActionName>();
-let sharedArchive = { refresh: async () => undefined as void };
+let sharedArchive = { refresh: async () => undefined as void, canLeave: () => true };
 
 function byId<T extends HTMLElement>(id: string): T {
   const el = document.getElementById(id);
@@ -131,6 +93,7 @@ function setBadge(id: string, label: string, tone: BadgeTone) {
   const el = byId<HTMLSpanElement>(id);
   el.textContent = label;
   el.className = `status-badge badge-${tone}`;
+  if (id === "backupBadge") { const icon=document.querySelector<HTMLElement>(".backup-health-icon i"); if(icon)icon.className=`fa-solid ${tone === "ok" ? "fa-check" : tone === "error" || tone === "warning" ? "fa-triangle-exclamation" : "fa-arrows-rotate"}`; }
 }
 
 function setHealthPanelState(id: "connectionCard" | "syncCard" | "healthBackupCard", tone: "ok" | "warning" | "error" | "checking") {
@@ -162,10 +125,14 @@ function setBackupFolderActionLabels(label: string) {
   });
 }
 
+function validBackupPreview() {
+  return backupPreview?.ok === true && backupPreview.manifestPath === selectedBackupManifestPath && backupPreview.tenantId === currentBackupTenantId() && backupList.some(row => row.manifestPath === selectedBackupManifestPath && (!row.tenantId || row.tenantId === currentBackupTenantId()));
+}
+
 function refreshActionStates() {
   const syncUnavailable = !cloudSyncSnapshot?.connected || isCredentialMissing(cloudSyncSnapshot);
   const backupUnavailable = !backupSnapshot?.configured || !currentBackupTenantId();
-  const restoreUnavailable = !selectedBackupManifestPath || !currentBackupTenantId();
+  const restoreUnavailable = !validBackupPreview();
   const disabledByAction: Partial<Record<ActionName, boolean>> = {
     "run-sync": syncUnavailable,
     "run-backup": backupUnavailable,
@@ -173,7 +140,7 @@ function refreshActionStates() {
   };
   (["open-settings", "open-data-directory", "refresh-status", "run-sync", "run-backup", "choose-backup-folder", "restore-backup"] as ActionName[]).forEach((action) => {
     actionButtons(action).forEach((button) => {
-      button.disabled = busyActions.has(action) || Boolean(disabledByAction[action]);
+      button.disabled = isDeskRestoreBlocked() || busyActions.has(action) || Boolean(disabledByAction[action]);
     });
   });
 }
@@ -209,242 +176,8 @@ function copyTargetValue(id: string) {
   return target.textContent || "";
 }
 
-function formatDateTime(ms?: number) {
-  const value = Number(ms || 0) || 0;
-  if (!value) return "-";
-  const date = new Date(value);
-  const now = new Date();
-  const startOfDay = (input: Date) => new Date(input.getFullYear(), input.getMonth(), input.getDate()).getTime();
-  const dayDiff = Math.round((startOfDay(now) - startOfDay(date)) / 86400000);
-  const hour = date.getHours();
-  const minute = String(date.getMinutes()).padStart(2, "0");
-  const timeLabel = `${hour < 12 ? "오전" : "오후"} ${hour % 12 || 12}:${minute}`;
-  if (dayDiff === 0) return `오늘 ${timeLabel}`;
-  if (dayDiff === 1) return `어제 ${timeLabel}`;
-  return `${date.toLocaleDateString("ko-KR")} ${timeLabel}`;
-}
-
-function formatBackupDateTime(ms?: number) {
-  const value = Number(ms || 0) || 0;
-  if (!value) return "-";
-  const date = new Date(value);
-  const hour = date.getHours();
-  const minute = String(date.getMinutes()).padStart(2, "0");
-  return `${date.getFullYear()}년 ${date.getMonth() + 1}월 ${date.getDate()}일 ${hour < 12 ? "오전" : "오후"} ${hour % 12 || 12}:${minute}`;
-}
-
 function currentBackupTenantId() {
   return byId<HTMLInputElement>("backupTenantInput").value.trim();
-}
-
-function tenantLabel(status?: Pick<CloudSyncStatus, "tenantName" | "tenantId"> | null) {
-  return status?.tenantName || status?.tenantId || "연결된 학급 없음";
-}
-
-function accountLabel(status?: Pick<CloudSyncStatus, "accountEmail" | "accountDisplayName" | "uid"> | null) {
-  return status?.accountEmail || status?.accountDisplayName || status?.uid || "-";
-}
-
-function normalizeStorageMode(value?: string) {
-  const mode = String(value || "").trim();
-  if (mode === "hybrid_firestore_local_keep_remote") return mode;
-  if (mode === "hybrid_firestore_local") return mode;
-  if (mode === "local_sqlite") return mode;
-  if (mode === "firestore") return mode;
-  return "";
-}
-
-function cloudSyncModeLabel(value?: string) {
-  const mode = normalizeStorageMode(value);
-  if (mode === "hybrid_firestore_local_keep_remote") return "PC로 옮기고 서버에는 처리완료 표시";
-  if (mode === "hybrid_firestore_local") return "PC로 옮긴 뒤 서버 임시본 삭제";
-  if (mode === "local_sqlite") return "이 PC에 직접 저장";
-  if (mode === "firestore") return "서버에만 저장";
-  return "저장 방식 확인 중";
-}
-
-function isCredentialMissing(status?: CloudSyncStatus | null) {
-  return status?.credentialMissing === true
-    || status?.needsReconnect === true
-    || status?.lastErrorCode === "credential_missing"
-    || String(status?.lastError || "").startsWith("keyring_get_failed:");
-}
-
-function reconnectMessage(status?: CloudSyncStatus | null) {
-  return status?.reconnectMessage
-    || "브라우저 로그인 정보가 만료되어 자동 수거가 멈춰 있습니다. 아래 다시 연결하기를 누르면 교사 설정 화면으로 이동합니다.";
-}
-
-function credentialStorageLabel(value?: string) {
-  const storage = String(value || "");
-  if (storage.includes("windows_dpapi_file")) return "자동 연결(암호화 보관)";
-  if (storage.includes("macos_file")) return "자동 연결(로컬 보조 보관)";
-  return "자동 연결";
-}
-
-function latestSyncTime(status?: CloudSyncStatus | null) {
-  return status?.lastSyncAtMs || status?.lastRunAtMs || 0;
-}
-
-function latestBackupTime(status?: BackupStatus | null) {
-  return status?.latestBackup?.createdAtMs || status?.lastRunAtMs || 0;
-}
-
-function countFrom(counts: Record<string, number> | undefined, keys: string[]) {
-  if (!counts) return 0;
-  for (const key of keys) {
-    const value = Number(counts[key] || 0) || 0;
-    if (value) return value;
-  }
-  return 0;
-}
-
-function backupObservationCount(counts?: Record<string, number>) {
-  return countFrom(counts, ["lesson_observations", "observationCount"]);
-}
-
-function backupPrivateDetailCount(counts?: Record<string, number>) {
-  return countFrom(counts, ["student_private_details", "studentPrivateDetailCount"]);
-}
-
-function backupCounselingCount(counts?: Record<string, number>) {
-  return countFrom(counts, ["teacher_counseling_sessions", "teacherCounselingSessionCount"]);
-}
-
-function backupCareCount(counts?: Record<string, number>) {
-  return backupObservationCount(counts) + backupCounselingCount(counts) + backupPrivateDetailCount(counts);
-}
-
-function backupMathDailyCount(counts?: Record<string, number>) {
-  return [
-    ["math_daily_attempts", "mathDailyAttemptCount"],
-    ["math_daily_student_profiles", "mathDailyProfileCount"],
-    ["math_daily_review_sessions", "mathDailyReviewSessionCount"],
-    ["math_daily_assignments", "mathDailyAssignmentCount"],
-    ["math_daily_assignment_results", "mathDailyAssignmentResultCount"],
-    ["math_daily_cache_runs", "mathDailyCacheRunCount"],
-  ].reduce((sum, keys) => sum + countFrom(counts, keys), 0);
-}
-
-function backupBoardSnapshotCount(counts?: Record<string, number>) {
-  return countFrom(counts, ["board_post_snapshots", "boardSnapshotCount"]);
-}
-
-function backupBoardMediaCount(counts?: Record<string, number>, media?: BackupItem["media"] | BackupPreview["media"]) {
-  const count = countFrom(counts, ["board_media_files", "boardMediaCount"]);
-  if (count) return count;
-  const records = Array.isArray(media?.records) ? media.records.length : 0;
-  return records;
-}
-
-function backupArchiveCount(counts?: Record<string, number>) {
-  return countFrom(counts, ["sharedArchiveCount"]);
-}
-
-function backupAttendanceCount(counts?: Record<string, number>) {
-  return [
-    ["attendance_records", "attendanceRecordCount"],
-    ["attendance_nais_checks", "attendanceNaisCheckCount"],
-    ["attendance_document_requests", "attendanceDocumentRequestCount"],
-  ].reduce((sum, keys) => sum + countFrom(counts, keys), 0);
-}
-
-function backupEvalCount(counts?: Record<string, number>) {
-  return [
-    ["eval_assignments", "evalAssignmentCount"],
-    ["eval_results", "evalResultCount"],
-  ].reduce((sum, keys) => sum + countFrom(counts, keys), 0);
-}
-
-function backupStudentRecordCount(counts?: Record<string, number>) {
-  return [
-    ["student_record_draft_sets", "studentRecordDraftSetCount"],
-    ["student_record_drafts", "studentRecordDraftCount"],
-  ].reduce((sum, keys) => sum + countFrom(counts, keys), 0);
-}
-
-function backupLearningCount(counts?: Record<string, number>) {
-  return backupMathDailyCount(counts) + backupEvalCount(counts);
-}
-
-function backupSourcePcName(source?: BackupSource) {
-  return String(source?.pcName || "").trim() || "PC 정보 없음";
-}
-
-function backupSourceRelation(source?: BackupSource) {
-  const sourcePc = String(source?.pcName || "").trim().toLowerCase();
-  const currentPc = String(serviceSnapshot?.pcName || "").trim().toLowerCase();
-  if (!sourcePc) return "PC 정보 없음";
-  if (currentPc && sourcePc === currentPc) return "이 PC";
-  return "다른 PC";
-}
-
-function backupEnvironmentText(source?: BackupSource) {
-  const parts: string[] = [];
-  const appVersion = String(source?.appVersion || "").trim();
-  const serviceVersion = String(source?.serviceVersion || "").trim();
-  const os = String(source?.os || "").trim();
-  const arch = String(source?.arch || "").trim();
-  if (appVersion) parts.push(`앱 v${appVersion}`);
-  if (serviceVersion) parts.push(`서비스 ${serviceVersion}`);
-  if (os || arch) parts.push([os, arch].filter(Boolean).join(" "));
-  return parts.join(" · ") || "환경 정보 없음";
-}
-
-function backupSourceSummary(source?: BackupSource) {
-  return `${backupSourceRelation(source)} · ${backupSourcePcName(source)} · ${backupEnvironmentText(source)}`;
-}
-
-function backupSourceListText(source?: BackupSource) {
-  const os = String(source?.os || "").trim() || "운영체제 정보 없음";
-  return `${backupSourceRelation(source)} · ${backupSourcePcName(source)} · ${os}`;
-}
-
-function backupFolderLabel(status: BackupStatus) {
-  if (!status.configured) return "-";
-  const folder = String(status.tenantBackupDir || status.backupRootDir || "").toLowerCase();
-  if (folder.includes("onedrive")) return "학교 OneDrive · OnlineClassLocalBackups";
-  if (folder.includes("google drive")) return "Google Drive · OnlineClassLocalBackups";
-  if (folder.includes("dropbox")) return "Dropbox · OnlineClassLocalBackups";
-  if (folder.includes("icloud")) return "iCloud Drive · OnlineClassLocalBackups";
-  return "선택한 백업 폴더 · OnlineClassLocalBackups";
-}
-
-function backupRowSummary(backup: BackupItem) {
-  const counts = backup.counts || {};
-  const media = backup.media || {};
-  const parts = [
-    `관찰·상담 ${numberText(backupCareCount(counts))}건`,
-    `출결·증빙 ${numberText(backupAttendanceCount(counts))}건`,
-    `평가·학습 ${numberText(backupLearningCount(counts))}건`,
-    `학생부 ${numberText(backupStudentRecordCount(counts))}건`,
-    `게시판 ${numberText(backupBoardSnapshotCount(counts))}건`,
-    `첨부 ${numberText(backupBoardMediaCount(counts, media))}개`,
-    `보관본 ${numberText(backupArchiveCount(counts))}개`,
-  ];
-  return parts.join(" · ");
-}
-
-function normalizeBackupList(items: unknown): BackupItem[] {
-  if (!Array.isArray(items)) return [];
-  const seen = new Set<string>();
-  const out: BackupItem[] = [];
-  for (const item of items) {
-    const backup = item as BackupItem;
-    const manifestPath = String(backup?.manifestPath || "").trim();
-    if (!manifestPath || seen.has(manifestPath)) continue;
-    seen.add(manifestPath);
-    out.push(backup);
-  }
-  return out.sort((a, b) => numeric(b.createdAtMs) - numeric(a.createdAtMs));
-}
-
-function escapeHtml(value: unknown) {
-  return String(value || "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
 }
 
 function setBackupRestoreMessage(message: string, tone: BadgeTone = "neutral") {
@@ -453,85 +186,7 @@ function setBackupRestoreMessage(message: string, tone: BadgeTone = "neutral") {
 }
 
 function renderSummary() {
-  const summaryCard = byId<HTMLElement>("summaryCard");
-  const pending = numeric(cloudSyncSnapshot?.lastPending);
-  const failed = numeric(cloudSyncSnapshot?.lastFailed) + numeric(cloudSyncSnapshot?.lastConflicts);
-  const backupMedia = backupSnapshot?.latestBackup?.media || backupSnapshot?.lastResult?.media;
-  const backupHasError = backupSnapshot?.ok === false
-    || numeric(backupMedia?.failed) > 0
-    || numeric(backupMedia?.missing) > 0
-    || Boolean(backupLoadError);
-  const backupConfigured = backupSnapshot?.configured === true;
-
-  let tone: "is-ok" | "is-warning" | "is-error" | "is-checking" = "is-checking";
-  let title = "상태 확인 중";
-  let description = "로컬 저장소, 자동 수거, 백업 상태를 확인하고 있습니다.";
-
-  if (serviceLoadError || serviceSnapshot?.ok === false) {
-    tone = "is-error";
-    title = "로컬 앱 상태를 확인해야 합니다.";
-    description = "PC 설치본 DBHelper가 정상 실행 중인지 확인한 뒤 상태 확인을 눌러 주세요.";
-  } else if ((!cloudSyncSnapshot && !deviceConnectionSnapshot && !cloudSyncLoadError) || (!backupSnapshot && !backupLoadError)) {
-    tone = "is-checking";
-  } else if (!deviceConnectionSnapshot?.connected && (!cloudSyncSnapshot?.connected || isCredentialMissing(cloudSyncSnapshot))) {
-    tone = "is-warning";
-    title = "재연결이 필요합니다.";
-    description = "브라우저 로그인 정보가 만료되어 자동 수거가 멈춰 있습니다. 다시 연결하면 수거가 재개됩니다.";
-  } else if (cloudSyncLoadError || failed || backupHasError) {
-    tone = "is-error";
-    title = "확인이 필요한 문제가 있습니다.";
-    description = "아래 카드의 실패 항목과 해결 안내를 확인하세요.";
-  } else if (!backupConfigured) {
-    tone = "is-warning";
-    title = "백업 폴더 설정이 필요합니다.";
-    description = "기록 저장과 자동 수거는 가능하지만 클라우드 폴더 백업은 아직 설정되지 않았습니다.";
-  } else {
-    tone = "is-ok";
-    title = "모든 기능이 정상입니다";
-    description = "민감기록 저장, 임시 기록 수거, 백업이 안전하게 작동하고 있습니다.";
-  }
-
-  summaryCard.className = `health-summary ${tone}`;
-  setText("summaryTitle", title);
-  setText("summaryDescription", description);
-  setText("summaryTenantText", tenantLabel(deviceConnectionSnapshot?.connected ? deviceConnectionSnapshot : cloudSyncSnapshot));
-  setText("summarySyncText", formatDateTime(latestSyncTime(cloudSyncSnapshot)));
-  setText("summaryBackupText", formatDateTime(latestBackupTime(backupSnapshot)));
-  setText("summaryPendingText", `${numberText(pending)}건`);
-  setText("healthCheckedText", tone === "is-checking" ? "확인 중" : formatDateTime(Date.now()));
-  const summaryIcon = summaryCard.querySelector<HTMLElement>(".health-summary-icon i");
-  if (summaryIcon) {
-    summaryIcon.className = tone === "is-error"
-      ? "fa-solid fa-triangle-exclamation"
-      : tone === "is-warning"
-        ? "fa-solid fa-exclamation"
-        : tone === "is-checking"
-          ? "fa-solid fa-rotate"
-          : "fa-solid fa-check";
-  }
-  renderHomeStatus({
-    connected: deviceConnectionSnapshot?.connected === true || (cloudSyncSnapshot?.connected === true && !isCredentialMissing(cloudSyncSnapshot)),
-    healthy: tone === "is-ok" || (tone === "is-warning" && backupSnapshot?.configured !== true),
-    storeReady: serviceSnapshot?.ok === true,
-    tenantLabel: tenantLabel(deviceConnectionSnapshot?.connected ? deviceConnectionSnapshot : cloudSyncSnapshot),
-    syncAtMs: latestSyncTime(cloudSyncSnapshot),
-    backupAtMs: latestBackupTime(backupSnapshot),
-    pending,
-    deviceName: serviceSnapshot?.pcName,
-  });
-  const connection = deviceConnectionSnapshot?.connected ? deviceConnectionSnapshot : cloudSyncSnapshot;
-  const connected = deviceConnectionSnapshot?.connected === true || cloudSyncSnapshot?.connected === true;
-  renderSettingsDashboard({
-    connected,
-    needsReconnect: isCredentialMissing(cloudSyncSnapshot),
-    tenantLabel: tenantLabel(connection),
-    accountLabel: accountLabel(connection),
-    backupConfigured: backupSnapshot?.configured === true,
-    backupOk: !backupLoadError && backupSnapshot?.ok !== false,
-    backupLocation: backupSnapshot ? backupFolderLabel(backupSnapshot) : "확인 중",
-    backupLatest: backupSnapshot ? formatDateTime(latestBackupTime(backupSnapshot)) : "확인 중",
-    appVersion: APP_VERSION,
-  });
+  renderDeskSummary({ appVersion: APP_VERSION, serviceSnapshot, serviceLoadError, cloudSyncSnapshot, deviceConnectionSnapshot, cloudSyncLoadError, backupSnapshot, backupLoadError });
 }
 
 async function loadStatus() {
@@ -718,6 +373,7 @@ function renderCloudSyncLoadError(error: unknown) {
 }
 
 async function runCloudSyncNow() {
+  if (isDeskRestoreBlocked()) return;
   setActionBusy("run-sync", true);
   setText("syncStatus", "임시 기록을 이 PC로 수거하는 중입니다.");
   try {
@@ -804,11 +460,15 @@ function renderBackupStatus(status: BackupStatus) {
     setBackupFolderActionLabels("백업 폴더 변경");
     setHidden("healthBackupRunAction", true);
     setHidden("healthBackupFolderAction", false);
+  } else if (!latestBackupTime(status)) {
+    setHealthPanelState("healthBackupCard", "warning"); setBadge("backupBadge", "첫 백업 필요", "warning"); setBadge("healthBackupBadge", "백업 확인 전", "warning");
+    setText("backupStatus", "폴더 설정은 완료되었습니다. 첫 백업을 만든 뒤 결과를 확인해 주세요."); setText("healthBackupText", "완료된 백업이 아직 없습니다.");
+    setBackupFolderActionLabels("백업 폴더 변경"); setHidden("healthBackupRunAction", false); setHidden("healthBackupFolderAction", true);
   } else {
     setHealthPanelState("healthBackupCard", "ok");
     setBadge("backupBadge", "자동 백업 정상", "ok");
     setBadge("healthBackupBadge", "정상", "ok");
-    setText("backupStatus", "마지막 자동 백업과 첨부파일 복사를 정상적으로 마쳤습니다.");
+    setText("backupStatus", "확인한 백업과 첨부파일 복사 결과가 정상입니다.");
     setText("healthBackupText", "학교 OneDrive에 자동 백업하고 있습니다.");
     setBackupFolderActionLabels("백업 폴더 변경");
     setHidden("healthBackupRunAction", false);
@@ -821,73 +481,7 @@ function renderBackupStatus(status: BackupStatus) {
 }
 
 function renderBackupRestorePanel() {
-  const listEl = byId<HTMLElement>("backupList");
-  const selected = backupList.find((backup) => backup.manifestPath === selectedBackupManifestPath) || null;
-  const configured = backupSnapshot?.configured === true;
-  const tenantId = currentBackupTenantId();
-
-  if (!tenantId) {
-    setBadge("backupRestoreBadge", "학급 필요", "warning");
-    setText("backupRestoreStatus", "학급 ID가 연결되면 백업 목록과 복원 미리보기를 확인할 수 있습니다.");
-    listEl.innerHTML = `<p class="backup-list-empty">먼저 학급 ID를 입력하거나 다시 연결하기로 학급을 연결해 주세요.</p>`;
-  } else if (!configured && !backupList.length) {
-    setBadge("backupRestoreBadge", "폴더 필요", "warning");
-    setText("backupRestoreStatus", "새 PC에서는 OneDrive 안의 백업 폴더를 선택하면 복원 후보를 찾습니다.");
-    listEl.innerHTML = `<p class="backup-list-empty">백업 폴더가 아직 설정되지 않았습니다.</p>`;
-  } else if (!backupList.length) {
-    setBadge("backupRestoreBadge", "백업 없음", "warning");
-    setText("backupRestoreStatus", "선택한 폴더에서 이 학급의 백업 manifest를 찾지 못했습니다.");
-    listEl.innerHTML = `<p class="backup-list-empty">복원 가능한 백업이 없습니다.</p>`;
-  } else {
-    setBadge("backupRestoreBadge", backupRestoreTone === "ok" ? "완료" : backupPreview?.ok ? "미리보기" : "선택됨", backupRestoreTone);
-    setText(
-      "backupRestoreStatus",
-      backupRestoreMessage
-        || (backupPreview?.ok
-          ? `${formatBackupDateTime(backupPreview.createdAtMs || selected?.createdAtMs)} 백업을 선택했습니다.`
-          : "복원할 백업을 선택하면 미리보기를 불러옵니다."),
-    );
-    listEl.innerHTML = backupList.map((backup, index) => {
-      const isSelected = backup.manifestPath === selectedBackupManifestPath;
-      return `
-        <button class="backup-list-row${isSelected ? " is-selected" : ""}" type="button" data-backup-index="${index}" aria-pressed="${isSelected}">
-          <span class="backup-list-row__radio" aria-hidden="true"></span>
-          <span class="backup-list-row__device" aria-hidden="true"><i class="fa-solid fa-desktop"></i></span>
-          <span class="backup-list-row__main">
-            <strong class="backup-list-row__time">
-              <span>${escapeHtml(formatBackupDateTime(backup.createdAtMs))}</span><span class="backup-list-row__badge backup-list-row__badge--kind">${escapeHtml(backupKindLabel(backup.kind))}</span>
-              ${index === 0 ? `<span class="backup-list-row__badge">최신</span>` : ""}
-            </strong>
-            <span class="backup-list-row__meta">${escapeHtml(backupSourceListText(backup.source))}</span>
-            <span class="backup-list-row__counts">${escapeHtml(backupRowSummary(backup))}</span>
-          </span>
-        </button>
-      `;
-    }).join("");
-  }
-
-  const counts = backupPreview?.counts || selected?.counts || {};
-  const media = backupPreview?.media || selected?.media || {};
-  const source = backupPreview?.source || selected?.source;
-  setText("backupPreviewCare", backupList.length ? `${numberText(backupCareCount(counts))}건` : "-");
-  setText("backupPreviewAttendance", backupList.length ? `${numberText(backupAttendanceCount(counts))}건` : "-");
-  setText("backupPreviewLearning", backupList.length ? `${numberText(backupLearningCount(counts))}건` : "-");
-  setText("backupPreviewStudentRecord", backupList.length ? `${numberText(backupStudentRecordCount(counts))}건` : "-");
-  setText("backupPreviewBoard", backupList.length ? `${numberText(backupBoardSnapshotCount(counts))}건` : "-");
-  setText("backupPreviewAttachments", backupList.length ? `${numberText(backupBoardMediaCount(counts, media))}개` : "-");
-  setText("backupPreviewArchives", backupList.length ? `${numberText(backupArchiveCount(counts))}개` : "-");
-  const detailsEl = byId<HTMLElement>("backupPreviewDetails");
-  if (!backupList.length) {
-    detailsEl.innerHTML = `<p class="restore-preview-empty">복원할 백업을 선택하면 PC 정보와 상세 건수가 표시됩니다.</p>`;
-  } else {
-    detailsEl.innerHTML = `
-      <div class="restore-preview-source">
-        <i class="fa-solid fa-desktop" aria-hidden="true"></i>
-        <strong>${escapeHtml(`${backupSourcePcName(source)} / ${backupSourceRelation(source)} / ${backupEnvironmentText(source)}`)}</strong>
-        <span>${escapeHtml(formatBackupDateTime(backupPreview?.createdAtMs || selected?.createdAtMs))} 백업</span>
-      </div>
-    `;
-  }
+  renderRestorePanel({ tenantId: currentBackupTenantId(), configured: backupSnapshot?.configured === true, backups: backupList, selectedManifestPath: selectedBackupManifestPath, preview: backupPreview, message: backupRestoreMessage, tone: backupRestoreTone, busy: isDeskRestoreBlocked(), currentPcName: serviceSnapshot?.pcName });
   refreshActionStates();
 }
 
@@ -962,6 +556,7 @@ function applyBackupDiscovery(discovery: BackupDiscovery, selectedFolder: string
 }
 
 async function chooseBackupFolder() {
+  if (isDeskRestoreBlocked()) return;
   setActionBusy("choose-backup-folder", true);
   setText("backupStatus", "백업 폴더 선택 창을 여는 중입니다.");
   await waitForPaint();
@@ -1007,10 +602,12 @@ async function chooseBackupFolder() {
 
 async function loadBackupPreview(manifestPath: string) {
   const tenantId = currentBackupTenantId();
+  const generation = ++backupPreviewGeneration;
   if (!tenantId || !manifestPath) return;
   try {
     const preview = await invoke<BackupPreview>("preview_local_backup_restore", { tenantId, manifestPath });
-    if (!preview?.ok) {
+    if (generation !== backupPreviewGeneration || tenantId !== currentBackupTenantId() || manifestPath !== selectedBackupManifestPath) return;
+    if (!preview?.ok || preview.tenantId !== tenantId || preview.manifestPath !== manifestPath) {
       backupPreview = null;
       setBackupRestoreMessage(`미리보기 실패: ${preview?.error || "backup_restore_preview_failed"}`, "error");
     } else if (selectedBackupManifestPath === manifestPath) {
@@ -1018,6 +615,7 @@ async function loadBackupPreview(manifestPath: string) {
       if (backupRestoreTone !== "ok") setBackupRestoreMessage("", "neutral");
     }
   } catch (error) {
+    if (generation !== backupPreviewGeneration || tenantId !== currentBackupTenantId() || manifestPath !== selectedBackupManifestPath) return;
     backupPreview = null;
     setBackupRestoreMessage(`미리보기 실패: ${String((error as Error)?.message || error)}`, "error");
   }
@@ -1025,6 +623,7 @@ async function loadBackupPreview(manifestPath: string) {
 }
 
 function selectBackupManifest(manifestPath: string) {
+  if (isDeskRestoreBlocked()) return;
   const safePath = String(manifestPath || "").trim();
   if (!safePath || safePath === selectedBackupManifestPath) return;
   selectedBackupManifestPath = safePath;
@@ -1035,6 +634,7 @@ function selectBackupManifest(manifestPath: string) {
 }
 
 async function runBackupNow() {
+  if (isDeskRestoreBlocked()) return;
   if (busyActions.has("run-backup")) return;
   const tenantId = currentBackupTenantId();
   if (!tenantId) {
@@ -1061,29 +661,39 @@ async function runBackupNow() {
 }
 
 async function restoreSelectedBackup() {
+  if (isDeskRestoreBlocked() || busyActions.has("restore-backup") || !await canLeaveWorkspace()) return;
   const tenantId = currentBackupTenantId();
   const manifestPath = selectedBackupManifestPath;
-  if (!tenantId || !manifestPath) {
-    setBackupRestoreMessage("복원할 백업을 먼저 선택해 주세요.", "warning");
+  if (!tenantId || !manifestPath || !validBackupPreview()) {
+    setBackupRestoreMessage("복원할 백업의 미리보기 검증을 먼저 완료해 주세요.", "warning");
     renderBackupRestorePanel();
     return;
   }
   const selected = backupList.find((backup) => backup.manifestPath === manifestPath);
-  const sourceText = backupSourceSummary(backupPreview?.source || selected?.source);
+  const sourceText = backupSourceSummary(backupPreview?.source || selected?.source, serviceSnapshot?.pcName);
   const ok = await confirmBackupRestore({
-    date: formatBackupDateTime(selected?.createdAtMs),
+    kind: backupKindLabel(selected?.kind),
+    date: formatBackupDateTime(backupPreview?.createdAtMs || selected?.createdAtMs),
     source: sourceText,
     summary: "선택한 백업의 자료와 첨부파일을 현재 PC에 병합합니다.",
   });
-  if (!ok) return;
+  if (!ok || tenantId !== currentBackupTenantId() || manifestPath !== selectedBackupManifestPath || !validBackupPreview() || !await canLeaveWorkspace()) return;
+  let releaseRestore: (() => void) | undefined;
+  let commandSucceeded = false;
+  const requestId = crypto.randomUUID();
   setActionBusy("restore-backup", true);
   setBackupRestoreMessage("현재 상태 보호 백업을 만든 뒤 선택한 백업을 병합하는 중입니다.", "neutral");
   renderBackupRestorePanel();
   try {
+    await restoreProgress.prepare();
+    if (tenantId !== currentBackupTenantId() || manifestPath !== selectedBackupManifestPath || !validBackupPreview() || isDeskRestoreBlocked()) throw new Error("backup_restore_selection_changed");
+    releaseRestore = beginDeskRestore();
+    restoreProgress.begin(requestId); renderBackupRestorePanel();
     const result = await invoke<{ ok?: boolean; imported?: number; mediaRestored?: number; mediaMissing?: number; safetyBackup?: object; error?: string }>("restore_local_backup", {
       tenantId,
-      manifestPath,
+      manifestPath, requestId,
     });
+    restoreProgress.finish(result); commandSucceeded = result?.ok === true;
     if (!result?.ok) {
       const error = String(result?.error || "backup_restore_failed");
       setBackupRestoreMessage(
@@ -1095,13 +705,17 @@ async function restoreSelectedBackup() {
     } else {
       setBackupRestoreMessage(`보호 백업 후 이 PC 복원 완료: DB 반영 ${numberText(result.imported)}건, 첨부 복원 ${numberText(result.mediaRestored)}개${numeric(result.mediaMissing) ? `, 누락 ${numberText(result.mediaMissing)}개` : ""}. 기기 동기화 완료와는 별개입니다. 서버 최신 세대 반영과 이 PC 변경 게시 상태를 확인해 주세요.`, "ok");
       await loadBackupStatus();
-      await loadDeviceSyncStatus().catch(() => undefined);
+      await loadDeviceSyncStatus().catch(() => renderDeviceSyncStatus(null));
+      renderSummary();
+      await Promise.all([localWorkspaces.refresh(), dataExplorer.refresh(), studentTimeline.refresh(), sharedArchive.refresh(), loadHomeOverview(tenantId)]);
       backupStorage.invalidate();
       void backupStorage.refresh(true);
     }
   } catch (error) {
-    setBackupRestoreMessage(`복원 실패: ${String((error as Error)?.message || error)}`, "error");
+    if (!commandSucceeded) restoreProgress.finish(null, error);
+    setBackupRestoreMessage(`${commandSucceeded ? "이 PC 복원은 완료했지만 후속 상태 조회를 완료하지 못했습니다. 상태를 새로 확인하세요. " : "복원 실패: "} ${String((error as Error)?.message || error)}`, "error");
   } finally {
+    restoreProgress.release(); releaseRestore?.();
     setActionBusy("restore-backup", false);
     renderBackupRestorePanel();
   }
@@ -1116,6 +730,7 @@ async function refreshAll() {
     await desktopShell.refreshConnection().catch(() => undefined);
     await loadBackupStatus().catch(renderBackupLoadError);
     await loadDeviceSyncStatus().catch(() => renderDeviceSyncStatus(null));
+    renderSummary();
     await loadHomeOverview(currentBackupTenantId());
   } finally {
     setActionBusy("refresh-status", false);
@@ -1198,6 +813,8 @@ function bindUi() {
   });
 
   byId<HTMLInputElement>("backupTenantInput").addEventListener("change", () => {
+    if (isDeskRestoreBlocked()) return;
+    ++backupPreviewGeneration;
     backupStorage.clear();
     backupList = [];
     selectedBackupManifestPath = "";
@@ -1207,8 +824,11 @@ function bindUi() {
   });
 }
 
+const restoreProgress = createBackupRestoreProgress({ onChange: renderRestoreProgress });
 mountDeskViews();
-const canLeaveWorkspace = async () => await documentWorkspace.canLeave() && await deskRecordEditor.canLeave();
+initDeskPageGuide();
+window.addEventListener("desk:restore-lock-changed", refreshActionStates);
+const canLeaveWorkspace = async () => !isDeskRestoreBlocked() && sharedArchive.canLeave() && await quickObservation.canLeave() && await documentWorkspace.canLeave() && await deskRecordEditor.canLeave();
 // A restored teacher tab must wait until the document controllers below finish mounting.
 const desktopShell = initDesktopShell({ beforeLeave: () => Promise.resolve().then(canLeaveWorkspace) });
 const quickObservation = initQuickObservation({
@@ -1216,27 +836,29 @@ const quickObservation = initQuickObservation({
 });
 initArchiveBoardExplorer();
 initWorkNoteReader();
-const { dataExplorer, studentTimeline } = initRecordBrowsers(currentBackupTenantId);
+const { dataExplorer, studentTimeline } = initRecordBrowsers(currentBackupTenantId, () => quickObservation.canLeave());
 const deskRecordEditor = initDeskRecordEditor({ getTenantId: currentBackupTenantId, onChanged: () => { void dataExplorer.refresh(); void studentTimeline.refresh(); void loadHomeOverview(currentBackupTenantId()); } });
 initDeviceSyncConflicts({ getTenantId: currentBackupTenantId });
-const { localWorkspaces, documentWorkspace } = initTeacherDeskDocuments({ getTenantId: currentBackupTenantId, openTeacherHome: desktopShell.openTeacherHome });
+const { localWorkspaces, documentWorkspace } = initTeacherDeskDocuments({ getTenantId: currentBackupTenantId, openTeacherHome: desktopShell.openTeacherHome, navigate: (view, context) => homeDashboard.navigate(view, context) });
 const backupStorage = initBackupStorage({
   getTenantId: currentBackupTenantId,
   isConfigured: () => designPreview === "backup" || backupSnapshot?.configured === true, onBackupsChanged: () => loadBackupStatus().catch(renderBackupLoadError),
 });
 const homeDashboard = initHomeDashboard({
   beforeViewChange: canLeaveWorkspace,
-  onViewChange(view, context) {
-    if (view === "quick-observation") void quickObservation.open({ focus: true });
-    if (view === "lesson-materials" || view === "work-materials" || view === "student-learning-materials") void localWorkspaces.open(view);
-    if (view === "data") void dataExplorer.open({ group: context.group, sectionKey: context.sectionKey, hasAttachment: context.attachment });
-    if (view === "students") void studentTimeline.open();
-    if (view === "backup") void backupStorage.refresh();
+  async onViewChange(view, context) {
+    studentPanel.onViewChange(view);
+    if (view === "quick-observation") await quickObservation.open({ focus: true });
+    if (view === "lesson-materials" || view === "work-materials" || view === "student-learning-materials") await localWorkspaces.open(view);
+    if (view === "data") await dataExplorer.open({ group: context.group, sectionKey: context.sectionKey, hasAttachment: context.attachment, resetFilters:context.resetFilters });
+    if (view === "students") await studentTimeline.open();
+    if (view === "backup") await backupStorage.refresh();
   },
   onSearch(query) {
-    void dataExplorer.open({ query });
+    return dataExplorer.open({ query, resetFilters:true });
   },
 });
+const studentPanel = initDeskStudentPanel({ quickObservation, studentTimeline, navigate: view => homeDashboard.navigate(view) });
 bindTeacherDeskLifecycle({ getTenantId: currentBackupTenantId, desktopShell, homeDashboard, canLeave: canLeaveWorkspace, waitForPaint });
 bindUi();
 if (designPreview !== "settings") {

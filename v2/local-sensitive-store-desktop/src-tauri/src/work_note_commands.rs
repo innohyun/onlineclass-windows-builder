@@ -1,7 +1,7 @@
 use crate::work_note_documents as documents;
 use crate::{AppState, SqliteStore};
 use base64::Engine;
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use std::io::Read;
 use std::sync::Arc;
@@ -26,6 +26,19 @@ fn tenant(value: String) -> Result<String, String> {
     }
 }
 
+fn read_document_response(conn: &Connection, tenant: &str, page_id: &str) -> Result<Value, String> {
+    let page = documents::read(conn, tenant, page_id)?.ok_or("work_note_not_found")?;
+    documents::assert_local_editable(conn, tenant, &page)?;
+    if documents::is_trashed(&page) {
+        return Err("work_note_trashed".into());
+    }
+    let bound = crate::lesson_plan_bindings::stored_page_structure(conn, tenant, page_id)?.is_some();
+    let lesson_binding = crate::lesson_plan_bindings::read_for_page(conn, tenant, page_id)?;
+    Ok(json!({"ok":true,"revision":documents::revision(&page),"page":page,
+        "lessonBinding":lesson_binding,
+        "editPolicy":{"titleEditable":!bound,"structureEditable":!bound}}))
+}
+
 #[tauri::command]
 pub(crate) fn get_local_work_note_document(
     state: tauri::State<'_, AppState>,
@@ -36,14 +49,7 @@ pub(crate) fn get_local_work_note_document(
         let store = store(&state)?;
         let tenant = tenant(tenant_id)?;
         let conn = store.conn.lock().map_err(|_| "db_lock_failed")?;
-        let page = documents::read(&conn, &tenant, &page_id)?.ok_or("work_note_not_found")?;
-        documents::assert_local_editable(&conn, &tenant, &page)?;
-        if documents::is_trashed(&page) {
-            return Err("work_note_trashed".into());
-        }
-        let bound = crate::lesson_plan_bindings::stored_page_structure(&conn, &tenant, &page_id)?.is_some();
-        Ok(json!({"ok":true,"revision":documents::revision(&page),"page":page,
-            "editPolicy":{"titleEditable":!bound,"structureEditable":!bound}}))
+        read_document_response(&conn, &tenant, &page_id)
     })())
 }
 #[tauri::command]
@@ -354,4 +360,66 @@ pub(crate) fn ensure_local_work_note_workspace(
         tx.commit().map_err(|e| e.to_string())?;
         Ok(json!({"ok":true,"revision":documents::revision(&page),"page":page}))
     })())
+}
+
+#[cfg(test)]
+mod lesson_binding_read_tests {
+    use super::*;
+
+    fn fixture(properties: Value) -> Connection {
+        let conn = Connection::open_in_memory().expect("open document read fixture");
+        conn.execute_batch("CREATE TABLE work_note_pages (
+            tenant_id TEXT NOT NULL, page_id TEXT NOT NULL, parent_id TEXT, title TEXT NOT NULL,
+            emoji TEXT NOT NULL, position INTEGER NOT NULL, properties_json TEXT NOT NULL,
+            document_json TEXT NOT NULL, markdown TEXT NOT NULL, created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL, PRIMARY KEY(tenant_id,page_id));").unwrap();
+        crate::lesson_plan_bindings::ensure_schema(&conn).unwrap();
+        conn.execute("INSERT INTO work_note_pages VALUES(?1,?2,NULL,?3,?4,?5,?6,?7,?8,?9,?10)",
+            params!["tenant-a", "page-a", "10월 1일 1교시 · 국어", "📖", 1, properties.to_string(), "[]", "본문 보존", 100, 999])
+            .expect("insert document fixture");
+        conn
+    }
+
+    #[test]
+    fn document_read_returns_exact_binding_without_rewriting_projection_or_revision() {
+        let conn = fixture(json!({"lessonPlanBinding":{"planId":"fake-plan","dateKey":"2026-10-01","startPeriod":1}}));
+        conn.execute("INSERT INTO lesson_plan_bindings VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            params!["tenant-a", "real-plan", "page-a", "lesson", "2026-10-02", 3, 4, "과학", 7, 200])
+            .expect("insert authoritative binding");
+        let before: i64 = conn.query_row("SELECT total_changes()", [], |r| r.get(0)).unwrap();
+        let result = read_document_response(&conn, "tenant-a", "page-a").unwrap();
+        assert_eq!(result["lessonBinding"]["planId"], "real-plan");
+        assert_eq!(result["lessonBinding"]["pageId"], "page-a");
+        assert_eq!(result["lessonBinding"]["dateKey"], "2026-10-02");
+        assert_eq!(result["lessonBinding"]["startPeriod"], 3);
+        assert_eq!(result["lessonBinding"]["endPeriod"], 4);
+        assert_eq!(result["lessonBinding"]["subject"], "과학");
+        assert_eq!(result["lessonBinding"]["bindingRevision"], 7);
+        assert_eq!(result["revision"], 999, "document revision is separate from binding revision");
+        assert_eq!(result["page"]["title"], "10월 1일 1교시 · 국어");
+        assert_eq!(result["page"]["markdown"], "본문 보존");
+        assert_eq!(result["page"]["properties"]["lessonPlanBinding"]["planId"], "fake-plan");
+        assert_eq!(result["editPolicy"], json!({"titleEditable":false,"structureEditable":false}));
+        let after: i64 = conn.query_row("SELECT total_changes()", [], |r| r.get(0)).unwrap();
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn unbound_document_returns_null_instead_of_inferring_from_metadata_or_other_tenant() {
+        let conn = fixture(json!({"lessonPlanBinding":{"planId":"fake-plan"},"dateKey":"2026-10-02"}));
+        conn.execute("INSERT INTO lesson_plan_bindings VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            params!["tenant-b", "other-plan", "page-a", "event", "2026-10-02", 2, 5, "행사", 8, 200]).unwrap();
+        let result = read_document_response(&conn, "tenant-a", "page-a").unwrap();
+        assert!(result.get("lessonBinding").unwrap().is_null());
+        assert_eq!(result["editPolicy"], json!({"titleEditable":true,"structureEditable":true}));
+        assert_eq!(read_document_response(&conn, "tenant-b", "page-a").unwrap_err(), "work_note_not_found");
+    }
+
+    #[test]
+    fn document_read_keeps_existing_trash_and_cloud_material_guards() {
+        let trashed = fixture(json!({"_localTrash":{"deletedAtMs":123}}));
+        assert_eq!(read_document_response(&trashed, "tenant-a", "page-a").unwrap_err(), "work_note_trashed");
+        let cloud = fixture(json!({"systemKind":"student_learning_materials_folder"}));
+        assert_eq!(read_document_response(&cloud, "tenant-a", "page-a").unwrap_err(), "work_note_cloud_material_read_only");
+    }
 }

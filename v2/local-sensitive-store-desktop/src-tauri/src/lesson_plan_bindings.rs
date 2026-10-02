@@ -54,6 +54,36 @@ fn row(
     })
 }
 
+// The page index is unique within a tenant. This reads the exact canonical binding,
+// never a title, property projection, ancestor, or date-derived locator.
+pub(crate) fn read_for_page(
+    conn: &Connection,
+    tenant_id: &str,
+    page_id: &str,
+) -> Result<Option<Value>, String> {
+    conn.query_row(
+        "SELECT tenant_id,plan_id,page_id,plan_kind,date_key,start_period,end_period,subject,binding_revision,updated_at_ms
+         FROM lesson_plan_bindings WHERE tenant_id=?1 AND page_id=?2",
+        params![tenant_id, page_id],
+        |candidate| {
+            Ok(row(
+                candidate.get(0)?,
+                candidate.get(1)?,
+                candidate.get(2)?,
+                candidate.get(3)?,
+                candidate.get(4)?,
+                candidate.get(5)?,
+                candidate.get(6)?,
+                candidate.get(7)?,
+                candidate.get(8)?,
+                candidate.get(9)?,
+            ))
+        },
+    )
+    .optional()
+    .map_err(|error| format!("db_lesson_plan_binding_read_failed:{error}"))
+}
+
 pub(crate) fn list(store: &SqliteStore, tenant_id: String) -> Result<Vec<Value>, String> {
     let tenant = normalize_tenant_id(Some(&Value::String(tenant_id)));
     if tenant.is_empty() {
@@ -329,5 +359,43 @@ mod tests {
         assert_eq!(error, "lesson_plan_binding_revision_conflict");
         drop(store);
         fs::remove_dir_all(data_dir).expect("remove lesson binding fixture");
+    }
+
+    #[test]
+    fn exact_page_read_is_tenant_scoped_nullable_and_preserves_all_binding_fields() {
+        let conn = Connection::open_in_memory().expect("open binding read fixture");
+        ensure_schema(&conn).expect("create binding read schema");
+        conn.execute(
+            "INSERT INTO lesson_plan_bindings VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            params!["tenant-a", "plan-a", "same-page", "lesson", "2026-10-02", 2, 4, "과학", 7, 100],
+        ).expect("insert lesson binding");
+        conn.execute(
+            "INSERT INTO lesson_plan_bindings VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            params!["tenant-b", "plan-b", "same-page", "event", "2026-10-03", 5, 6, "현장체험", 9, 200],
+        ).expect("insert other tenant binding");
+        let before: i64 = conn.query_row("SELECT total_changes()", [], |r| r.get(0)).unwrap();
+        assert_eq!(read_for_page(&conn, "tenant-a", "same-page").unwrap(), Some(json!({
+            "tenantId":"tenant-a", "planId":"plan-a", "pageId":"same-page", "planKind":"lesson",
+            "dateKey":"2026-10-02", "startPeriod":2, "endPeriod":4, "subject":"과학",
+            "bindingRevision":7, "updatedAt":100,
+        })));
+        let event = read_for_page(&conn, "tenant-b", "same-page").unwrap().unwrap();
+        assert_eq!(event["planKind"], "event");
+        assert_eq!(event["bindingRevision"], 9);
+        assert_eq!(read_for_page(&conn, "tenant-c", "same-page").unwrap(), None);
+        assert_eq!(read_for_page(&conn, "tenant-a", "missing-page").unwrap(), None);
+        let after: i64 = conn.query_row("SELECT total_changes()", [], |r| r.get(0)).unwrap();
+        assert_eq!(before, after, "binding read must not change canonical data");
+        assert!(conn.execute(
+            "INSERT INTO lesson_plan_bindings VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            params!["tenant-a", "another-plan", "same-page", "lesson", "2026-10-02", 1, 1, "국어", 1, 300],
+        ).is_err(), "one tenant/page has at most one binding");
+    }
+
+    #[test]
+    fn exact_page_read_does_not_treat_database_failure_as_an_unbound_page() {
+        let conn = Connection::open_in_memory().expect("open missing schema fixture");
+        assert!(read_for_page(&conn, "tenant-a", "page-a")
+            .unwrap_err().starts_with("db_lesson_plan_binding_read_failed:"));
     }
 }

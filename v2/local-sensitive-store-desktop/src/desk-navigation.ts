@@ -1,14 +1,16 @@
+import { createStudentPrivacyToggle } from "./desk-privacy";
 import { isTauri } from "@tauri-apps/api/core";
-import type { HomeStatus } from "./home-dashboard";
+import type { HomeStatus, ViewContext } from "./home-dashboard";
+import { isDeskRestoreBlocked } from "./desk-restore-lock";
 
 type DeskNavigationOptions = {
   getTenantId: () => string;
-  navigate: (view: string, context?: { group?: string; sectionKey?: string; attachment?: boolean }) => Promise<boolean>;
+  navigate: (view: string, context?: ViewContext) => Promise<boolean>;
   openTeacherHome: (path?: string) => Promise<void>;
 };
 type ScreenLink = { title: string; view?: string; action?: string; target?: string; attachment?: boolean; description: string };
 export const DESK_SCREENS: readonly ScreenLink[] = [
-  { title: "내 작업실 홈", view: "home", description: "최근 문서와 즐겨찾기" },
+  { title: "오늘", view: "home", description: "최근 수정 문서와 자주 쓰는 자료" },
   { title: "컴퓨터·자료함 선택", view: "computers", description: "현재 학급과 이 PC 확인" },
   { title: "새 컴퓨터 시작 설정", view: "settings", target: "deviceAuthPanel", description: "교사 로그인·기기 연결" },
   { title: "컴퓨터·자료함 상세", view: "computers", description: "저장 위치·연결 상태" },
@@ -44,9 +46,11 @@ const required = <T extends HTMLElement>(id: string) => {
 export function mountDeskViews() {
   required("homeTitle").closest(".workspace-scroll")!.insertAdjacentHTML("beforeend", `
     <section class="app-view desk-computers" data-app-view="computers" aria-labelledby="deskComputersTitle" hidden>
-      <header class="desk-page-heading"><div><p class="home-eyebrow">YOUR CONNECTED WORKSPACE</p><h1 id="deskComputersTitle">컴퓨터·자료함</h1><p>현재 연결된 학급과 이 PC의 자료를 확인합니다.</p></div><button class="desk-outline" data-app-view-target="settings" type="button">${icon("plus")} 새 컴퓨터 연결 안내</button></header>
-      <section class="desk-surface desk-computer-card"><div class="desk-computer-heading"><span class="desk-large-icon">${icon("desktop")}</span><div><span class="desk-tag">이 PC · 현재 자료함</span><h2 id="deskComputerTitle">이 PC 자료함</h2><p id="deskComputerTenant">연결된 학급 확인 중</p></div><span id="deskComputerState" class="desk-tag">확인 중</span></div><dl class="desk-detail-grid"><div><dt>로컬 저장소</dt><dd id="deskComputerStore">확인 중</dd></div><div><dt>최근 백업</dt><dd id="deskComputerBackup">확인 중</dd></div><div><dt>계정 연결</dt><dd id="deskComputerConnection">확인 중</dd></div></dl><div class="desk-actions"><button type="button" class="desk-primary" data-app-view-target="home">자료함 열기</button><button type="button" class="desk-outline" data-action="open-data-directory">저장 위치 열기</button><button type="button" class="desk-outline" data-app-view-target="settings">연결 설정</button></div></section>
-      <div class="desk-grid-two"><section class="desk-surface desk-explain"><h2>${icon("arrows-rotate")} 다른 컴퓨터의 자료</h2><p>학교·집 컴퓨터 사이의 자료 전달은 기존 백업·동기화에서 확인합니다. 다른 PC의 DB를 바로 전환해 열지는 않습니다.</p><button type="button" class="desk-outline" data-app-view-target="backup">백업·동기화 열기</button></section><section class="desk-surface desk-explain"><h2>${icon("shield-halved")} 새 컴퓨터에서 시작</h2><p>설정에서 교사 로그인으로 기기를 연결한 뒤, 백업 내용을 확인하고 복원합니다. 기존 자료는 그대로 보존합니다.</p><div class="desk-actions"><button type="button" class="desk-outline" data-app-view-target="settings">1. 기기 연결 확인</button><button type="button" class="desk-outline" data-desk-action="restore-preview">2. 복원 미리보기</button></div></section></div>
+      <header class="desk-page-heading"><div><h1 id="deskComputersTitle">현재 PC 자료함</h1><p>이 PC에 연결된 학급과 저장 위치를 확인하세요.</p></div></header>
+      <section class="desk-surface desk-computer-card"><div class="desk-computer-heading"><span class="desk-computer-screen" aria-hidden="true">${icon("desktop")}</span><div><div class="desk-computer-name"><h2 id="deskComputerTitle">이 PC 자료함</h2><span id="deskComputerState" class="status-badge badge-neutral">확인 중</span></div><dl class="desk-computer-summary"><div><dt>운영체제</dt><dd id="deskComputerOS">확인 전</dd></div><div><dt>앱 버전</dt><dd id="deskComputerVersion">확인 전</dd></div><div><dt>연결 학급</dt><dd id="deskComputerTenant">확인 전</dd></div></dl></div></div></section>
+      <div class="desk-pc-columns"><section class="desk-surface desk-pc-details"><h2>이 PC의 자료</h2><dl><div><dt>${icon("users")} 연결 학급</dt><dd id="deskComputerClass">확인 전</dd></div><div><dt>${icon("folder")} 자료함</dt><dd>이 PC 로컬 저장소</dd></div><div><dt>${icon("database")} 저장 방식</dt><dd>SQLite · 이 PC에 저장</dd></div><div><dt>${icon("folder")} 로컬 폴더</dt><dd>앱 관리 폴더</dd></div></dl><button type="button" class="desk-outline" data-action="open-data-directory">${icon("folder-open")} 로컬 폴더 열기</button><p class="desk-panel-note">최근 백업 <span id="deskComputerBackup">확인 전</span></p></section>
+      <section class="desk-pc-status" aria-label="현재 PC 확인 상태"><article class="desk-surface"><span aria-hidden="true">${icon("link")}</span><div><h2>PC 연결</h2><p>이 PC의 연결 상태를 확인합니다.</p></div><strong id="deskComputerConnection" class="status-badge badge-neutral">확인 전</strong></article><article class="desk-surface"><span aria-hidden="true">${icon("database")}</span><div><h2>로컬 저장</h2><p>이 PC의 자료 저장 상태를 확인합니다.</p></div><strong id="deskComputerStore" class="status-badge badge-neutral">확인 전</strong></article><article class="desk-surface"><span aria-hidden="true">${icon("folder")}</span><div><h2>백업 폴더</h2><p>백업 폴더 연결을 확인합니다.</p></div><strong id="deskComputerFolder" class="status-badge badge-neutral">확인 전</strong></article><article class="desk-surface"><span aria-hidden="true">${icon("arrows-rotate")}</span><div><h2>기기 동기화</h2><p id="deskComputerSyncDetail">확인된 전달·반영 상태를 표시합니다.</p><button type="button" class="desk-outline" data-app-view-target="backup">백업·동기화 열기</button></div><strong id="deskComputerSync" class="status-badge badge-neutral">확인 전</strong></article></section></div>
+      <section class="desk-pc-notice"><span aria-hidden="true">${icon("circle-info")}</span><div><h2>다른 PC의 자료는 백업·동기화에서 검증 후 반영합니다.</h2><p>이 PC에 없는 자료는 백업 내용을 확인한 뒤 반영합니다. <button class="desk-text-action" type="button" data-app-view-target="settings" data-home-target="deviceAuthPanel">새 PC 연결 안내</button></p></div></section>
     </section>
     <section class="app-view" data-app-view="templates" aria-labelledby="deskTemplatesTitle" hidden>
       <header class="desk-page-heading"><div><p class="home-eyebrow">START WITH A TEMPLATE</p><h1 id="deskTemplatesTitle">서식함</h1><p>기본 구성으로 새 문서를 만들고 본문에서 자유롭게 작성하세요.</p></div><button type="button" class="desk-outline" data-desk-action="new">빈 문서 만들기</button></header>
@@ -63,7 +67,7 @@ export function mountDeskViews() {
     </section>`);
   document.body.insertAdjacentHTML("beforeend", `
     <dialog class="desk-dialog" id="deskScreenDialog" aria-labelledby="deskScreenDialogTitle"><header><div><h2 id="deskScreenDialogTitle">작업실 화면 목록</h2><p>24개 작업 흐름의 실제 화면으로 이동합니다.</p></div><button type="button" data-desk-close="deskScreenDialog" aria-label="화면 목록 닫기">${icon("xmark")}</button></header><div class="desk-screen-grid">${DESK_SCREENS.map((screen, index) => `<button type="button" data-desk-screen="${index}"><span>${String(index + 1).padStart(2, "0")}</span><div><strong>${screen.title}</strong><small>${screen.description}</small></div></button>`).join("")}</div></dialog>
-    <dialog class="desk-dialog desk-new-dialog" id="deskNewDialog" aria-labelledby="deskNewTitle"><header><div><h2 id="deskNewTitle">새로 만들기</h2><p>어떤 자료를 작성할까요?</p></div><button type="button" data-desk-close="deskNewDialog" aria-label="새로 만들기 닫기">${icon("xmark")}</button></header><div class="desk-new-grid"><button type="button" data-desk-create="workNotes">${icon("pen-to-square")}<strong>업무 노트</strong><small>이 PC에서 작성·저장</small></button><button type="button" data-desk-create="lessonMaterials">${icon("book-open")}<strong>수업자료</strong><small>이 PC의 수업자료에 저장</small></button><button type="button" data-desk-action="quick">${icon("bolt")}<strong>빠른 관찰 기록</strong><small>학생을 선택해 기록</small></button><button type="button" data-desk-action="counseling">${icon("comment-dots")}<strong>상담 기록</strong><small>학생을 선택해 상담 작성</small></button><button type="button" data-desk-action="student-materials">${icon("user-graduate")}<strong>학생 학습자료</strong><small>교사 홈에서 작성·공개</small></button></div><p class="desk-inline-message" id="deskNewStatus" role="status"></p></dialog>
+    <dialog class="desk-dialog desk-new-dialog" id="deskNewDialog" aria-labelledby="deskNewTitle"><header><div><h2 id="deskNewTitle">새로 만들기</h2><p>어떤 자료를 작성할까요?</p></div><button type="button" data-desk-close="deskNewDialog" aria-label="새로 만들기 닫기">${icon("xmark")}</button></header><div class="desk-new-grid"><button type="button" data-desk-create="lessonMaterials">${icon("file-lines")}<strong>수업자료</strong><small>이 PC에 저장 · 오프라인 작성 가능</small></button><button type="button" data-desk-create="workNotes">${icon("note-sticky")}<strong>업무 노트</strong><small>이 PC에 저장 · 오프라인 작성 가능</small></button><button type="button" data-desk-action="student-materials">${icon("users")}<strong>학생 학습자료 ↗</strong><small>온라인 교사 홈에서 작성 · 공개</small></button><p class="desk-new-section">학생 기록</p><button type="button" data-desk-action="quick">${icon("eye")}<strong>빠른 관찰</strong><small>학생을 선택한 뒤 기록</small></button><button type="button" data-desk-action="counseling">${icon("user")}<strong>상담 기록</strong><small>학생을 선택한 뒤 작성</small></button></div><p class="desk-new-boundary">학생 기록은 이 PC의 자료함에 저장됩니다.</p><p class="desk-inline-message" id="deskNewStatus" role="status"></p><button class="desk-primary" id="deskNewConnect" data-desk-action="connect-device" type="button" hidden>교사 계정 연결</button></dialog>
     <div id="deskNavigationStatus" class="desk-navigation-status" role="status" hidden></div>`);
   const settings = document.querySelector('[data-app-view="settings"] .settings-advanced-panel');
   settings?.insertAdjacentHTML("beforebegin", `<section class="settings-wide-panel desk-display-preferences"><header><h2>작업실 화면</h2></header><label><span><strong>홈 문서 제목 가리기</strong><small>화면 공유 시 최근 작업·즐겨찾기의 제목을 숨깁니다.</small></span><input id="deskHideHomeTitles" type="checkbox" role="switch"></label><label><span><strong>촘촘한 화면 간격</strong><small>목록과 메뉴의 간격을 줄입니다.</small></span><input id="deskCompactSpacing" type="checkbox" role="switch"></label></section>`);
@@ -78,11 +82,13 @@ export function initDeskNavigation(options: DeskNavigationOptions) {
   };
   const closeDialogs = () => { for (const id of ["deskScreenDialog", "deskNewDialog"]) { const dialog = required<HTMLDialogElement>(id); if (dialog.open) dialog.close(); } };
   const openTeacher = async (path: string) => {
+    if (!navigator.onLine) { notify("오프라인입니다. 인터넷 연결 후 교사 홈을 여세요. 이 PC의 저장된 자료는 계속 사용할 수 있습니다."); return; }
     closeDialogs();
     if (!isTauri()) { notify("교사 홈 연결은 설치형 앱에서 사용할 수 있습니다."); return; }
     try { await options.openTeacherHome(path); } catch { notify("교사 홈을 열지 못했습니다. 연결 상태를 확인해 주세요."); }
   };
   const create = (workspace: "workNotes" | "lessonMaterials", templateId?: string) => {
+    if (isDeskRestoreBlocked()) { notify("복원이 진행 중입니다. 완료 후 자료를 작성하세요."); return; }
     if (!options.getTenantId()) { notify("설정에서 학급과 이 PC를 먼저 연결해 주세요."); return; }
     if (!isTauri()) { notify("문서 저장은 설치형 앱의 로컬 DB에서 지원합니다."); return; }
     closeDialogs();
@@ -95,10 +101,19 @@ export function initDeskNavigation(options: DeskNavigationOptions) {
     node.tabIndex = -1; node.focus({ preventScroll: true });
   };
   const action = async (name: string) => {
-    if (name === "new") { required("deskNewStatus").textContent = options.getTenantId() ? "수업자료·업무 노트는 인터넷 연결 없이 작성할 수 있습니다." : "로컬 문서를 작성하려면 설정에서 학급과 이 PC를 연결하세요."; required<HTMLDialogElement>("deskNewDialog").showModal(); return; }
+    if (isDeskRestoreBlocked()) { notify("복원이 진행 중입니다. 완료 후 작업을 이어가세요."); return; }
+    if (name === "new") {
+      const connected = Boolean(options.getTenantId());
+      required("deskNewStatus").textContent = connected ? "이 PC에 저장하는 자료와 온라인에서 만드는 자료를 구분해 선택하세요." : "이 PC를 학급에 연결한 뒤 로컬 자료를 만들 수 있습니다.";
+      document.querySelectorAll<HTMLButtonElement>('#deskNewDialog [data-desk-create], #deskNewDialog [data-desk-action="quick"], #deskNewDialog [data-desk-action="counseling"]').forEach((button) => { button.disabled = !connected; });
+      required("deskNewConnect").hidden = connected;
+      required<HTMLDialogElement>("deskNewDialog").showModal(); return;
+    }
     closeDialogs();
     if (name === "trash" || name === "history") { document.dispatchEvent(new CustomEvent(`desk:open-${name}`)); return; }
     if (name === "favorites") { if (await options.navigate("home")) focusTarget("deskFavoritesPanel"); return; }
+    if (name === "connect-device") { await options.navigate("settings", { target: "deviceAuthPanel" }); return; }
+    if (name === "favorites-all") { window.dispatchEvent(new CustomEvent("desk:home-favorites-expand")); return; }
     if (name === "quick") { await options.navigate("quick-observation"); return; }
     if (name === "restore-preview") { if (await options.navigate("backup")) focusTarget("backupRestorePanel"); return; }
     if (name === "conflicts") { if (await options.navigate("backup")) required<HTMLButtonElement>("deviceSyncConflictsOpen").click(); return; }
@@ -106,7 +121,9 @@ export function initDeskNavigation(options: DeskNavigationOptions) {
     if (name === "counseling") { if (!options.getTenantId()) { notify("설정에서 학급과 이 PC를 먼저 연결해 주세요."); return; } window.dispatchEvent(new CustomEvent("desk:create-counseling")); return; }
     if (name === "ai-approvals") { await openTeacher("/admin/mcp-approvals"); return; }
     if (name === "ai-settings") { await openTeacher("/admin/settings?tab=ai"); }
+    if (name === "installer-guide") { await openTeacher("/admin/settings?tab=data-security"); }
   };
+  required("deskOpenTeacher").addEventListener("click", () => { if (!isDeskRestoreBlocked()) void openTeacher("/admin/"); });
   required("deskScreenIndex").addEventListener("click", () => required<HTMLDialogElement>("deskScreenDialog").showModal());
   document.addEventListener("click", (event) => {
     const target = event.target as HTMLElement | null;
@@ -127,7 +144,7 @@ export function initDeskNavigation(options: DeskNavigationOptions) {
     }
   });
   document.addEventListener("keydown", (event) => {
-    if ((!event.ctrlKey && !event.metaKey) || event.altKey || document.querySelector("dialog[open]")) return;
+    if ((!event.ctrlKey && !event.metaKey) || event.altKey || event.isComposing || isDeskRestoreBlocked() || document.querySelector("dialog[open]")) return;
     if (event.key.toLowerCase() === "k") { event.preventDefault(); required<HTMLInputElement>("homeSearchInput").focus(); }
     if (event.key.toLowerCase() === "j") { event.preventDefault(); void options.navigate("quick-observation"); }
   });
@@ -137,14 +154,35 @@ export function initDeskNavigation(options: DeskNavigationOptions) {
     required("deskComputerTenant").textContent = status.tenantLabel;
     required("deskComputerState").textContent = status.connected ? "현재 사용 중" : "연결 필요";
     required("deskComputerStore").textContent = status.storeReady ? "정상" : "확인 필요";
-    required("deskComputerBackup").textContent = status.backupAtMs ? new Date(status.backupAtMs).toLocaleString("ko-KR") : "아직 없음";
-    required("deskComputerConnection").textContent = status.connected ? "학급 연결됨" : "연결 필요";
+    required("deskComputerBackup").textContent = status.backupAtMs === undefined ? "확인 전" : status.backupAtMs ? new Date(status.backupAtMs).toLocaleString("ko-KR") : "아직 없음";
+    required("deskComputerClass").textContent = status.tenantLabel;
+    required("deskComputerOS").textContent = status.os ? `${status.os.toLowerCase() === "windows" ? "Windows" : status.os.toLowerCase() === "macos" || status.os.toLowerCase() === "darwin" ? "macOS" : status.os}${status.arch ? ` · ${status.arch}` : ""}` : "확인 전";
+    required("deskComputerVersion").textContent = status.appVersion || "확인 전";
+    const badge = (id: string, label: string, tone: string) => { const node=required(id); node.textContent=label; node.className=`status-badge badge-${tone}`; };
+    badge("deskComputerState",status.connected ? "연결됨" : "연결 필요",status.connected ? "ok" : "warning");
+    badge("deskComputerConnection",status.connected ? "연결됨" : "연결 필요",status.connected ? "ok" : "warning");
+    badge("deskComputerStore",status.storeReady ? "사용 가능" : "확인 전",status.storeReady ? "ok" : "neutral");
+    badge("deskComputerFolder",status.backupConfigured === undefined ? "확인 전" : status.backupOk === false ? "확인 필요" : status.backupConfigured ? "연결됨" : "설정 필요",status.backupConfigured && status.backupOk ? "ok" : status.backupOk === false ? "error" : "warning");
+    badge("deskComputerSync",status.deviceSync?.label || "확인 전",status.deviceSync?.tone || "neutral");
+    required("deskComputerSyncDetail").textContent = status.deviceSync?.detail || "기기 동기화 상태를 확인합니다.";
   });
   for (const [id, key, className] of [["deskHideHomeTitles", "classaimateDeskHideHomeTitles:v1", "desk-hide-home-titles"], ["deskCompactSpacing", "classaimateDeskCompact:v1", "desk-compact"]]) {
     const input = required<HTMLInputElement>(id);
     try { input.checked = localStorage.getItem(key) === "true"; } catch { input.checked = false; }
     document.body.classList.toggle(className, input.checked);
-    input.addEventListener("change", () => { document.body.classList.toggle(className, input.checked); try { localStorage.setItem(key, String(input.checked)); } catch { notify("화면 설정을 보관하지 못했습니다. 이번 실행에만 적용됩니다."); } });
+    const apply = () => {
+      document.body.classList.toggle(className, input.checked);
+      if (id === "deskHideHomeTitles") { window.dispatchEvent(new CustomEvent("desk:home-title-privacy-changed")); const toggle = required("deskHomeTitleToggle"); toggle.setAttribute("aria-pressed", String(input.checked)); toggle.innerHTML = `${icon(input.checked ? "eye" : "eye-slash")} ${input.checked ? "제목 표시" : "제목 가리기"}`; }
+    };
+    apply();
+    input.addEventListener("change", () => { apply(); try { localStorage.setItem(key, String(input.checked)); } catch { notify("화면 설정을 보관하지 못했습니다. 이번 실행에만 적용됩니다."); } });
+    if (id === "deskHideHomeTitles") required("deskHomeTitleToggle").addEventListener("click", () => { input.checked = !input.checked; input.dispatchEvent(new Event("change")); });
   }
+  const preferences = document.querySelector(".desk-display-preferences");
+  if (preferences) { const row = document.createElement("div"); row.className="desk-privacy-setting"; const text=document.createElement("p"); text.textContent="학생 이름·원문 가림은 앱을 시작할 때 켜집니다. 가려진 입력은 해제하면 이어서 작성할 수 있습니다."; row.append(createStudentPrivacyToggle(),text); preferences.append(row); }
+  const renderOnlineActions = () => {
+    document.querySelectorAll<HTMLButtonElement>('[data-desk-action="student-materials"], [data-desk-action="ai-approvals"], [data-desk-action="ai-settings"], #deskOpenTeacher').forEach(button=>{button.disabled=!navigator.onLine || isDeskRestoreBlocked(); button.title=navigator.onLine ? "온라인 교사 홈에서 열기" : "오프라인 · 인터넷 연결 후 이용할 수 있습니다";});
+  };
+  window.addEventListener("online", renderOnlineActions); window.addEventListener("offline",renderOnlineActions); window.addEventListener("desk:restore-lock-changed",renderOnlineActions); window.addEventListener("desk:view-changed",renderOnlineActions); renderOnlineActions();
   return { notify };
 }
