@@ -5,7 +5,7 @@ import { summarizeBackupStorage } from './backup-storage-summary';
 import { isDeskRestoreBlocked } from './desk-restore-lock';
 
 type Options = { getTenantId: () => string; isConfigured: () => boolean; onBackupsChanged?: () => void | Promise<void> };
-const TUTORIAL_KEY = 'localBackupStorageTutorial:v5';
+const TUTORIAL_KEY = 'localBackupStorageTutorial:v6';
 const CACHE_MS = 30_000;
 const DESIGN_PREVIEW = new URLSearchParams(window.location.search).get('designPreview') === 'backup';
 const PREVIEW_STORAGE: BackupStorageOverview = {
@@ -322,12 +322,14 @@ export function initBackupStorage(options: Options) {
   };
 
   const policy = required<HTMLDetailsElement>('backupStoragePolicy');
+  const policySummary = policy.querySelector<HTMLElement>('summary');
+  if (!policySummary) throw new Error('missing backup storage policy summary');
   let policyWasOpen = false;
   const tutorialSteps = [
     { target: required('backupStorageTotalSummary'), title: '중복 없이 보는 백업 용량', copy: 'DB, 첨부 객체, 이전 백업, 격리 파일을 한 번씩 합산한 논리 크기입니다. 일부 파일을 읽지 못하면 전체 용량을 확정하지 않고 확인 필요로 표시합니다.' },
-    { target: required('backupManualManager'), title: '수동 백업은 최대 10개', copy: 'DB는 시점마다 전체 사본을 만들고 첨부는 같은 내용의 객체를 함께 씁니다. 11번째 정상 수동 백업을 만들면 가장 오래된 항목을 정리하며, 각 행의 삭제 버튼으로 직접 제거할 수도 있습니다.' },
+    { target: required('backupManualSummary'), title: '수동 백업은 최대 10개', copy: 'DB는 시점마다 전체 사본을 만들고 첨부는 같은 내용의 객체를 함께 씁니다. 11번째 정상 수동 백업을 만들면 가장 오래된 항목을 정리하며, 각 행의 삭제 버튼으로 직접 제거할 수도 있습니다.' },
     { target: required('backupStorageOriginalReference'), title: '현재 원본은 참고값', copy: '현재 첨부 원본은 백업 폴더 합계에 더하지 않습니다. 같은 내용은 객체 하나만 보관합니다. 아래 큰 원본 목록도 자동 압축·삭제하지 않습니다.' },
-    { target: policy, title: '격리 중에도 용량은 포함', copy: '격리 파일은 30일이 지나고 앱이 실행 중일 때 안전 조건을 다시 확인한 뒤 정리합니다. 읽지 못하거나 상태가 바뀐 파일과 동기화에 필요한 세대는 자동 삭제하지 않습니다.' },
+    { target: policySummary, title: '격리 중에도 용량은 포함', copy: '격리 파일은 30일이 지나고 앱이 실행 중일 때 안전 조건을 다시 확인한 뒤 정리합니다. 읽지 못하거나 상태가 바뀐 파일과 동기화에 필요한 세대는 자동 삭제하지 않습니다.' },
     { target: required('backupLegacyUndo'), title: '30일 안에는 되돌리기', copy: '자동 격리한 이전 백업이 있으면 이 버튼으로 원래 위치에 되돌릴 수 있습니다. 안내는 버튼을 대신 누르거나 파일을 변경하지 않습니다.' },
   ];
   const clearTutorialTarget = () => required('backupStoragePanel').querySelectorAll('.local-reader-tutorial-target').forEach((node) => node.classList.remove('local-reader-tutorial-target'));
@@ -347,7 +349,7 @@ export function initBackupStorage(options: Options) {
     clearTutorialTarget();
     const step = tutorialSteps[tutorialIndex]; const tutorial = required('backupStorageTutorial');
     if (!step) { tutorial.hidden = true; tutorialIndex = -1; return; }
-    if (step.target === policy) policy.open = true;
+    if (step.target === policySummary) policy.open = true;
     step.target.classList.add('local-reader-tutorial-target'); text('backupStorageTutorialStep', `${tutorialIndex + 1} / ${tutorialSteps.length}`);
     text('backupStorageTutorialTitle', step.title); text('backupStorageTutorialCopy', step.copy);
     required<HTMLButtonElement>('backupStorageTutorialNext').textContent = tutorialIndex === tutorialSteps.length - 1 ? '완료' : '다음'; tutorial.hidden = false;
