@@ -799,6 +799,16 @@ fn durable_rename(from: &Path, to: &Path) -> Result<(), String> {
     #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStrExt;
+        // Rust's filesystem APIs accept long paths, but raw Win32 calls need
+        // canonical extended absolute paths even without a longPathAware
+        // manifest. The target does not exist yet; its parent already does.
+        let from = fs::canonicalize(from).map_err(fail)?;
+        let to = fs::canonicalize(to.parent().ok_or("class_storage_rename_target_invalid")?)
+            .map_err(fail)?
+            .join(
+                to.file_name()
+                    .ok_or("class_storage_rename_target_invalid")?,
+            );
         let from_wide: Vec<u16> = from.as_os_str().encode_wide().chain(Some(0)).collect();
         let to_wide: Vec<u16> = to.as_os_str().encode_wide().chain(Some(0)).collect();
         let ok = unsafe {

@@ -623,3 +623,112 @@ fn verified_directory_can_finish_activation_registration_without_recopied_data()
     drop(store);
     fs::remove_dir_all(root).unwrap();
 }
+
+#[cfg(windows)]
+#[test]
+fn windows_long_paths_activate_reopen_and_rename_without_legacy_fallback() {
+    use std::os::windows::ffi::OsStrExt;
+
+    let fixture_root =
+        std::env::temp_dir().join(format!("class-store-{}", crate::random_url_token()));
+    let prefix_units = fixture_root.as_os_str().encode_wide().count();
+    let folder_units = 128usize.saturating_sub(prefix_units + 1).max(24);
+    let root = fixture_root.join(format!(
+        "class-preparation-{}",
+        "p".repeat(folder_units - "class-preparation-".len())
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let store = SqliteStore::open(root.join(DB_FILE_NAME)).unwrap();
+    store
+        .conn
+        .lock()
+        .unwrap()
+        .execute(
+            "INSERT INTO work_note_local_drafts VALUES('class-2026','draft',1,'{}',10)",
+            [],
+        )
+        .unwrap();
+    let marker = activation_path(&root, "class-2026");
+    let candidate = marker.with_extension(format!("{}.staging", crate::random_url_token()));
+    assert!(candidate.as_os_str().encode_wide().count() >= 260);
+
+    let class = store.for_tenant("class-2026").unwrap();
+    assert!(marker.is_file());
+    let marker_sha = crate::restore_journal::digest(&marker).unwrap();
+    class
+        .conn
+        .lock()
+        .unwrap()
+        .execute("UPDATE work_note_local_drafts SET generation=2", [])
+        .unwrap();
+    // The original and protection copy still contain the earlier generation.
+    for path in [
+        store.db_path.clone(),
+        root.join("class-migrations/legacy-protection.sqlite"),
+    ] {
+        let conn =
+            Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        assert_eq!(
+            conn.query_row("SELECT generation FROM work_note_local_drafts", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            1
+        );
+    }
+    let class_dir = class.data_dir.clone();
+    drop(class);
+    drop(store);
+
+    let reopened = SqliteStore::open(root.join(DB_FILE_NAME)).unwrap();
+    let class = reopened.for_tenant("class-2026").unwrap();
+    assert_eq!(
+        class
+            .conn
+            .lock()
+            .unwrap()
+            .query_row("SELECT generation FROM work_note_local_drafts", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+        2
+    );
+    assert_eq!(crate::restore_journal::digest(&marker).unwrap(), marker_sha);
+    drop(class);
+
+    let files = root.join("rename-files").join("long".repeat(32));
+    fs::create_dir_all(&files).unwrap();
+    let from = files.join("source-학교-attachment.bin");
+    let to = files.join("target-학교-attachment.bin");
+    assert!(from.as_os_str().encode_wide().count() >= 260);
+    assert!(to.as_os_str().encode_wide().count() >= 260);
+    fs::write(&from, b"preserve attachment bytes").unwrap();
+    durable_rename(&from, &to).unwrap();
+    assert!(!from.exists());
+    assert_eq!(fs::read(&to).unwrap(), b"preserve attachment bytes");
+
+    let retained = root.join("retained-class-evidence");
+    durable_rename(&class_dir, &retained).unwrap();
+    assert_eq!(
+        reopened.for_tenant("class-2026").err().unwrap(),
+        "class_storage_activated_component_missing"
+    );
+    assert!(!class_dir.exists());
+    assert_eq!(crate::restore_journal::digest(&marker).unwrap(), marker_sha);
+    durable_rename(&retained, &class_dir).unwrap();
+    let recovered = reopened.for_tenant("class-2026").unwrap();
+    assert_eq!(
+        recovered
+            .conn
+            .lock()
+            .unwrap()
+            .query_row("SELECT generation FROM work_note_local_drafts", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+        2
+    );
+    drop(recovered);
+    drop(reopened);
+    fs::remove_dir_all(fixture_root).unwrap();
+}
