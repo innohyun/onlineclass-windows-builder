@@ -55,6 +55,17 @@ fn ports_closed(ports: &[u16]) -> Result<(), String> {
 }
 
 fn locked_store(root: &Path) -> Result<SqliteStore, String> {
+    // This legacy offline tool copies one component. Class files and the common
+    // personal store require the durable multi-component restore in the app.
+    let contains_classes = root.join("classes").is_dir()
+        && fs::read_dir(root.join("classes")).map_err(|_| error("recovery_target_open_failed"))?
+            .any(|entry| entry.map(|entry| entry.path().join("class-storage.json").is_file()).unwrap_or(true));
+    let known_classes = root.join("class-migrations").is_dir()
+        && fs::read_dir(root.join("class-migrations")).map_err(|_| error("recovery_target_open_failed"))?
+            .any(|entry| entry.map(|entry| entry.file_name().to_string_lossy().ends_with(".activated.json")).unwrap_or(true));
+    if root.join("class-storage.json").exists() || contains_classes || known_classes {
+        return Err(error("recovery_class_layout_requires_coordinated_restore"));
+    }
     let database = root.join(DATABASE);
     let conn = Connection::open_with_flags(
         &database,
@@ -69,11 +80,7 @@ fn locked_store(root: &Path) -> Result<SqliteStore, String> {
         "PRAGMA foreign_keys=ON; PRAGMA locking_mode=EXCLUSIVE; BEGIN EXCLUSIVE; COMMIT;",
     )
     .map_err(|_| error("recovery_target_in_use"))?;
-    Ok(SqliteStore {
-        conn: Mutex::new(conn),
-        db_path: database,
-        data_dir: root.into(),
-    })
+    Ok(SqliteStore::from_connection(conn, database, root.into()))
 }
 
 fn db_fingerprint(conn: &Connection) -> Result<String, String> {

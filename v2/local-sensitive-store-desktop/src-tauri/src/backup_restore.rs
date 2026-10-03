@@ -110,6 +110,7 @@ fn stage_restore_media(
     let mut plans = Vec::new();
     let mut media_missing = 0i64;
     for (index, record) in records.iter().enumerate() {
+        if !crate::backup_restore_coordinator::include_class() { break; }
         let media_id = normalize_json_text(record.get("mediaId"), 220).replace(['/', '\\'], "_");
         let backup_relative = normalize_json_text(record.get("backupRelativePath"), 600);
         let local_path_text = normalize_json_text(record.get("localPath"), 600);
@@ -180,6 +181,7 @@ fn stage_restore_media(
         .and_then(Value::as_array).cloned().unwrap_or_default();
     let mut attachment_missing = 0i64;
     for (index, record) in attachment_records.iter().enumerate() {
+        if !crate::backup_restore_coordinator::include_class() { break; }
         let attachment_id = normalize_json_text(record.get("attachmentId"), 180).replace(['/', '\\'], "_");
         let backup_relative = normalize_json_text(record.get("backupRelativePath"), 600);
         let local_path_text = normalize_json_text(record.get("localPath"), 600);
@@ -218,6 +220,9 @@ fn stage_restore_media(
             target_path: store.data_dir.join(local_path),
             rollback_path: rollback_dir.join(format!("attachment-{index}")),
         });
+    }
+    if !crate::backup_restore_coordinator::include_common() {
+        return Ok((staging_root, plans, media_missing, attachment_missing, 0));
     }
     let db_relative=manifest.get("db").and_then(|value|value.get("relativePath")).and_then(Value::as_str).ok_or("backup_db_required")?;
     let db_safe=safe_relative_path(db_relative).ok_or("backup_db_path_invalid")?;
@@ -344,14 +349,14 @@ where
         let _ = fs::remove_dir_all(&staging_root);
         return Err(format!("restore_db_attach_failed:{error}"));
     }
-    if let Err(error)=crate::teaching_source_backup::validate_restore(&conn,&tenant_id){let _=conn.execute_batch("DETACH DATABASE restore");let _=fs::remove_dir_all(&staging_root);return Err(error);}
+    if crate::backup_restore_coordinator::include_common() { if let Err(error)=crate::teaching_source_backup::validate_restore(&conn,&tenant_id){let _=conn.execute_batch("DETACH DATABASE restore");let _=fs::remove_dir_all(&staging_root);return Err(error);} }
     let mut archive_result = json!({});
     let result = (|| -> Result<i64, String> {
         {
             let preflight = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
-            crate::observation_evidence::check_restore(&preflight, &tenant_id)?;
-            if school_preferred { recovery_policy::check_attached(&preflight, &tenant_id, &authoritative)?; }
-            if manual_restore_has_lesson_binding_conflict(&preflight, &tenant_id)? {
+            if crate::backup_restore_coordinator::include_class() { crate::observation_evidence::check_restore(&preflight, &tenant_id)?; }
+            if school_preferred && crate::backup_restore_coordinator::include_class() { recovery_policy::check_attached(&preflight, &tenant_id, &authoritative)?; }
+            if crate::backup_restore_coordinator::include_class() && manual_restore_has_lesson_binding_conflict(&preflight, &tenant_id)? {
                 return Err("lesson_plan_binding_revision_conflict".to_string());
             }
         }
@@ -359,17 +364,18 @@ where
         unjournaled_staging.0.clear(); // The durable journal owns cleanup now.
         let transaction = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| format!("restore_transaction_begin_failed:{e}"))?;
         // Recheck after acquiring SQLite's cross-connection writer lock.
-        if manual_restore_has_lesson_binding_conflict(&transaction, &tenant_id)? { return Err("lesson_plan_binding_revision_conflict".into()); }
-        if school_preferred { recovery_policy::check_attached(&transaction, &tenant_id, &authoritative)?; }
+        if crate::backup_restore_coordinator::include_class() && manual_restore_has_lesson_binding_conflict(&transaction, &tenant_id)? { return Err("lesson_plan_binding_revision_conflict".into()); }
+        if school_preferred && crate::backup_restore_coordinator::include_class() { recovery_policy::check_attached(&transaction, &tenant_id, &authoritative)?; }
         check_media_rows(&transaction, &tenant_id, &media_plans)?;
         // Archive application can change live files before the SQLite merge.
         progress.checkpoint(RestorePhase::MergeStarted);
-        archive_result = if school_preferred {
+        archive_result = if !crate::backup_restore_coordinator::include_class() { json!({}) } else if school_preferred {
             recovery_policy::apply_archives(store, &body, &manifest_path, &authoritative, &tenant_id)?
         } else { crate::backup_v4::apply_archives(&manifest_path, &authoritative, &tenant_id)? };
         crate::restore_journal::apply(&transaction, &store.data_dir, &tenant_id, &intent)?;
         let mut imported = 0i64;
         for table in BACKUP_TABLES {
+            if !crate::backup_restore_coordinator::include_table(table.name) { continue; }
             if !table_exists(&transaction, table.name)? || !attached_table_exists(&transaction, "restore", table.name)? {
                 continue;
             }
@@ -389,7 +395,20 @@ where
                 recovery_policy::archive_losers(&transaction, &tenant_id, table)?;
                 recovery_policy::merge_guard(table)
             } else { restore_merge_guard(table) };
-            let source_guard = if table.name == "lesson_observations" {
+            let merge_guard = if table.name == "local_import_runs" {
+                match crate::backup_restore_coordinator::component() {
+                    crate::backup_restore_coordinator::Component::Common => format!("({merge_guard}) AND main.local_import_runs.kind='teaching_source'"),
+                    crate::backup_restore_coordinator::Component::Class => format!("({merge_guard}) AND main.local_import_runs.kind<>'teaching_source'"),
+                    crate::backup_restore_coordinator::Component::Combined => merge_guard,
+                }
+            } else { merge_guard };
+            let source_guard = if table.name == "local_import_runs" {
+                match crate::backup_restore_coordinator::component() {
+                    crate::backup_restore_coordinator::Component::Common => " AND kind='teaching_source'".to_string(),
+                    crate::backup_restore_coordinator::Component::Class => " AND kind<>'teaching_source'".to_string(),
+                    crate::backup_restore_coordinator::Component::Combined => String::new(),
+                }
+            } else if table.name == "lesson_observations" {
                 format!(" AND NOT EXISTS (SELECT 1 FROM main.observation_evidence_deletions d WHERE d.tenant_id=restore.{name}.tenant_id AND d.doc_id=restore.{name}.doc_id)", name=table.name)
             } else { String::new() };
             let sql = format!(
@@ -408,8 +427,10 @@ where
                 .execute(&sql, params![tenant_id])
                 .map_err(|e| format!("restore_table_merge_failed:{}:{e}", table.name))? as i64;
         }
-        let (teaching_sources_imported,_teaching_sources_retained)=crate::teaching_source_backup::apply(&transaction,&tenant_id)?;
-        imported+=teaching_sources_imported;
+        if crate::backup_restore_coordinator::include_common() {
+            let (teaching_sources_imported,_teaching_sources_retained)=crate::teaching_source_backup::apply(&transaction,&tenant_id)?;
+            imported+=teaching_sources_imported;
+        }
         for plan in &media_plans {
             if plan.kind=="teaching_source"{continue;}
             let local_path = plan
@@ -426,6 +447,7 @@ where
             transaction.execute(sql, params![local_path, tenant_id, plan.record_id])
             .map_err(|e| format!("restore_media_path_update_failed:{e}"))?;
         }
+        if crate::backup_restore_coordinator::include_class() {
         transaction
             .execute("DELETE FROM work_note_pages_fts WHERE tenant_id = ?1", params![tenant_id])
             .map_err(|e| format!("restore_work_note_fts_delete_failed:{e}"))?;
@@ -435,7 +457,8 @@ where
                 params![tenant_id],
             )
             .map_err(|e| format!("restore_work_note_fts_insert_failed:{e}"))?;
-        if school_preferred { recovery_policy::resolve_observations(store,&transaction,&tenant_id)?; }
+        if school_preferred && crate::backup_restore_coordinator::include_class() { recovery_policy::resolve_observations(store,&transaction,&tenant_id)?; }
+        }
         crate::restore_journal::receipt(&transaction, &tenant_id, &intent)?;
         transaction.commit().map_err(|e| format!("restore_transaction_commit_failed:{e}"))?;
         Ok(imported)
@@ -470,9 +493,28 @@ where
 }
 
 pub(super) fn restore(store: &SqliteStore, body: Value, progress: &mut ProgressTracker<'_>) -> Result<Value, String> {
+    if store.class_tenant.is_some() && !crate::backup_restore_coordinator::running() {
+        return crate::backup_restore_coordinator::run(store, body.clone(), "manual", |_component, target, protection, canonical_body| {
+            restore_with_policy_progress(target, canonical_body, |_store, _tenant| Ok(protection), false, progress)
+        });
+    }
     restore_with_policy_progress(store, body, |store, tenant_id| {
         run_with_kind(store, tenant_id, "pre_restore", None)
     }, false, progress)
+}
+
+pub(crate) fn restore_coordinated_component(store: &SqliteStore, body: Value, mode: &str, protection: Value) -> Result<Value, String> {
+    match mode {
+        "manual" => restore_with_policy(store, body, |_store, _tenant| Ok(protection), false),
+        "recovery" => restore_with_policy(store, body, |_store, _tenant| Ok(protection), true),
+        "generation" => {
+            let tenant = normalize_tenant_id(body.get("tenantId"));
+            let path = PathBuf::from(body["manifestPath"].as_str().ok_or("backup_manifest_required")?);
+            restore_generation_component(store, &tenant, &path, body["generation"].as_i64().ok_or("backup_generation_invalid")?,
+                body["latestStatus"].as_str().unwrap_or(""), body["forceAll"].as_bool().unwrap_or(false), Some(protection))
+        }
+        _ => Err("restore_recovery_required".into()),
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -744,7 +786,7 @@ fn archive_conflict(
                winning_generation, payload_json, captured_at_ms
              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
-                crate::random_url_token(),
+                crate::device_sync_conflicts::conflict_id(&record.table_name),
                 tenant_id,
                 record.table_name,
                 record.record_key,
@@ -817,6 +859,24 @@ pub(super) fn restore_generation(
     latest_status: &str,
     force_all: bool,
 ) -> Result<Value, String> {
+    if store.class_tenant.is_some() && !crate::backup_restore_coordinator::running() {
+        let body = json!({"tenantId":tenant_id,"manifestPath":manifest_path,"generation":generation,"latestStatus":latest_status,"forceAll":force_all});
+        return crate::backup_restore_coordinator::run(store, body.clone(), "generation", |_component, target, protection, canonical_body| {
+            restore_coordinated_component(target, canonical_body, "generation", protection)
+        });
+    }
+    restore_generation_component(store, tenant_id, manifest_path, generation, latest_status, force_all, None)
+}
+
+fn restore_generation_component(
+    store: &SqliteStore,
+    tenant_id: &str,
+    manifest_path: &Path,
+    generation: i64,
+    latest_status: &str,
+    force_all: bool,
+    protection: Option<Value>,
+) -> Result<Value, String> {
     let manifest = crate::onedrive_download::with_downloads(|| read_manifest(manifest_path))?;
     if !matches!(
         manifest.get("version").and_then(Value::as_i64),
@@ -830,10 +890,12 @@ pub(super) fn restore_generation(
         authoritative_restore_manifest(manifest_path, &manifest, tenant_id))?;
     seed_sync_records(store, tenant_id)?;
     let state = local_sync_state(store, tenant_id)?;
-    let local_archives = crate::shared_archive_sync::has_local_only_references(tenant_id, authoritative.get("archives"))?;
+    let local_archives = crate::backup_restore_coordinator::include_class()
+        && crate::shared_archive_sync::has_local_only_references(tenant_id, authoritative.get("archives"))?;
     if generation <= state.applied_generation {
-        let archive_result = crate::onedrive_download::with_downloads(||
-            crate::backup_v4::apply_archives(manifest_path, &authoritative, tenant_id))?;
+        let archive_result = if crate::backup_restore_coordinator::include_class() {
+            crate::onedrive_download::with_downloads(|| crate::backup_v4::apply_archives(manifest_path, &authoritative, tenant_id))?
+        } else { json!({}) };
         return Ok(json!({
             "ok": true,
             "applied": false,
@@ -844,7 +906,8 @@ pub(super) fn restore_generation(
     let records = parse_sync_records(&authoritative, generation)?;
     let mut applicable = records
         .iter()
-        .filter(|record| force_all || state.applied_generation == 0 || record.changed_generation > state.applied_generation)
+        .filter(|record| crate::backup_restore_coordinator::include_table(&record.table_name)
+            && (force_all || state.applied_generation == 0 || record.changed_generation > state.applied_generation))
         .cloned()
         .collect::<Vec<_>>();
     sort_sync_records_for_apply(&mut applicable);
@@ -860,8 +923,11 @@ pub(super) fn restore_generation(
         .filter_map(|record| record.key_values.first())
         .filter_map(|value| match value { SqlValue::Text(value) => Some(value.clone()), _ => None })
         .collect::<HashSet<_>>();
-    let safety_backup = run_with_kind(store, tenant_id.to_string(), "pre_restore", None)
-        .map_err(|error| format!("pre_restore_backup_failed:{error}"))?;
+    let safety_backup = match protection {
+        Some(protection) => protection,
+        None => run_with_kind(store, tenant_id.to_string(), "pre_restore", None)
+            .map_err(|error| format!("pre_restore_backup_failed:{error}"))?,
+    };
     let safety_media = safety_backup.get("media").cloned().unwrap_or_else(|| json!({}));
     let safety_attachments = safety_backup
         .get("workNoteAttachments")
@@ -915,11 +981,11 @@ pub(super) fn restore_generation(
         let _ = fs::remove_dir_all(&staging_root);
         return Err(format!("restore_db_attach_failed:{error}"));
     }
-    if let Err(error)=crate::teaching_source_backup::validate_restore(&conn,tenant_id){let _=conn.execute_batch("DETACH DATABASE restore");let _=fs::remove_dir_all(&staging_root);return Err(error);}
+    if crate::backup_restore_coordinator::include_common() { if let Err(error)=crate::teaching_source_backup::validate_restore(&conn,tenant_id){let _=conn.execute_batch("DETACH DATABASE restore");let _=fs::remove_dir_all(&staging_root);return Err(error);} }
     let mut archive_result = json!({});
     let mut retained_observation_projections = 0i64;
     let result = (|| -> Result<(i64, i64, Vec<PathBuf>), String> {
-        if archive_binding_conflicts(&mut conn, tenant_id, &applicable, generation, state.applied_generation)? {
+        if crate::backup_restore_coordinator::include_class() && archive_binding_conflicts(&mut conn, tenant_id, &applicable, generation, state.applied_generation)? {
             return Err("lesson_plan_binding_revision_conflict".into());
         }
         crate::restore_journal::prepare(&conn, &store.data_dir, tenant_id, generation,
@@ -928,13 +994,14 @@ pub(super) fn restore_generation(
         let transaction = conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|e| format!("restore_transaction_begin_failed:{e}"))?;
-        if manual_restore_has_lesson_binding_conflict(&transaction, tenant_id)? {
+        if crate::backup_restore_coordinator::include_class() && manual_restore_has_lesson_binding_conflict(&transaction, tenant_id)? {
             return Err("lesson_plan_binding_revision_conflict".into());
         }
         // Immutable archive union must not run for a rejected binding revision.
         check_media_rows(&transaction, tenant_id, &media_plans)?;
-        archive_result = crate::onedrive_download::with_downloads(||
-            crate::backup_v4::apply_archives(manifest_path, &authoritative, tenant_id))?;
+        archive_result = if crate::backup_restore_coordinator::include_class() {
+            crate::onedrive_download::with_downloads(|| crate::backup_v4::apply_archives(manifest_path, &authoritative, tenant_id))?
+        } else { json!({}) };
         crate::restore_journal::apply(&transaction, &store.data_dir, tenant_id, &intent)?;
         transaction
             .execute(
@@ -964,6 +1031,25 @@ pub(super) fn restore_generation(
                         .ok_or_else(|| "backup_sync_record_missing".to_string())?,
                 )
             };
+            if table.name == "local_import_runs" {
+                let run_id = match record.key_values.first() {
+                    Some(SqlValue::Text(run_id)) => run_id.as_str(),
+                    _ => return Err("backup_sync_import_run_key_invalid".into()),
+                };
+                let incoming_row: Option<Value> = incoming.as_deref().map(serde_json::from_str).transpose()
+                    .map_err(|_| "backup_sync_import_run_invalid")?;
+                let kind = incoming_row.as_ref().and_then(|row| row["kind"].as_str());
+                if !record.tombstone && kind.is_none() { return Err("backup_sync_import_run_kind_required".into()); }
+                if !crate::backup_restore_coordinator::include_import_run(kind, run_id) { continue; }
+                // A legacy protected shadow can occupy the same key in this
+                // component. Never update or delete a row owned by the other.
+                if let Some(raw) = current.as_deref() {
+                    let row: Value = serde_json::from_str(raw).map_err(|_| "backup_sync_import_run_invalid")?;
+                    if !crate::backup_restore_coordinator::include_import_run(row["kind"].as_str(), run_id) {
+                        return Err("backup_sync_import_run_scope_conflict".into());
+                    }
+                }
+            }
             let binding_merge = if table.name == "lesson_plan_bindings" {
                 current
                     .as_deref()
@@ -1072,7 +1158,7 @@ pub(super) fn restore_generation(
             }
             upsert_sync_record(&transaction, tenant_id, record)?;
         }
-        let (teaching_sources_imported,_teaching_sources_retained)=crate::teaching_source_backup::apply(&transaction,tenant_id)?;
+        let (teaching_sources_imported,_teaching_sources_retained)=if crate::backup_restore_coordinator::include_common() { crate::teaching_source_backup::apply(&transaction,tenant_id)? } else { (0,0) };
         imported+=teaching_sources_imported;
         for plan in &media_plans {
             if plan.kind=="teaching_source"{continue;}
@@ -1091,6 +1177,7 @@ pub(super) fn restore_generation(
                 .execute(sql, params![relative, tenant_id, plan.record_id])
                 .map_err(|e| format!("restore_media_path_update_failed:{e}"))?;
         }
+        if crate::backup_restore_coordinator::include_class() {
         transaction
             .execute("DELETE FROM work_note_pages_fts WHERE tenant_id = ?1", params![tenant_id])
             .map_err(|e| format!("restore_work_note_fts_delete_failed:{e}"))?;
@@ -1101,11 +1188,25 @@ pub(super) fn restore_generation(
                 params![tenant_id],
             )
             .map_err(|e| format!("restore_work_note_fts_insert_failed:{e}"))?;
+        }
         let remaining_dirty: i64 = transaction
             .query_row(
                 "SELECT COUNT(*) FROM local_store_device_sync_records
-                 WHERE tenant_id = ?1 AND changed_generation = 0",
-                params![tenant_id],
+                 WHERE tenant_id = ?1 AND changed_generation = 0
+                   AND (?2='combined'
+                     OR (?2='common' AND (table_name LIKE 'password_vault_%'
+                       OR (table_name='local_import_runs' AND (
+                         EXISTS(SELECT 1 FROM local_import_runs r WHERE r.tenant_id=local_store_device_sync_records.tenant_id
+                           AND r.run_id=json_extract(record_key,'$[0]') AND r.kind='teaching_source')
+                         OR (NOT EXISTS(SELECT 1 FROM local_import_runs r WHERE r.tenant_id=local_store_device_sync_records.tenant_id
+                           AND r.run_id=json_extract(record_key,'$[0]')) AND json_extract(record_key,'$[0]') LIKE 'teaching-source:%')))))
+                     OR (?2='class' AND table_name NOT LIKE 'password_vault_%'
+                       AND (table_name<>'local_import_runs'
+                         OR EXISTS(SELECT 1 FROM local_import_runs r WHERE r.tenant_id=local_store_device_sync_records.tenant_id
+                           AND r.run_id=json_extract(record_key,'$[0]') AND r.kind<>'teaching_source')
+                         OR (NOT EXISTS(SELECT 1 FROM local_import_runs r WHERE r.tenant_id=local_store_device_sync_records.tenant_id
+                           AND r.run_id=json_extract(record_key,'$[0]')) AND json_extract(record_key,'$[0]') NOT LIKE 'teaching-source:%'))))",
+                params![tenant_id, match crate::backup_restore_coordinator::component() { crate::backup_restore_coordinator::Component::Combined=>"combined",crate::backup_restore_coordinator::Component::Common=>"common",crate::backup_restore_coordinator::Component::Class=>"class" }],
                 |row| row.get(0),
             )
             .map_err(|e| format!("restore_sync_dirty_count_failed:{e}"))?;

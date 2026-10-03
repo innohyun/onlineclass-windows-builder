@@ -523,6 +523,7 @@ export function initDeviceSyncConflicts(options: { getTenantId: () => string }) 
   window.addEventListener('desk:student-privacy-changed', () => { renderList(); renderDetail(); updateActions(); });
   window.addEventListener('desk:restore-lock-changed', updateActions);
   window.addEventListener('desk:view-changed', hideViewer);
+  window.addEventListener('desk:class-changed', hideViewer);
   el('deviceSyncConflictsOpen').addEventListener('click', () => {
     if (isDeskRestoreBlocked()) return;
     returnFocus = document.activeElement as HTMLElement | null;

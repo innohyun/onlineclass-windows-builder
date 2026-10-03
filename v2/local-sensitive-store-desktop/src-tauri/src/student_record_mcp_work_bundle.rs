@@ -47,8 +47,9 @@ impl StudentRecordMcpManager {
         let to = clean(scope.get("toDate"), 10);
         let mut evidence = Vec::new();
         let mut attendance_count = 0;
-        let conn = self
-            .store
+        let store = self.store.for_tenant(tenant)?;
+        let _access = store.media_access(tenant)?;
+        let conn = store
             .conn
             .lock()
             .map_err(|_| "db_lock_failed".to_string())?;
@@ -429,7 +430,7 @@ impl StudentRecordMcpManager {
             local.push(json!({"tenantId":tenant,"draftSetId":set_id,"draftId":format!("{set_id}__{code}"),"studentCode":code,"studentName":identity.get("studentName"),"classNo":identity.get("classNo"),"recordType":record_type,"status":"draft","behaviorComment":if record_type=="behavior"{value.clone()}else{String::new()},"subjectComments":if record_type=="subjects"{json!([{"subject":scope.get("subject"),"comment":value}])}else{json!([])},"creativeComments":if record_type=="creative"{json!([{"area":scope.get("creativeArea"),"comment":value}])}else{json!([])},"sourceType":"studentRecordMcp","sourceLabel":"내 ChatGPT","teacherReviewRequired":true,"createdAtMs":now,"updatedAtMs":now}));
         }
         if recovered_saved_at.is_none() {
-            self.store
+            self.store.for_tenant(&tenant)?
                 .save_student_record_draft_batch(
                     json!({"tenantId":tenant,"draftSet":set,"drafts":local}),
                 )

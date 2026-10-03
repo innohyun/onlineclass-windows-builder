@@ -502,6 +502,10 @@ impl StudentRecordMcpManager {
             .db
             .lock()
             .map_err(|_| "student_record_mcp_db_lock_failed".to_string())?;
+        if grant.is_none() {
+            let active_count: i64 = conn.query_row("SELECT count(*) FROM connections WHERE status='active' AND expires_at>?1", params![now_ms()], |row| row.get(0)).map_err(|e| format!("student_record_mcp_connection_query_failed:{e}"))?;
+            if active_count > 1 { return Err("MCP_GRANT_REQUIRED".into()); }
+        }
         let sql = if grant.is_some() {
             "SELECT grant_id,tenant_id,device_id,mode,expires_at FROM connections WHERE grant_id=?1 AND status='active' AND expires_at>?2"
         } else {
@@ -517,6 +521,7 @@ impl StudentRecordMcpManager {
     fn authorize(&self, connection: &Value, tool: &str) -> Result<(), String> {
         let grant = clean(connection.get("grantId"), 128);
         self.device_sync
+            .for_tenant(&clean(connection.get("tenantId"), 128))?
             .authorize_student_record_mcp_tool(&grant, tool)?;
         Ok(())
     }
@@ -530,7 +535,7 @@ impl StudentRecordMcpManager {
         drop(conn);
         let device = self
             .device_sync
-            .student_record_mcp_identity()
+            .student_record_mcp_identity_for_tenant(tenant_id)
             .ok()
             .filter(|identity| clean(identity.get("tenantId"), 128) == tenant_id)
             .map(|identity| {
@@ -546,7 +551,7 @@ impl StudentRecordMcpManager {
         let grant = clean(body.get("grantId"), 128);
         let mode = clean(body.get("mode"), 20);
         let expires = body.get("expiresAt").and_then(Value::as_i64).unwrap_or(0);
-        let identity = self.device_sync.student_record_mcp_identity()?;
+        let identity = self.device_sync.student_record_mcp_identity_for_tenant(browser_tenant)?;
         let device = clean(identity.get("deviceId"), 128);
         if tenant != browser_tenant
             || tenant != clean(identity.get("tenantId"), 128)
@@ -564,7 +569,7 @@ impl StudentRecordMcpManager {
         let tx = conn
             .transaction()
             .map_err(|e| format!("student_record_mcp_activate_begin_failed:{e}"))?;
-        tx.execute("UPDATE connections SET status='disconnected',disconnected_at=?1 WHERE device_id=?2 AND status='active'",params![now_ms(),device]).map_err(|e|format!("student_record_mcp_activate_failed:{e}"))?;
+        tx.execute("UPDATE connections SET status='disconnected',disconnected_at=?1 WHERE device_id=?2 AND tenant_id=?3 AND status='active'",params![now_ms(),device,tenant]).map_err(|e|format!("student_record_mcp_activate_failed:{e}"))?;
         tx.execute("INSERT INTO connections(grant_id,tenant_id,device_id,mode,status,activated_at,expires_at,disconnected_at) VALUES(?1,?2,?3,?4,'active',?5,?6,NULL) ON CONFLICT(grant_id) DO UPDATE SET tenant_id=excluded.tenant_id,device_id=excluded.device_id,mode=excluded.mode,status='active',activated_at=excluded.activated_at,expires_at=excluded.expires_at,disconnected_at=NULL",params![grant,tenant,device,mode,now_ms(),expires]).map_err(|e|format!("student_record_mcp_activate_failed:{e}"))?;
         tx.commit()
             .map_err(|e| format!("student_record_mcp_activate_commit_failed:{e}"))?;
@@ -610,8 +615,9 @@ impl StudentRecordMcpManager {
         code: &str,
         scope: &Value,
     ) -> Result<DraftSnapshot, String> {
-        let conn = self
-            .store
+        let store = self.store.for_tenant(tenant)?;
+        let _access = store.media_access(tenant)?;
+        let conn = store
             .conn
             .lock()
             .map_err(|_| "db_lock_failed".to_string())?;
@@ -661,13 +667,15 @@ impl StudentRecordMcpManager {
         identities: &[Value],
         by_alias: &HashMap<String, String>,
     ) -> Result<Option<i64>, String> {
-        let sets = self.store.list_student_record_draft_sets(
+        let store = self.store.for_tenant(tenant)?;
+        let _access = store.media_access(tenant)?;
+        let sets = store.list_student_record_draft_sets(
             tenant.to_string(),
             set_id.to_string(),
             String::new(),
             2,
         )?;
-        let drafts = self.store.list_student_record_drafts(
+        let drafts = store.list_student_record_drafts(
             tenant.to_string(),
             String::new(),
             set_id.to_string(),

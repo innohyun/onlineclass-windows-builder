@@ -539,7 +539,8 @@ pub(crate) fn get_local_workspace_tree(
         .ok()
         .and_then(|store| store.clone())
         .ok_or_else(|| "local_store_unavailable".to_string())
-        .and_then(|store| tree(&store, tenant_id, workspace))
+        .and_then(|_| crate::native_class_authority::for_native_tenant(&state, &tenant_id))
+        .and_then(|store| store.with_class_access(|store| tree(&store, tenant_id, workspace)))
         .unwrap_or_else(|error| json!({ "ok": false, "error": error }))
 }
 
@@ -556,7 +557,8 @@ pub(crate) fn get_local_workspace_page(
         .ok()
         .and_then(|store| store.clone())
         .ok_or_else(|| "local_store_unavailable".to_string())
-        .and_then(|store| page(&store, tenant_id, workspace, page_id))
+        .and_then(|_| crate::native_class_authority::for_native_tenant(&state, &tenant_id))
+        .and_then(|store| store.with_class_access(|store| page(&store, tenant_id, workspace, page_id)))
         .unwrap_or_else(|error| json!({ "ok": false, "error": error }))
 }
 
@@ -571,7 +573,8 @@ pub(crate) fn search_local_workspace(
         .ok()
         .and_then(|store| store.clone())
         .ok_or_else(|| "local_store_unavailable".to_string())
-        .and_then(|store| search(&store, input))
+        .and_then(|_| crate::native_class_authority::for_native_tenant(&state, &input.tenant_id))
+        .and_then(|store| store.with_class_access(|store| search(&store, input)))
         .unwrap_or_else(|error| json!({ "ok": false, "error": error }))
 }
 

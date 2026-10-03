@@ -584,7 +584,7 @@ fn verify_bundle_reference(
 }
 
 pub(crate) fn tenant_content_sha256(tenant_id: &str) -> Result<String, String> {
-    let connection = shared_archive::open_db()?;
+    let connection = shared_archive::open_db_for_tenant(tenant_id)?;
     let sources = load_archive_sources(&connection, tenant_id)?;
     let mut hasher = Sha256::new();
     hasher.update(b"classaimate-shared-archive-set-v1\0");
@@ -603,7 +603,7 @@ pub(crate) fn has_local_only_references(tenant_id: &str, archives: Option<&Value
             record.get("archiveId")?.as_str()?.to_string(),
             record.get("manifestSha256")?.as_str()?.to_string(),
         ))).collect::<HashSet<_>>();
-    let connection = shared_archive::open_db()?;
+    let connection = shared_archive::open_db_for_tenant(tenant_id)?;
     let mut statement = connection.prepare("SELECT id,manifest_sha256 FROM shared_archives WHERE tenant_id=?1")
         .map_err(|e| format!("archive_sync_references_prepare_failed:{e}"))?;
     let rows = statement.query_map(params![tenant_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
@@ -615,7 +615,7 @@ pub(crate) fn has_local_only_references(tenant_id: &str, archives: Option<&Value
 }
 
 pub(crate) fn ensure_tenant_bundles(tenant_id: &str, tenant_dir: &Path) -> Result<Value, String> {
-    let connection = shared_archive::open_db()?;
+    let connection = shared_archive::open_db_for_tenant(tenant_id)?;
     ensure_tenant_bundles_from(&connection, tenant_id, tenant_dir)
 }
 

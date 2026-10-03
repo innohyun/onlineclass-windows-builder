@@ -1035,6 +1035,7 @@ impl CloudSyncManager {
             Some(session) => session,
             None => return Ok(status_from_session(None)),
         };
+        let store = self.store.for_tenant(&session.tenant_id)?;
         session.last_run_at_ms = now_ms();
         session.last_error.clear();
         session.last_imported = 0;
@@ -1066,12 +1067,11 @@ impl CloudSyncManager {
             session.last_pending =
                 (pending_observations.len() + pending_student_private_details.len()) as i64;
             for remote in pending_observations {
-                let local_updated = self
-                    .store
+                let local_updated = store
                     .get_observation_updated_at_ms(&session.tenant_id, &remote.doc_id)?;
                 let mut remote_state = "imported_to_local";
                 if local_updated.unwrap_or(0) > remote.updated_at_ms && remote.updated_at_ms > 0 {
-                    self.store.store_observation_conflict(
+                    store.store_observation_conflict(
                         &session.tenant_id,
                         &remote.doc_id,
                         &remote.update_time,
@@ -1081,7 +1081,7 @@ impl CloudSyncManager {
                     observation_conflicts += 1;
                     remote_state = "local_conflict";
                 } else {
-                    self.store.upsert_observation(remote.payload.clone())?;
+                    store.upsert_observation(remote.payload.clone())?;
                     session.last_imported += 1;
                     observation_imported += 1;
                 }
@@ -1118,13 +1118,13 @@ impl CloudSyncManager {
                 }
             }
             for remote in pending_student_private_details {
-                let local_updated = self.store.get_student_private_detail_updated_at_ms(
+                let local_updated = store.get_student_private_detail_updated_at_ms(
                     &session.tenant_id,
                     &remote.student_code,
                 )?;
                 let mut remote_state = "imported_to_local";
                 if local_updated.unwrap_or(0) > remote.updated_at_ms && remote.updated_at_ms > 0 {
-                    self.store.store_student_private_detail_conflict(
+                    store.store_student_private_detail_conflict(
                         &session.tenant_id,
                         &remote.student_code,
                         &remote.update_time,
@@ -1134,7 +1134,7 @@ impl CloudSyncManager {
                     student_private_detail_conflicts += 1;
                     remote_state = "local_conflict";
                 } else {
-                    self.store
+                    store
                         .upsert_student_private_detail(remote.payload.clone())?;
                     session.last_imported += 1;
                     student_private_detail_imported += 1;
@@ -1190,7 +1190,7 @@ impl CloudSyncManager {
         } else {
             "completed"
         };
-        let _ = self.store.record_cloud_sync_run(json!({
+        let _ = store.record_cloud_sync_run(json!({
             "ok": true,
             "runId": run_id,
             "tenantId": session.tenant_id.clone(),

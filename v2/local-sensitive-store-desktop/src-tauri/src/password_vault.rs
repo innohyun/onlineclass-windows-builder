@@ -8,6 +8,8 @@ use zeroize::Zeroize;
 
 #[path = "password_vault_http.rs"]
 mod http;
+#[path = "password_vault_personal_scope.rs"]
+mod personal_scope;
 #[path = "password_vault_validation.rs"]
 mod validation;
 

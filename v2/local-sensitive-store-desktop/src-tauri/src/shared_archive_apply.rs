@@ -396,8 +396,8 @@ pub(crate) fn apply_snapshot_bundles(
     tenant_dir: &Path,
     archives: &Value,
 ) -> Result<Value, String> {
-    let mut connection = shared_archive::open_db()?;
-    let (_, file_root) = shared_archive::storage_paths();
+    let mut connection = shared_archive::open_db_for_tenant(tenant_id)?;
+    let (_, file_root) = shared_archive::storage_paths_for_tenant(tenant_id)?;
     apply_snapshot_bundles_to(&mut connection, &file_root, tenant_id, tenant_dir, archives)
 }
 

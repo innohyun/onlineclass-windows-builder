@@ -4,7 +4,8 @@ type Step = { target: string; title: string; text: string; fallback?: string };
 const step = (target: string, title: string, text: string, fallback?: string): Step => ({ target, title, text, fallback });
 const guides: Record<string, Step[]> = {
   home: [
-    step("#deskCurrentStore", "현재 학급과 이 PC", "자료함 상세에서 학급과 저장 위치를 확인합니다. 다른 PC의 자료는 백업·동기화에서 검증하고 반영합니다."),
+    step("#localClassSelect", "현재 학급과 학년도", "승인된 학교·학년도·학년·반을 고릅니다. 전환 전 작성 중인 내용을 확인하고 선택한 학급의 DB·연결·백업 상태를 다시 읽습니다. 이 안내는 학급을 전환하지 않습니다."),
+    step("#localClassPrepare", "다음 학년도 미리 준비", "1~2월에도 새 학급을 개설하고 올해 학급과 함께 사용합니다. 새 학급의 이 PC 연결은 별도로 승인하며 기존 학급 연결과 학생 기록은 유지됩니다."),
     step("#homeRecentWorkNotes", "최근 작업을 이어 쓰세요", "최근 수정한 수업자료와 업무 노트를 함께 표시합니다. 문서를 누르면 해당 원본을 엽니다."),
     step("#deskFavoritesPanel", "자주 쓰는 자료를 모으세요", "문서의 별표로 이 PC의 학급별 즐겨찾기를 바꿉니다. 제목 가리기는 학생 기록 가림과 별도 설정입니다."),
     step("#homeSafetyCard", "저장과 백업을 구분하세요", "문서 저장 여부는 문서 안에서 확인합니다. 백업 생성·게시·OneDrive 전달·다른 PC 확인은 각각 별도입니다."),
@@ -70,6 +71,7 @@ const guides: Record<string, Step[]> = {
     step("#summaryCard h2", "확인 시각과 해결 조작", "현재 응답과 확인 시각을 보고 관련 설정으로 이동합니다. 안내는 복원이나 설정 변경을 대신 실행하지 않습니다."),
   ],
   settings: [
+    step("#localClassSelect", "학급별 연결 유지", "올해와 다음 학년도 학급을 따로 연결하고 선택합니다. 학생 기록·첨부·백업은 학급별로 보관하며 개인 표시 설정은 유지합니다."),
     step("#settingsConnectionTitle", "현재 계정·학급", "연결된 실제 계정과 학급을 확인합니다. 연결 해제 전 로컬 자료·백업의 영향을 직접 확인합니다."),
     step("#deskHideHomeTitles", "화면·개인정보 설정", "홈 문서 제목 가리기와 학생 기록 가림은 별도입니다. 학생 가림은 앱을 시작할 때 켜집니다."),
     step("#settingsAdvancedPanel", "필요할 때 고급 정보", "서비스 주소와 저장 경로·실제 설치 버전을 확인합니다. 버전 표시만으로 업데이트 검사가 완료됐다고 판단하지 않습니다."),

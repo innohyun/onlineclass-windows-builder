@@ -3,6 +3,7 @@ import type { SnapshotPolicy } from "./backup-types";
 import { invoke } from "@tauri-apps/api/core";
 import { deriveDeviceSyncPresentation } from "./device-sync-presentation";
 import { isDeskRestoreBlocked } from "./desk-restore-lock";
+import { captureLocalClassRequest, isCurrentLocalClassRequest } from "./local-class-context";
 
 export type DeviceSyncStatus = {
   ok: boolean;
@@ -246,6 +247,7 @@ export function getDeviceSyncPresentation() {
   const view = deriveDeviceSyncPresentation(snapshot);
   return { ...view, canRun: view.canRun && !isDeskRestoreBlocked() };
 }
+export function isDeviceSyncRunning() { return syncRun !== null; }
 
 function renderSyncStages() {
   mountSyncStages();
@@ -358,11 +360,12 @@ export function renderDeviceSyncStatus(status: DeviceSyncStatus | null) {
 
 export async function loadDeviceSyncStatus() {
   const requestRevision = ++statusRevision;
+  const request = captureLocalClassRequest();
   try {
-    const status = await invoke<DeviceSyncStatus>("get_device_sync_status");
-    if (!syncRun && requestRevision === statusRevision) renderDeviceSyncStatus(status);
+    const status = await invoke<DeviceSyncStatus>("get_device_sync_status", { tenantId: request.tenantId || null });
+    if (!syncRun && requestRevision === statusRevision && isCurrentLocalClassRequest(request) && (!request.tenantId || !status.tenantId || status.tenantId === request.tenantId)) renderDeviceSyncStatus(status);
   } catch (error) {
-    if (!syncRun && requestRevision === statusRevision) throw error;
+    if (!syncRun && requestRevision === statusRevision && isCurrentLocalClassRequest(request)) throw error;
   }
 }
 
@@ -373,6 +376,7 @@ export async function runDeviceSyncNow(afterRun: () => Promise<unknown>) {
     return;
   }
   if (syncRun) return syncRun;
+  const request = captureLocalClassRequest();
   if (!getDeviceSyncPresentation().canRun) {
     const view = getDeviceSyncPresentation();
     setText("deviceSyncStatus", view.detail);
@@ -385,7 +389,9 @@ export async function runDeviceSyncNow(afterRun: () => Promise<unknown>) {
   setText("deviceSyncStatus", "필요한 OneDrive 파일을 요청하고 최신 세대를 확인하고 있습니다. 다운로드 완료만으로 반영하지 않고 파일 검증을 마친 뒤 반영합니다.");
   syncRun = (async () => {
     try {
-      const status = await invoke<DeviceSyncStatus>("run_device_sync_now");
+      const status = await invoke<DeviceSyncStatus>("run_device_sync_now", { tenantId: request.tenantId || null });
+      if (!isCurrentLocalClassRequest(request)) return;
+      if (request.tenantId && status.tenantId && status.tenantId !== request.tenantId) throw new Error("device_sync_class_mismatch");
       if (!status?.ok) {
         if (status?.artifactIssue === undefined) throw new Error(status?.error || "device_sync_failed");
         renderDeviceSyncStatus({ ...(snapshot || { connected: false }), ...status });
@@ -398,17 +404,18 @@ export async function runDeviceSyncNow(afterRun: () => Promise<unknown>) {
         else setText("deviceSyncStatus", "일부 화면을 새로 읽지 못했습니다. 상태 확인을 눌러 다시 확인해 주세요.");
       }
     } catch (error) {
+      if (!isCurrentLocalClassRequest(request)) return;
       const message = String((error as Error)?.message || error || "device_sync_failed");
       if (message.startsWith("device_sync_ack_pending:") || message.startsWith("restore_recovery_required")
         || isOneDriveFileMissing(message) || message.startsWith("backup_artifact_") || snapshot?.artifactIssue) {
-        try { snapshot = await invoke<DeviceSyncStatus>("get_device_sync_status"); }
+        try { const result = await invoke<DeviceSyncStatus>("get_device_sync_status", { tenantId: request.tenantId || null }); if (isCurrentLocalClassRequest(request)) snapshot = result; }
         catch {
           if (snapshot) snapshot = { ...snapshot, artifactIssue: undefined };
           // A previous successful status cannot establish current recovery safety.
           if (message.startsWith("restore_recovery_required") && snapshot) snapshot = { ...snapshot, recoveryRequired: undefined };
         }
       }
-      renderDeviceSyncStatus({ ...(snapshot || { connected: false }), ok: false, error: message, lastError: message });
+      if (isCurrentLocalClassRequest(request)) renderDeviceSyncStatus({ ...(snapshot || { connected: false }), ok: false, error: message, lastError: message });
     } finally {
       statusRevision += 1;
       syncRun = null;

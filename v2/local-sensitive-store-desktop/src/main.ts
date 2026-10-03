@@ -44,11 +44,13 @@ import { initDeviceSyncConflicts } from "./device-sync-conflicts";
 import { initHealthDashboardPreview } from "./health-dashboard-preview";
 import { initSettingsDashboard } from "./settings-dashboard";
 import { initSettingsDashboardPreview } from "./settings-dashboard-preview";
-import { loadDeviceSyncStatus, renderDeviceSyncStatus, runDeviceSyncNow } from "./device-sync-ui";
+import { loadDeviceSyncStatus, renderDeviceSyncStatus, runDeviceSyncNow, isDeviceSyncRunning } from "./device-sync-ui";
 import { initDesktopShell } from "./desktop-shell";
 import { backupKindLabel, initBackupStorage } from "./backup-storage";
 import { initQuickObservation } from "./quick-observation";
 import type { BackupDiscovery, BackupItem, BackupPreview, BackupSource, BackupStatus, CommandResult } from "./backup-types";
+import { initLocalClassSelector, type LocalClassStorage } from "./local-class-selector";
+import { captureLocalClassRequest, currentLocalClass, isCurrentLocalClassRequest, setCurrentLocalClass } from "./local-class-context";
 
 declare const __APP_VERSION__: string;
 
@@ -177,7 +179,7 @@ function copyTargetValue(id: string) {
 }
 
 function currentBackupTenantId() {
-  return byId<HTMLInputElement>("backupTenantInput").value.trim();
+  return currentLocalClass() || (designPreview ? byId<HTMLInputElement>("backupTenantInput").value.trim() : "");
 }
 
 function setBackupRestoreMessage(message: string, tone: BadgeTone = "neutral") {
@@ -190,9 +192,12 @@ function renderSummary() {
 }
 
 async function loadStatus() {
+  const request = captureLocalClassRequest();
   serviceLoadError = "";
-  const status = await invoke<ServiceStatus>("get_service_status");
+  const status = await invoke<ServiceStatus>("get_service_status", { tenantId: request.tenantId || null });
+  if (!isCurrentLocalClassRequest(request)) return;
   serviceSnapshot = status;
+  classSelector.renderStorage(status.storage);
   const statusDot = byId<HTMLSpanElement>("statusDot");
 
   statusDot.classList.toggle("is-ok", status.ok);
@@ -207,7 +212,9 @@ async function loadStatus() {
 }
 
 async function loadDeviceConnectionStatus() {
-  const result = await invoke<DeviceConnectionStatus>("get_device_connection_status");
+  const request = captureLocalClassRequest();
+  const result = await invoke<DeviceConnectionStatus>("get_device_connection_status", { tenantId: request.tenantId || null });
+  if (!isCurrentLocalClassRequest(request) || (request.tenantId && result.tenantId && result.tenantId !== request.tenantId)) return;
   deviceConnectionSnapshot = result;
   if (result.connected) {
     const tenantInput = byId<HTMLInputElement>("backupTenantInput");
@@ -354,8 +361,10 @@ function renderCloudSync(status: CloudSyncStatus | null) {
 }
 
 async function loadCloudSyncStatus() {
+  const request = captureLocalClassRequest();
   cloudSyncLoadError = "";
   const status = await invoke<CloudSyncStatus>("get_cloud_sync_status");
+  if (!isCurrentLocalClassRequest(request) || (request.tenantId && status.tenantId && status.tenantId !== request.tenantId)) return;
   renderCloudSync(status);
 }
 
@@ -486,10 +495,12 @@ function renderBackupRestorePanel() {
 }
 
 async function loadBackupList(tenantId: string) {
+  const request = captureLocalClassRequest();
   const payload = await invoke<{ ok?: boolean; backups?: BackupItem[]; error?: string }>("list_local_backups", {
     tenantId,
     limit: 10,
   });
+  if (!isCurrentLocalClassRequest(request) || tenantId !== currentBackupTenantId()) return;
   backupList = normalizeBackupList(payload?.backups || []);
   if (!backupList.some((backup) => backup.manifestPath === selectedBackupManifestPath)) {
     selectedBackupManifestPath = backupList[0]?.manifestPath || "";
@@ -498,6 +509,7 @@ async function loadBackupList(tenantId: string) {
 }
 
 async function loadBackupStatus() {
+  const request = captureLocalClassRequest();
   backupLoadError = "";
   const tenantId = currentBackupTenantId();
   if (!tenantId) {
@@ -509,9 +521,11 @@ async function loadBackupStatus() {
     return;
   }
   const status = await invoke<BackupStatus>("get_backup_status", { tenantId });
+  if (!isCurrentLocalClassRequest(request)) return;
   await loadBackupList(tenantId).catch(() => {
-    backupList = normalizeBackupList(status.backups || (status.latestBackup ? [status.latestBackup] : []));
+    if (isCurrentLocalClassRequest(request)) backupList = normalizeBackupList(status.backups || (status.latestBackup ? [status.latestBackup] : []));
   });
+  if (!isCurrentLocalClassRequest(request)) return;
   renderBackupStatus(status);
   if (selectedBackupManifestPath) {
     void loadBackupPreview(selectedBackupManifestPath);
@@ -530,15 +544,8 @@ function renderBackupLoadError(error: unknown) {
 function applyBackupDiscovery(discovery: BackupDiscovery, selectedFolder: string) {
   const tenants = Array.isArray(discovery.tenants) ? discovery.tenants : [];
   const currentTenant = currentBackupTenantId();
-  const connectedTenant = cloudSyncSnapshot?.tenantId || "";
   const detected = tenants.find((tenant) => tenant.tenantId === currentTenant)
-    || tenants.find((tenant) => tenant.tenantId === connectedTenant)
-    || tenants[0]
     || null;
-  const tenantInput = byId<HTMLInputElement>("backupTenantInput");
-  if (!tenantInput.value.trim() && detected?.tenantId) {
-    tenantInput.value = detected.tenantId;
-  }
   if (detected?.backups?.length) {
     backupList = normalizeBackupList(detected.backups);
     selectedBackupManifestPath = backupList[0]?.manifestPath || "";
@@ -573,7 +580,7 @@ async function chooseBackupFolder() {
     const folderPath = applyBackupDiscovery(discovery || { ok: false }, selected);
     const tenantId = currentBackupTenantId();
     if (!tenantId) {
-      setText("backupStatus", "학급 ID를 찾지 못했습니다. 학급 ID를 입력한 뒤 백업 폴더를 다시 선택해 주세요.");
+      setText("backupStatus", "위의 현재 학급에서 승인된 학급을 선택한 뒤 백업 폴더를 다시 선택하세요.");
       renderBackupRestorePanel();
       return;
     }
@@ -638,7 +645,7 @@ async function runBackupNow() {
   if (busyActions.has("run-backup")) return;
   const tenantId = currentBackupTenantId();
   if (!tenantId) {
-    setText("backupStatus", "먼저 학급 ID를 입력하거나 다시 연결하기로 학급을 연결해 주세요.");
+    setText("backupStatus", "위의 현재 학급에서 사용할 학급을 선택하세요. 연결된 학급이 없으면 교사 홈에서 이 PC 연결을 승인해 주세요.");
     return;
   }
   setActionBusy("run-backup", true);
@@ -722,13 +729,21 @@ async function restoreSelectedBackup() {
 }
 
 async function refreshAll() {
+  await classSelector.refresh();
+  await refreshSelectedClass();
+}
+
+async function refreshSelectedClass() {
+  const request = captureLocalClassRequest();
   setActionBusy("refresh-status", true);
   try {
-    await loadStatus().catch(renderServiceLoadError);
-    await loadCloudSyncStatus().catch(renderCloudSyncLoadError);
+    await loadStatus().catch(error => { if (isCurrentLocalClassRequest(request)) renderServiceLoadError(error); });
+    if (!isCurrentLocalClassRequest(request)) return;
+    await loadCloudSyncStatus().catch(error => { if (isCurrentLocalClassRequest(request)) renderCloudSyncLoadError(error); });
+    if (!isCurrentLocalClassRequest(request)) return;
     await loadDeviceConnectionStatus().catch(() => undefined);
     await desktopShell.refreshConnection().catch(() => undefined);
-    await loadBackupStatus().catch(renderBackupLoadError);
+    await loadBackupStatus().catch(error => { if (isCurrentLocalClassRequest(request)) renderBackupLoadError(error); });
     await loadDeviceSyncStatus().catch(() => renderDeviceSyncStatus(null));
     renderSummary();
     await loadHomeOverview(currentBackupTenantId());
@@ -832,6 +847,7 @@ const canLeaveWorkspace = async () => !isDeskRestoreBlocked() && sharedArchive.c
 // A restored teacher tab must wait until the document controllers below finish mounting.
 const desktopShell = initDesktopShell({ beforeLeave: () => Promise.resolve().then(canLeaveWorkspace) });
 const quickObservation = initQuickObservation({
+  getTenantId: currentBackupTenantId,
   onConnect: () => document.getElementById("desktopTeacherHome")?.click(),
 });
 initArchiveBoardExplorer();
@@ -859,10 +875,30 @@ const homeDashboard = initHomeDashboard({
   },
 });
 const studentPanel = initDeskStudentPanel({ quickObservation, studentTimeline, navigate: view => homeDashboard.navigate(view) });
+const classSelector = initLocalClassSelector({
+  canLeave: async () => !busyActions.size && !isDeviceSyncRunning() && await canLeaveWorkspace() && documentWorkspace.prepareClassChange(),
+  openTeacherHome: desktopShell.openTeacherHome,
+  async onSelected(tenantId) {
+    if (tenantId === currentLocalClass()) return;
+    await documentWorkspace.resetForClass();
+    if (!setCurrentLocalClass(tenantId)) return;
+    byId<HTMLInputElement>("backupTenantInput").value = tenantId;
+    ++backupPreviewGeneration;
+    backupStorage.clear();
+    backupList = []; selectedBackupManifestPath = ""; backupPreview = null;
+    backupSnapshot = null; cloudSyncSnapshot = null; deviceConnectionSnapshot = null;
+    setBackupRestoreMessage("", "neutral");
+    renderDeviceSyncStatus(null);
+    window.dispatchEvent(new CustomEvent("desk:class-changed", { detail: { tenantId } }));
+    await desktopShell.resetTeacherHome();
+    await Promise.allSettled([refreshSelectedClass(), localWorkspaces.refresh(), dataExplorer.refresh(), studentTimeline.resetForClass(), sharedArchive.refresh(), loadHomeOverview(tenantId)]);
+    await homeDashboard.navigate("home");
+  },
+});
 bindTeacherDeskLifecycle({ getTenantId: currentBackupTenantId, desktopShell, homeDashboard, canLeave: canLeaveWorkspace, waitForPaint });
 bindUi();
 if (designPreview !== "settings") {
-  initSettingsDashboard({ onDisconnected: refreshAll, onAuthorizeBrowser: () => deviceAuthorization.start() });
+  initSettingsDashboard({ onDisconnected: refreshAll, onAuthorizeBrowser: () => deviceAuthorization.start(), beforeDisconnect: () => classSelector.canChange() });
 }
 renderAppVersion();
 if (designPreview === "archive") initSharedArchivePreview();

@@ -334,6 +334,8 @@ pub(crate) fn handle_http_request(
     let (authorized, browser_tenant) = request_authority(request, pairing_key, browser_links);
     if !authorized { return Ok(Some(json_response(401, serde_json::json!({ "ok": false, "error": "unauthorized" }), origin).boxed())); }
     let tenant_id = scope_tenant_id(query(&url, "tenantId"), browser_tenant.as_deref())?;
+    let scoped_store = store.for_tenant(&tenant_id)?;
+    let store = scoped_store.as_ref();
     if request.method() == &Method::Get && path == "/v1/work-note-attachments" {
         let records = list(store, tenant_id, query(&url, "pageId"))?;
         return Ok(Some(json_response(200, serde_json::json!({ "ok": true, "records": records }), origin).boxed()));

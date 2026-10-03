@@ -48,6 +48,8 @@ pub(crate) fn get_local_work_note_document(
     response((|| {
         let store = store(&state)?;
         let tenant = tenant(tenant_id)?;
+        let store = crate::native_class_authority::for_native_tenant(&state, &tenant)?;
+        let _access = store.media_access(&tenant)?;
         let conn = store.conn.lock().map_err(|_| "db_lock_failed")?;
         read_document_response(&conn, &tenant, &page_id)
     })())
@@ -57,14 +59,14 @@ pub(crate) fn save_local_work_note_document(
     state: tauri::State<'_, AppState>,
     input: Value,
 ) -> Value {
-    response(store(&state).and_then(|store| documents::save(&store, input)))
+    response(store(&state).and_then(|_| crate::native_class_authority::for_native_tenant(&state, input["tenantId"].as_str().unwrap_or_default())).and_then(|store| store.with_class_access(|store| documents::save(&store, input))))
 }
 #[tauri::command]
 pub(crate) fn mutate_local_work_note_document(
     state: tauri::State<'_, AppState>,
     input: Value,
 ) -> Value {
-    response(store(&state).and_then(|store| documents::mutate(&store, input)))
+    response(store(&state).and_then(|_| crate::native_class_authority::for_native_tenant(&state, input["tenantId"].as_str().unwrap_or_default())).and_then(|store| store.with_class_access(|store| documents::mutate(&store, input))))
 }
 #[tauri::command]
 pub(crate) fn list_local_work_note_documents(
@@ -74,9 +76,10 @@ pub(crate) fn list_local_work_note_documents(
 ) -> Value {
     response(
         store(&state)
-            .and_then(|store| {
-                documents::list_editable(&store, tenant_id, query.unwrap_or_default())
-            })
+            .and_then(|_| crate::native_class_authority::for_native_tenant(&state, &tenant_id))
+            .and_then(|store| store.with_class_access(|store| {
+                documents::list_editable(store, tenant_id, query.unwrap_or_default())
+            }))
             .map(|items| json!({"ok":true,"items":items})),
     )
 }
@@ -91,6 +94,8 @@ pub(crate) fn list_local_work_note_history(
     response((|| {
         let store = store(&state)?;
         let tenant = tenant(tenant_id)?;
+        let store = crate::native_class_authority::for_native_tenant(&state, &tenant)?;
+        let _access = store.media_access(&tenant)?;
         let conn = store.conn.lock().map_err(|_| "db_lock_failed")?;
         crate::work_note_history::list(&conn, &tenant, &page_id, limit, cursor)
     })())
@@ -105,6 +110,8 @@ pub(crate) fn get_local_work_note_version(
     response((|| {
         let store = store(&state)?;
         let tenant = tenant(tenant_id)?;
+        let store = crate::native_class_authority::for_native_tenant(&state, &tenant)?;
+        let _access = store.media_access(&tenant)?;
         let conn = store.conn.lock().map_err(|_| "db_lock_failed")?;
         crate::work_note_history::get(&conn, &tenant, &page_id, &version_id)
     })())
@@ -117,6 +124,8 @@ pub(crate) fn list_local_work_note_trash(
     response((|| {
         let store = store(&state)?;
         let tenant = tenant(tenant_id)?;
+        let store = crate::native_class_authority::for_native_tenant(&state, &tenant)?;
+        let _access = store.media_access(&tenant)?;
         crate::work_note_retention::maintain(&store, &tenant)?;
         let conn = store.conn.lock().map_err(|_| "db_lock_failed")?;
         documents::trash(&conn, &tenant)
@@ -152,7 +161,7 @@ pub(crate) fn save_draft(store: &SqliteStore, input: Value) -> Result<Value, Str
 }
 #[tauri::command]
 pub(crate) fn save_local_work_note_draft(state: tauri::State<'_, AppState>, input: Value) -> Value {
-    response(store(&state).and_then(|store| save_draft(&store, input)))
+    response(store(&state).and_then(|_| crate::native_class_authority::for_native_tenant(&state, input["tenantId"].as_str().unwrap_or_default())).and_then(|store| store.with_class_access(|store| save_draft(&store, input))))
 }
 #[tauri::command]
 pub(crate) fn get_local_work_note_draft(
@@ -163,6 +172,8 @@ pub(crate) fn get_local_work_note_draft(
     response((|| {
         let store = store(&state)?;
         let tenant = tenant(tenant_id)?;
+        let store = crate::native_class_authority::for_native_tenant(&state, &tenant)?;
+        let _access = store.media_access(&tenant)?;
         let conn = store.conn.lock().map_err(|_| "db_lock_failed")?;
         let raw: Option<String> = conn
             .query_row(
@@ -191,6 +202,8 @@ pub(crate) fn discard_local_work_note_draft(
     response((|| {
         let store = store(&state)?;
         let tenant = tenant(tenant_id)?;
+        let store = crate::native_class_authority::for_native_tenant(&state, &tenant)?;
+        let _access = store.media_access(&tenant)?;
         let conn = store.conn.lock().map_err(|_| "db_lock_failed")?;
         let deleted=conn.execute("DELETE FROM work_note_local_drafts WHERE tenant_id=?1 AND page_id=?2 AND generation=?3",params![tenant,page_id,generation]).map_err(|e|e.to_string())?;
         Ok(json!({"ok":true,"deleted":deleted}))
@@ -204,9 +217,10 @@ pub(crate) fn list_local_work_note_attachments(
 ) -> Value {
     response(
         store(&state)
-            .and_then(|store| {
-                crate::work_note_attachments::list(&store, tenant_id, page_id.unwrap_or_default())
-            })
+            .and_then(|_| crate::native_class_authority::for_native_tenant(&state, &tenant_id))
+            .and_then(|store| store.with_class_access(|store| {
+                crate::work_note_attachments::list(store, tenant_id, page_id.unwrap_or_default())
+            }))
             .map(|items| json!({"ok":true,"items":items})),
     )
 }
@@ -215,7 +229,7 @@ pub(crate) fn save_local_work_note_attachment(
     state: tauri::State<'_, AppState>,
     input: Value,
 ) -> Value {
-    response(store(&state).and_then(|store| save_attachment(&store, input)))
+    response(store(&state).and_then(|_| crate::native_class_authority::for_native_tenant(&state, input["tenantId"].as_str().unwrap_or_default())).and_then(|store| store.with_class_access(|store| save_attachment(&store, input))))
 }
 
 pub(crate) fn save_attachment(store: &SqliteStore, input: Value) -> Result<Value, String> {
@@ -336,6 +350,8 @@ pub(crate) fn ensure_local_work_note_workspace(
         }
         let store = store(&state)?;
         let tenant = tenant(tenant_id)?;
+        let store = crate::native_class_authority::for_native_tenant(&state, &tenant)?;
+        let _access = store.media_access(&tenant)?;
         let mut conn = store.conn.lock().map_err(|_| "db_lock_failed")?;
         let tx = conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)

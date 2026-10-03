@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { isDeskRestoreBlocked } from "./desk-restore-lock";
+import { captureLocalClassRequest, isCurrentLocalClassRequest } from "./local-class-context";
 
 export type DesktopPreferences = {
   ok: boolean;
@@ -32,6 +33,7 @@ export type SettingsDashboardView = {
 type Options = {
   onDisconnected(): Promise<void>;
   onAuthorizeBrowser(): Promise<void>;
+  beforeDisconnect?(): Promise<boolean>;
 };
 
 function element<T extends HTMLElement>(id: string) {
@@ -222,17 +224,20 @@ export function initSettingsDashboard(options: Options) {
 
   element<HTMLButtonElement>("settingsDisconnectButton").addEventListener("click", async () => {
     if (isDeskRestoreBlocked()) { setPreferenceStatus("복원 작업을 마칠 때까지 PC 연결을 해제할 수 없습니다.", "error"); return; }
-    if (!await confirmDisconnect()) return;
+    if (options.beforeDisconnect && !await options.beforeDisconnect()) return;
+    const request = captureLocalClassRequest();
+    if (!await confirmDisconnect() || !isCurrentLocalClassRequest(request)) return;
     if (isDeskRestoreBlocked()) { setPreferenceStatus("복원 작업 중에는 PC 연결을 유지합니다.", "error"); return; }
     const button = element<HTMLButtonElement>("settingsDisconnectButton");
     button.disabled = true;
     button.textContent = "연결 해제 중";
     setPreferenceStatus("로그인 연결을 안전하게 해제하고 있습니다.");
     try {
-      const result = await invoke<DisconnectResult>("disconnect_local_store");
+      const result = await invoke<DisconnectResult>("disconnect_local_store", { tenantId: request.tenantId || null });
+      if (!isCurrentLocalClassRequest(request)) return;
       if (!result?.ok || result.localDataPreserved !== true) throw new Error(result?.error || "disconnect_failed");
       await options.onDisconnected();
-      setPreferenceStatus("연결을 해제했습니다. 이 PC의 저장 자료와 백업은 그대로 유지됩니다.", "ok");
+      setPreferenceStatus("선택한 학급의 연결을 해제했습니다. 이 PC의 저장 자료·백업과 다른 학급 연결은 유지됩니다.", "ok");
     } catch (error) {
       setPreferenceStatus(`연결을 해제하지 못했습니다: ${String((error as Error)?.message || error)}`, "error");
     } finally {

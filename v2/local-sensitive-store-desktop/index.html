@@ -67,6 +67,14 @@
           <button class="desk-primary" id="deskNewDocument" type="button" aria-label="새로 만들기" data-desk-action="new"><i class="fa-solid fa-plus" aria-hidden="true"></i><span>새로 만들기</span></button>
           <button class="desk-online-home" id="deskOpenTeacher" type="button" aria-label="온라인 교사 홈"><i class="fa-solid fa-arrow-up-right-from-square" aria-hidden="true"></i><span>온라인 교사 홈</span></button>
         </header>
+        <section class="local-class-context" id="localClassContext" aria-label="사용할 학급 선택">
+          <label for="localClassSelect"><span>현재 학급</span><select id="localClassSelect" aria-describedby="localClassStatus" disabled><option value="">연결 학급 확인 중</option></select></label>
+          <button id="localClassRefresh" type="button" aria-label="연결 학급 다시 확인"><i class="fa-solid fa-rotate" aria-hidden="true"></i> 확인</button>
+          <button id="localClassPrepare" type="button">다음 학년도 준비</button>
+          <button id="localClassHelp" type="button" aria-expanded="false" aria-controls="localClassGuide">학급 전환 안내</button>
+          <p id="localClassStatus" role="status">승인된 학급의 학교·학년도·학년·반을 확인합니다.</p>
+          <aside class="local-class-guide" id="localClassGuide" hidden><strong>올해 학급과 다음 학년도 학급을 함께 사용하세요.</strong><ol><li>웹 교사 홈의 ‘다음 학년도 준비’에서 1~2월에도 새 학급을 개설합니다. 학생 이용 시작은 교사가 따로 선택합니다.</li><li>새 학급에서 이 PC 연결을 승인하고 ‘확인’을 누릅니다. 기존 학급 연결은 유지됩니다.</li><li>현재 학급에서 사용할 학교·학년도·학년·반을 고릅니다. 작성 중인 내용을 확인한 뒤 학급을 전환합니다.</li><li>선택한 학급의 DB·연결·백업 상태를 다시 확인합니다. 개인 설정은 유지하며 학생 기록·첨부·백업은 학급별로 보관합니다.</li></ol><p>이 안내는 학급 개설·연결 승인·저장·복원을 대신 실행하지 않습니다.</p></aside>
+        </section>
         <div class="workspace-scroll">
           <section class="app-view is-active local-archive-home" data-app-view="home" aria-labelledby="homeTitle">
             <header class="desk-page-heading"><div><h1 id="homeTitle">오늘, 이어서 시작하세요</h1><p id="homeTodayDate" class="desk-home-date"></p></div><div class="desk-actions"><button class="desk-outline" data-app-view-target="quick-observation" type="button"><i class="fa-solid fa-eye" aria-hidden="true"></i> 빠른 관찰</button><button class="desk-outline" id="deskHomeTitleToggle" type="button" aria-pressed="false"><i class="fa-solid fa-eye-slash" aria-hidden="true"></i> 제목 가리기</button></div></header>
@@ -503,7 +511,7 @@
             <footer class="settings-version-footer"><span id="settingsAppVersionFooter">설치 버전 확인 중</span><span>·</span><button class="text-button" data-desk-action="installer-guide" type="button">설치·다운로드 안내</button></footer>
 
             <dialog class="settings-disconnect-dialog" id="settingsDisconnectDialog" aria-labelledby="settingsDisconnectTitle">
-              <form method="dialog"><span class="settings-disconnect-icon" aria-hidden="true"><i class="fa-solid fa-link-slash"></i></span><h2 id="settingsDisconnectTitle">이 PC 연결을 해제할까요?</h2><p>교사 로그인 연결과 자동 수거만 중지됩니다.</p><aside><i class="fa-solid fa-shield-halved" aria-hidden="true"></i><span>이 PC의 SQLite 자료, 첨부파일과 기존 백업은 삭제되지 않습니다.</span></aside><div><button class="settings-dialog-cancel" value="cancel" type="submit">취소</button><button class="settings-dialog-danger" value="confirm" type="submit">연결 해제</button></div></form>
+              <form method="dialog"><span class="settings-disconnect-icon" aria-hidden="true"><i class="fa-solid fa-link-slash"></i></span><h2 id="settingsDisconnectTitle">선택한 학급의 이 PC 연결을 해제할까요?</h2><p>선택한 학급의 교사 로그인 연결과 자동 수거를 중지합니다. 다른 학급 연결은 유지됩니다.</p><aside><i class="fa-solid fa-shield-halved" aria-hidden="true"></i><span>이 PC의 SQLite 자료, 첨부파일과 기존 백업은 삭제되지 않습니다.</span></aside><div><button class="settings-dialog-cancel" value="cancel" type="submit">취소</button><button class="settings-dialog-danger" value="confirm" type="submit">연결 해제</button></div></form>
             </dialog>
           </section>
         </div>

@@ -1,6 +1,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { createStudentPrivacyToggle, isStudentPrivacyEnabled } from "./desk-privacy";
 import { isDeskRestoreBlocked } from "./desk-restore-lock";
+import { captureLocalClassRequest, isCurrentLocalClassRequest } from "./local-class-context";
 
 const TUTORIAL_KEY = "localQuickObservationTutorial:v3";
 const DESIGN_PREVIEW = new URLSearchParams(window.location.search).get("designPreview") === "quick-observation";
@@ -77,7 +78,7 @@ function fixtureContext(): QuickContext {
   };
 }
 
-export function initQuickObservation(options: { onConnect?: () => void } = {}) {
+export function initQuickObservation(options: { onConnect?: () => void; getTenantId?: () => string } = {}) {
   const form = required<HTMLFormElement>("quickObservationForm");
   const roster = required<HTMLElement>("quickObservationRoster");
   const search = required<HTMLInputElement>("quickObservationSearch");
@@ -267,25 +268,28 @@ export function initQuickObservation(options: { onConnect?: () => void } = {}) {
   }
 
   async function fetchContext(): Promise<QuickContext> {
-    const next = DESIGN_PREVIEW ? fixtureContext() : isTauri() ? await invoke<QuickContext>('get_quick_observation_context') : { ok: false, error: 'tauri_required' };
+    const next = DESIGN_PREVIEW ? fixtureContext() : isTauri() ? await invoke<QuickContext>('get_quick_observation_context', { tenantId: options.getTenantId?.() || null }) : { ok: false, error: 'tauri_required' };
     if (next?.ok !== true) throw new Error(next.error || 'quick_observation_load_failed');
+    if (!DESIGN_PREVIEW && options.getTenantId?.() && next.tenantId !== options.getTenantId()) throw new Error('quick_tenant_changed');
     return next;
   }
   async function load() {
     if (saving || composing) return;
     const generation = ++loadGeneration;
+    const request = captureLocalClassRequest();
     busy = true; renderSelection();
     try {
       const next = await fetchContext();
-      if (generation !== loadGeneration) return;
+      if (generation !== loadGeneration || !isCurrentLocalClassRequest(request)) return;
       if (dirty && state.tenantId && next.tenantId !== state.tenantId) throw new Error('quick_tenant_changed');
       state = next;
       const unavailable = [...selected].some(id => !activeStudents().some(student => student.id === id));
       setFormStatus(unavailable ? '선택한 학생이 최신 명단에 없습니다. 입력을 유지했으니 명단과 대상을 확인하세요.' : state.roster ? '학생·상황·메모를 선택하고 필수 입력을 확인하세요. 저장 전 입력은 현재 창에만 있습니다.' : '최신 학생 명단을 연결해야 기록할 수 있습니다.', unavailable || !state.roster ? 'warning' : '');
     } catch {
+      if (generation !== loadGeneration || !isCurrentLocalClassRequest(request)) return;
       setFormStatus('로컬 명단을 확인하지 못했습니다. 현재 선택과 입력은 유지했습니다. 연결 상태를 확인하고 다시 시도하세요.', 'bad');
     } finally {
-      if (generation === loadGeneration) { busy = false; render(); }
+      if (generation === loadGeneration && isCurrentLocalClassRequest(request)) { busy = false; render(); }
     }
   }
 
@@ -457,5 +461,9 @@ export function initQuickObservation(options: { onConnect?: () => void } = {}) {
   window.addEventListener("resize", () => { if (!tutorial.hidden) renderTutorial(); });
 
   applyPrivacy();
+  window.addEventListener('desk:class-changed', () => {
+    ++loadGeneration; state = { ok: true, connected: false, roster: null, recent: [] }; selected.clear();
+    busy = false; dirty = false; search.value = ''; mutationId = crypto.randomUUID(); render();
+  });
   return { open, canLeave, getSelectedStudentIds: () => [...selected], getBusy: () => busy || composing };
 }

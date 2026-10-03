@@ -366,7 +366,7 @@ export function initStudentTimeline(options: StudentTimelineOptions) {
     try {
       const [result, context] = DESIGN_PREVIEW ? [previewStudentList(), {ok:true} as QuickContext] : await Promise.all([
         invoke<StudentListResult>('list_local_students', {input:{tenantId,query:'',offset:0,limit:200}}),
-        invoke<QuickContext>('get_quick_observation_context').catch(() => ({ok:false} as QuickContext)),
+        invoke<QuickContext>('get_quick_observation_context', { tenantId }).catch(() => ({ok:false} as QuickContext)),
       ]);
       if (generation !== rosterGeneration || tenantId !== options.getTenantId().trim()) return;
       if (result?.ok !== true) throw new Error(result.error || 'local_student_list_failed');
@@ -425,6 +425,12 @@ export function initStudentTimeline(options: StudentTimelineOptions) {
     const locator = teacherRecordLocator(options.getTenantId().trim(), directRecord);
     if (locator && selectedStudentId) await openRecord({kind:locator.kind,recordId:locator.recordId,studentId:selectedStudentId});
     else await loadStudents();
+  }
+  async function resetForClass() {
+    ++rosterGeneration; ++timelineGeneration; ++directGeneration;
+    activeTenant = ''; selectedStudentId = ''; selectedRecordIndex = -1; records = []; directRecord = undefined;
+    students = []; renderStudents(); renderDetail();
+    await loadStudents();
   }
   const beginCounseling = () => { if (!selectedStudentId || isStudentPrivacyEnabled() || isDeskRestoreBlocked()) return; window.dispatchEvent(new CustomEvent('desk:create-counseling',{detail:{studentId:selectedStudentId}})); };
   const beginQuick = () => { if (isDeskRestoreBlocked()) return; window.dispatchEvent(new CustomEvent('desk:open-student-quick',{detail:{studentIds:selectedStudentId ? [selectedStudentId] : []}})); };
@@ -501,6 +507,6 @@ export function initStudentTimeline(options: StudentTimelineOptions) {
   });
   queryInput.placeholder = isStudentPrivacyEnabled() ? '학생 번호 검색' : '학생 이름 또는 번호 검색';
   counselEntry.disabled = isStudentPrivacyEnabled();
-  return { open: loadStudents, refresh, openRecord, getSelectedStudent: selectedStudent };
+  return { open: loadStudents, refresh, resetForClass, openRecord, getSelectedStudent: selectedStudent };
 
 }

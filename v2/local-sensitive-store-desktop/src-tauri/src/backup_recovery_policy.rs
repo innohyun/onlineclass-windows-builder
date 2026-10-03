@@ -83,6 +83,11 @@ pub(crate) fn recovery_restore(
     protection: Value,
 ) -> Result<Value, String> {
     recovery_preflight(store, body.clone())?;
+    if store.class_tenant.is_some() && !crate::backup_restore_coordinator::running() {
+        return crate::backup_restore_coordinator::run(store, body.clone(), "recovery", |_component, target, component_protection, canonical_body| {
+            restore_coordinated_component(target, canonical_body, "recovery", component_protection)
+        });
+    }
     restore_with_policy(store, body, |_store, _tenant| Ok(protection), true)
 }
 
@@ -280,7 +285,14 @@ pub(super) fn archive_losers(
         .map(|key| format!("m.{key}"))
         .collect::<Vec<_>>()
         .join(",");
-    let sql=format!("SELECT json_array({key}),json_object({}) FROM main.{} m JOIN restore.{} r ON {} WHERE m.tenant_id=?1 AND ({})",row_json_expression(table,"m"),table.name,table.name,join(table),difference(table));
+    let ownership = if table.name == "local_import_runs" {
+        match crate::backup_restore_coordinator::component() {
+            crate::backup_restore_coordinator::Component::Common => " AND m.kind='teaching_source' AND r.kind='teaching_source'",
+            crate::backup_restore_coordinator::Component::Class => " AND m.kind<>'teaching_source' AND r.kind<>'teaching_source'",
+            crate::backup_restore_coordinator::Component::Combined => "",
+        }
+    } else { "" };
+    let sql=format!("SELECT json_array({key}),json_object({}) FROM main.{} m JOIN restore.{} r ON {} WHERE m.tenant_id=?1 AND ({}){ownership}",row_json_expression(table,"m"),table.name,table.name,join(table),difference(table));
     let mut statement = transaction
         .prepare(&sql)
         .map_err(|_| "recovery_conflict_read_failed")?;

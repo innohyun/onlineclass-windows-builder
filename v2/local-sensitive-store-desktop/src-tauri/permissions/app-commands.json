@@ -5,6 +5,8 @@
       "description": "Local main WebView commands; never grant this set to remote pages.",
       "commands": {
         "allow": [
+          "get_local_classes",
+          "select_local_class",
           "get_service_status",
           "get_cloud_sync_status",
           "get_device_connection_status",

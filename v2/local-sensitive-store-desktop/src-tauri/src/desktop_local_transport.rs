@@ -134,7 +134,7 @@ mod tests {
         let links = BrowserLinkStore::open(&directory).unwrap();
         let previous = links.issue(&serde_json::json!({ "tenantId": "tenant-a", "uid": "teacher-a" })).unwrap();
         let request_id = crate::random_url_token();
-        let desktop = links.issue_desktop_for_request(&request_id).unwrap();
+        let desktop = links.issue_desktop_for_request(&request_id, "tenant-a").unwrap();
         let endpoint = "http://127.0.0.1:51273";
         let mut request = LocalRequest { url: format!("{endpoint}/v1/overview"), method: "GET".into(), headers: BTreeMap::new(), body_base64: None };
         assert!(validate(&request, endpoint, &links).is_err());

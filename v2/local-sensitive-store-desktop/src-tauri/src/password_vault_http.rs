@@ -15,18 +15,36 @@ pub(crate) fn handle_http(
     let path = url.path();
     let data = if request.method() == &Method::Get && path == "/v1/password-vault/personal/status" {
         let school = school_code(Some(&Value::String(crate::query(url, "schoolCode"))))?;
-        personal_status(store, principal, &school)?
+        let origin = personal_scope::resolve(store, principal, &school)?;
+        personal_status(store, &origin, &school)?
     } else if request.method() == &Method::Post && path == "/v1/password-vault/personal/setup" {
-        setup_personal(store, principal, &body(request)?)?
+        let input = body(request)?;
+        let school = school_code(input.get("schoolCode"))?;
+        let origin = personal_scope::resolve(store, principal, &school)?;
+        let data = setup_personal(store, &origin, &input)?;
+        crate::backup::mark_external_sync_dirty(store, &origin.tenant_id)?;
+        data
     } else if request.method() == &Method::Post && path == "/v1/password-vault/personal/recovery" {
-        recover_personal(store, principal, &body(request)?)?
+        let input = body(request)?;
+        let school = school_code(input.get("schoolCode"))?;
+        let origin = personal_scope::resolve(store, principal, &school)?;
+        recover_personal(store, &origin, &input)?
     } else if request.method() == &Method::Get && path == "/v1/password-vault/personal/entries" {
         let school = school_code(Some(&Value::String(crate::query(url, "schoolCode"))))?;
-        list_personal_entries(store, principal, &school)?
+        let origin = personal_scope::resolve(store, principal, &school)?;
+        list_personal_entries(store, &origin, &school)?
     } else if request.method() == &Method::Put && path == "/v1/password-vault/personal/entries" {
-        save_personal_entry(store, principal, &body(request)?)?
+        let input = body(request)?;
+        let school = school_code(input.get("schoolCode"))?;
+        let origin = personal_scope::resolve(store, principal, &school)?;
+        let data = save_personal_entry(store, &origin, &input)?;
+        crate::backup::mark_external_sync_dirty(store, &origin.tenant_id)?;
+        data
     } else if request.method() == &Method::Post && path == "/v1/password-vault/personal/reveal" {
-        reveal_personal_entry(store, principal, &body(request)?)?
+        let input = body(request)?;
+        let school = school_code(input.get("schoolCode"))?;
+        let origin = personal_scope::resolve(store, principal, &school)?;
+        reveal_personal_entry(store, &origin, &input)?
     } else if request.method() == &Method::Delete
         && path.starts_with("/v1/password-vault/personal/entries/")
     {
@@ -34,7 +52,12 @@ pub(crate) fn handle_http(
         if entry_id.contains('/') {
             return Err("password_vault_entry_id_invalid".to_string());
         }
-        delete_personal_entry(store, principal, &body(request)?, entry_id)?
+        let input = body(request)?;
+        let school = school_code(input.get("schoolCode"))?;
+        let origin = personal_scope::resolve(store, principal, &school)?;
+        let data = delete_personal_entry(store, &origin, &input, entry_id)?;
+        crate::backup::mark_external_sync_dirty(store, &origin.tenant_id)?;
+        data
     } else if request.method() == &Method::Get && path == "/v1/password-vault/shared/device" {
         let school = school_code(Some(&Value::String(crate::query(url, "schoolCode"))))?;
         let current = device_status(store, principal, &school)?;

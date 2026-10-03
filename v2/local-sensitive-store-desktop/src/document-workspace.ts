@@ -333,5 +333,8 @@ export function initDocumentWorkspace(options: WorkspaceOptions) {
     document.addEventListener(name,event=>{void run(()=>begin((event as CustomEvent).detail || {},kind));});
   }
   window.addEventListener('desk:restore-lock-changed',updateControls);window.addEventListener('desk:favorites-changed',updateControls);
-  return {async canLeave(){try{await flush();return true;}catch(reason){error(reason);confirm('저장을 확인한 뒤 이동하세요','<p>화면 이동이 중단되었습니다. 현재 내용과 초안은 그대로 유지됩니다.</p>',flush,false,'다시 저장','계속 작성');return false;}}, flush, open:(input:DocumentWorkspaceInput|string)=>run(()=>begin(typeof input==='string'?{pageId:input}:input,'open'))};
+  return {async canLeave(){try{await flush();return true;}catch(reason){error(reason);confirm('저장을 확인한 뒤 이동하세요','<p>화면 이동이 중단되었습니다. 현재 내용과 초안은 그대로 유지됩니다.</p>',flush,false,'다시 저장','계속 작성');return false;}},
+    async prepareClassChange(){try{await operation;await flush();return true;}catch(reason){error(reason);return false;}},
+    async resetForClass(){ await operation; await flush(); await editor.releaseRealtime(); session?.close(); session=null; page=null; pages=[]; tenant=''; attachments=[]; attachmentGeneration+=1; searchGeneration+=1; view.hide(); },
+    flush, open:(input:DocumentWorkspaceInput|string)=>run(()=>begin(typeof input==='string'?{pageId:input}:input,'open'))};
 }

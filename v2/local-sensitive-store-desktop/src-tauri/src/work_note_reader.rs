@@ -65,8 +65,7 @@ fn load_view(store: &SqliteStore, raw_tenant_id: String, raw_page_id: String) ->
 
 #[tauri::command]
 pub(crate) fn get_local_work_note_view(state: tauri::State<'_, AppState>, tenant_id: String, page_id: String) -> Value {
-    let result = state.store.lock().ok().and_then(|store| store.clone())
-        .ok_or_else(|| "local_store_unavailable".to_string())
-        .and_then(|store| load_view(&store, tenant_id, page_id));
+    let result = crate::native_class_authority::for_native_tenant(&state,&tenant_id)
+        .and_then(|store| store.with_class_access(|store|load_view(store,tenant_id,page_id)));
     result.unwrap_or_else(|error| json!({ "ok": false, "error": error }))
 }

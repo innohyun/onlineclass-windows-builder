@@ -600,7 +600,8 @@ pub(crate) fn search_local_data(
         .ok()
         .and_then(|store| store.clone())
         .ok_or_else(|| "local_store_unavailable".to_string())
-        .and_then(|store| store.search_local_data(input));
+        .and_then(|_| crate::native_class_authority::for_native_tenant(&state, &input.tenant_id))
+        .and_then(|store| store.with_class_access(|store| store.search_local_data(input)));
     match result {
         Ok(value) => value,
         Err(error) => json!({ "ok": false, "error": error }),
@@ -618,7 +619,8 @@ pub(crate) fn list_local_students(
         .ok()
         .and_then(|store| store.clone())
         .ok_or_else(|| "local_store_unavailable".to_string())
-        .and_then(|store| store.list_local_students(input));
+        .and_then(|_| crate::native_class_authority::for_native_tenant(&state, &input.tenant_id))
+        .and_then(|store| store.with_class_access(|store| store.list_local_students(input)));
     match result {
         Ok(value) => value,
         Err(error) => json!({ "ok": false, "error": error }),
@@ -638,13 +640,14 @@ pub(crate) fn open_local_data_attachment(
         .ok()
         .and_then(|store| store.clone())
         .ok_or_else(|| "local_store_unavailable".to_string())
-        .and_then(|store| {
+        .and_then(|_| crate::native_class_authority::for_native_tenant(&state, &tenant_id))
+        .and_then(|store| store.with_class_access(|store| {
             store.resolve_local_attachment(
                 tenant_id,
                 media_id,
                 attachment_kind.unwrap_or_default(),
             )
-        })
+        }))
         .and_then(|(path, _)| open_attachment_path(&path));
     match result {
         Ok(()) => json!({ "ok": true }),

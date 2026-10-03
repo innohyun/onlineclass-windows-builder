@@ -4,11 +4,12 @@ import { listen } from "@tauri-apps/api/event";
 import { Webview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { isMacDesktop } from "./settings-dashboard";
+import { captureLocalClassRequest, isCurrentLocalClassRequest, currentLocalClass } from "./local-class-context";
 
 const SHELL_HEIGHT = 56;
 const TEACHER_WEBVIEW_LABEL = "teacher-home";
 const TEACHER_HOME_URL = "https://t.classaimate.com/admin/";
-const TUTORIAL_KEY = "classaimateDesktopShellTutorial:v19";
+const TUTORIAL_KEY = "classaimateDesktopShellTutorial:v20";
 
 type ShellMode = "teacher" | "local";
 export type DesktopActivationIntent = "show-main" | "quick-observation";
@@ -17,6 +18,7 @@ type DesktopShellController = {
   openTeacherHome: (path?: string) => Promise<void>;
   startCloseHandling: (handler: () => Promise<boolean>) => Promise<void>;
   refreshConnection: () => Promise<void>;
+  resetTeacherHome: () => Promise<void>;
   startActivationHandling: (handler: (intent: DesktopActivationIntent) => void | Promise<void>) => Promise<void>;
 };
 
@@ -158,7 +160,9 @@ export function initDesktopShell(options: DesktopShellOptions = {}): DesktopShel
     if (teacherWebview) return teacherWebview;
     if (creating) return creating;
     creating = (async () => {
-      const bridge = await invoke<BridgeResult>("prepare_teacher_home_bridge");
+      const request = captureLocalClassRequest();
+      const bridge = await invoke<BridgeResult>("prepare_teacher_home_bridge", { tenantId: request.tenantId || null });
+      if (!isCurrentLocalClassRequest(request) || (request.tenantId && bridge.tenantId && bridge.tenantId !== request.tenantId)) throw new Error("teacher_home_class_changed");
       if (bridge?.ok === false) throw new Error(bridge.error || "teacher_home_bridge_failed");
       setConnectionStatus(bridge);
       const view = await createTeacherWebview(buildTeacherHomeUrl(bridge, teacherPath));
@@ -232,7 +236,7 @@ export function initDesktopShell(options: DesktopShellOptions = {}): DesktopShel
   };
 
   const tutorialSteps = [
-    { target: required<HTMLElement>("deskCurrentStore"), text: "내 작업실은 이 PC에 연결된 학급의 자료를 여는 공간입니다. 현재 자료함에서 컴퓨터와 학급을 확인하세요. 다른 PC 자료는 백업·동기화에서 검증하고 반영하며, 이름이 같은 자료함을 자동으로 합치지 않습니다." },
+    { target: required<HTMLElement>("localClassSelect"), text: "현재 학급에서 승인된 학교·학년도·학년·반을 선택합니다. 1~2월에도 다음 학년도 학급을 미리 개설하고 올해 학급과 오갈 수 있습니다. 전환 전 작성 중인 내용을 확인하고 선택한 학급의 DB·연결·백업 상태를 다시 읽습니다. 이 안내는 학급을 바꾸지 않습니다." },
     { target: required<HTMLElement>("homeSearchForm"), text: "전체 검색은 이 PC의 문서·학생 기록·첨부파일을 찾습니다. Ctrl+K로 검색창을 열고, 사이드바에서 수업자료·업무 노트·학생 기록으로 바로 이동할 수 있습니다. 중복 자료 정리는 전체 검색 화면에 있습니다." },
     { target: required<HTMLElement>("deskNewDocument"), text: "새로 만들기에서 수업자료·업무 노트와 빠른 관찰 기록을 시작합니다. 학생 학습자료 작성·검토·공개는 기존 교사 홈으로 연결합니다. 인터넷 연결이 필요한 작업과 이 PC 저장은 구분해서 표시합니다. 이 안내는 문서를 만들거나 저장하지 않습니다." },
     { target: required<HTMLElement>("deskScreenIndex"), text: "화면 목록에서 휴지통·수정 이력·서식함·AI 변경 제안을 포함한 24개 작업 흐름을 찾습니다. 최근 문서의 별표는 이 PC의 즐겨찾기를 바꿉니다. 원문은 문서 저장소에서 다시 읽고, 즐겨찾기에는 문서 식별자만 보관합니다." },
@@ -242,7 +246,7 @@ export function initDesktopShell(options: DesktopShellOptions = {}): DesktopShel
     },
     {
       target: required<HTMLElement>("deskCurrentStore"),
-      text: "로컬 자료함은 같은 SQLite를 수업자료·기존 학생 자료·업무자료·학생별 보기·빠른 관찰로 나눠 쓰는 공간입니다. 승인된 ChatGPT 작업은 이 앱이 연결하며 AI 설정 탭을 계속 열어 둘 필요는 없습니다. 원문 저장·영수증·재조회가 확인돼야 완료입니다. 연결이 끊겨도 생성 결과는 암호화해 최대 24시간 보존하지만 조회·작업 승인 기한은 자동 연장하지 않습니다.",
+      text: "로컬 자료함은 선택한 학급의 SQLite에서 수업자료·기존 학생 자료·업무자료·학생별 보기·빠른 관찰을 여는 공간입니다. 학생 기록·첨부·보관본·백업은 학급별로 분리하며 개인 설정은 유지합니다. 승인된 ChatGPT 작업은 인증된 학급 DB를 사용합니다. 원문 저장·영수증·재조회가 확인돼야 완료입니다. 연결이 끊겨도 생성 결과는 암호화해 최대 24시간 보존하지만 조회·작업 승인 기한은 자동 연장하지 않습니다.",
     },
     {
       target: required<HTMLElement>("deskCurrentStore"),
@@ -310,8 +314,16 @@ export function initDesktopShell(options: DesktopShellOptions = {}): DesktopShel
 
   const refreshConnection = async () => {
     if (!native) return;
-    const connection = await invoke<ConnectionResult>("get_device_connection_status");
+    const request = captureLocalClassRequest();
+    const connection = await invoke<ConnectionResult>("get_device_connection_status", { tenantId: request.tenantId || null });
+    if (!isCurrentLocalClassRequest(request) || (request.tenantId && connection.tenantId && connection.tenantId !== request.tenantId)) return;
     setConnectionStatus(connection);
+  };
+  const resetTeacherHome = async () => {
+    if (teacherWebview) await teacherWebview.close();
+    teacherWebview = null;
+    teacherPath = `/admin/?view=overview${currentLocalClass() ? `&tenantId=${encodeURIComponent(currentLocalClass())}` : ""}`;
+    if (mode === "teacher") await selectMode("local");
   };
 
   const startCloseHandling = async (handler: () => Promise<boolean>) => {
@@ -363,5 +375,5 @@ export function initDesktopShell(options: DesktopShellOptions = {}): DesktopShel
   } else {
     void selectMode(native && localStorage.getItem("classaimateDesktopShellMode:v2") === "teacher" ? "teacher" : "local");
   }
-  return { refreshConnection, startActivationHandling, openTeacherHome, startCloseHandling };
+  return { refreshConnection, resetTeacherHome, startActivationHandling, openTeacherHome, startCloseHandling };
 }

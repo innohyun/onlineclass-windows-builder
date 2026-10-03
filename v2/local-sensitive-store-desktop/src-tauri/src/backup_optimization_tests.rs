@@ -296,7 +296,7 @@ fn backup_archive_union_keeps_local_only_archive_dirty_after_receive() {
         .unwrap();
     let snapshot = run_with_kind(&store, tenant.clone(), "auto_sync", Some(1)).unwrap();
     let archive_id = format!("fixture-{}", crate::random_url_token());
-    let archives = crate::shared_archive::open_db().unwrap();
+    let archives = crate::shared_archive::open_db_for_tenant(&tenant).unwrap();
     archives.execute("INSERT INTO shared_archives VALUES (?1,?2,'board','fixture','Fixture',?3,0,0,0,1,2,3,'{}')",
         params![archive_id,tenant,"a".repeat(64)]).unwrap();
     mark_external_sync_dirty(&store, &tenant).unwrap();

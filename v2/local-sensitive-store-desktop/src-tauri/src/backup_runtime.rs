@@ -270,7 +270,7 @@ pub(super) fn root_operation(
     }) {
         return Ok(RootOperation { key, file: None });
     }
-    let locks = store.data_dir.join("backup-operation-locks");
+    let locks = store.shared_data_dir.join("backup-operation-locks");
     fs::create_dir_all(&locks).map_err(|e| format!("backup_lock_dir_failed:{e}"))?;
     let name = format!(
         "{:x}.lock",

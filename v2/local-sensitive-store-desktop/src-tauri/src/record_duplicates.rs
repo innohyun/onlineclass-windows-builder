@@ -341,24 +341,27 @@ impl SqliteStore {
     }
 }
 
-fn command_result(state: tauri::State<'_, AppState>, action: impl FnOnce(&SqliteStore) -> Result<Value, String>) -> Value {
-    let result = state.store.lock().ok().and_then(|s| s.clone()).ok_or_else(|| "local_store_unavailable".to_string())
-        .and_then(|store| action(&store));
-    result.unwrap_or_else(|error| json!({"ok":false,"error":error}))
-}
 #[tauri::command]
 pub(crate) fn scan_record_duplicates(state: tauri::State<'_, AppState>, input: ScanInput) -> Value {
-    command_result(state, |store| store.scan_record_duplicates(input))
+    crate::native_class_authority::for_native_tenant(&state, &input.tenant_id)
+        .and_then(|store| store.with_class_access(|store| store.scan_record_duplicates(input)))
+        .unwrap_or_else(|error| json!({"ok":false,"error":error}))
 }
 #[tauri::command]
 pub(crate) fn apply_record_duplicates(state: tauri::State<'_, AppState>, input: ApplyInput) -> Value {
-    command_result(state, |store| store.apply_record_duplicates(input))
+    crate::native_class_authority::for_native_tenant(&state, &input.tenant_id)
+        .and_then(|store| store.with_class_access(|store| store.apply_record_duplicates(input)))
+        .unwrap_or_else(|error| json!({"ok":false,"error":error}))
 }
 #[tauri::command]
 pub(crate) fn list_record_duplicate_history(state: tauri::State<'_, AppState>, input: ScanInput) -> Value {
-    command_result(state, |store| store.list_record_duplicate_history(input))
+    crate::native_class_authority::for_native_tenant(&state, &input.tenant_id)
+        .and_then(|store| store.with_class_access(|store| store.list_record_duplicate_history(input)))
+        .unwrap_or_else(|error| json!({"ok":false,"error":error}))
 }
 #[tauri::command]
 pub(crate) fn undo_record_duplicate_cleanup(state: tauri::State<'_, AppState>, input: UndoInput) -> Value {
-    command_result(state, |store| store.undo_record_duplicate_cleanup(input))
+    crate::native_class_authority::for_native_tenant(&state, &input.tenant_id)
+        .and_then(|store| store.with_class_access(|store| store.undo_record_duplicate_cleanup(input)))
+        .unwrap_or_else(|error| json!({"ok":false,"error":error}))
 }

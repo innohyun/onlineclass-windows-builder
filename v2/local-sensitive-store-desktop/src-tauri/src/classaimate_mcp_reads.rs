@@ -7,10 +7,10 @@ use std::path::Path;
 
 const MAX_PENDING: usize = 8;
 const RESPONSE_MARGIN_MS: i64 = 1_500;
-static DIAGNOSTICS: Mutex<Vec<Value>> = Mutex::new(Vec::new());
+static DIAGNOSTICS: Mutex<BTreeMap<String, Vec<Value>>> = Mutex::new(BTreeMap::new());
 
-pub(super) fn diagnostics() -> Vec<Value> {
-    DIAGNOSTICS.lock().map(|items| items.clone()).unwrap_or_default()
+pub(super) fn diagnostics_for_tenant(tenant: &str) -> Vec<Value> {
+    DIAGNOSTICS.lock().ok().and_then(|items| items.get(tenant).cloned()).unwrap_or_default()
 }
 
 pub(super) fn trace(frame: &Value, stage: &str, started: Instant, code: &str, store: Option<&SqliteStore>) {
@@ -24,9 +24,12 @@ pub(super) fn trace(frame: &Value, stage: &str, started: Instant, code: &str, st
         "dbFingerprint":fingerprint,"at":chrono::Utc::now().timestamp_millis()});
     // No query, payload, tenant/student identifier, raw path, or exception text.
     eprintln!("{record}");
-    if let Ok(mut items) = DIAGNOSTICS.lock() {
-        if items.len() >= 96 { items.remove(0); }
-        items.push(record);
+    if let Ok(mut by_tenant) = DIAGNOSTICS.lock() {
+        DIAGNOSTIC_TENANT.with(|scope| {
+            let items = by_tenant.entry(scope.borrow().clone()).or_default();
+            if items.len() >= 96 { items.remove(0); }
+            items.push(record);
+        });
     }
 }
 
@@ -51,7 +54,7 @@ pub(super) fn wire_response(frame: &Value, mut response: Value) -> Value {
 
 pub(super) fn probe(store: &SqliteStore, tenant: &str) -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_millis(250);
-    let _access = crate::restore_journal::access_until(&store.data_dir, deadline)?;
+    let _access = crate::restore_journal::access_pair_until(&store.shared_data_dir, &store.data_dir, deadline)?;
     let reader = read_store(store, deadline, Arc::new(AtomicBool::new(false)))?;
     reader.restore_ready(tenant).map_err(|_| "local_store_unavailable".into())
 }
@@ -77,7 +80,7 @@ fn read_store(store: &SqliteStore, deadline: Instant, cancelled: Arc<AtomicBool>
     conn.execute_batch("PRAGMA query_only=ON; PRAGMA foreign_keys=ON;").map_err(sql_error)?;
     conn.query_row("SELECT count(*) FROM sqlite_schema WHERE name='lesson_observations'", [], |row| row.get::<_, i64>(0))
         .map_err(sql_error).and_then(|count| if count == 1 { Ok(()) } else { Err("LOCAL_DB_QUERY_FAILED".into()) })?;
-    Ok(SqliteStore { conn: Mutex::new(conn), db_path: store.db_path.clone(), data_dir: store.data_dir.clone() })
+    Ok(store.with_connection(conn))
 }
 
 struct Job { frame: Value, deadline: Instant, started: Instant }
@@ -99,6 +102,7 @@ impl Executor {
         let cancelled = Arc::new(AtomicBool::new(false));
         let stopping = Arc::clone(&cancelled);
         thread::spawn(move || {
+            diagnostic_tenant(&authority.tenant_id);
             while let Ok(job) = jobs.recv() {
                 if stopping.load(Ordering::SeqCst) { break; }
                 let request_id = job.frame["requestId"].as_str().unwrap_or_default().to_string();
@@ -106,10 +110,12 @@ impl Executor {
                     if Instant::now() >= job.deadline { return error(&job.frame, "LOCAL_DB_QUERY_TIMEOUT"); }
                     let result = (|| {
                         validate().map_err(|_| "MCP_RELAY_OFFLINE".to_string())?;
-                        trace(&job.frame, "db_lock_wait", job.started, "START", Some(&store));
-                        let _access = crate::restore_journal::access_until(&store.data_dir,
+                        // Personal source documents retain their account-owned common DB.
+                        let selected_store = if job.frame["workspace"] == "teaching_sources" { store.shared_store()? } else { Arc::clone(&store) };
+                        trace(&job.frame, "db_lock_wait", job.started, "START", Some(&selected_store));
+                        let _access = crate::restore_journal::access_pair_until(&selected_store.shared_data_dir, &selected_store.data_dir,
                             job.deadline.min(Instant::now() + Duration::from_millis(250)))?;
-                        let reader = read_store(&store, job.deadline, Arc::clone(&stopping))?;
+                        let reader = read_store(&selected_store, job.deadline, Arc::clone(&stopping))?;
                         reader.restore_ready(&authority.tenant_id).map_err(|_| "local_store_unavailable".to_string())?;
                         trace(&job.frame, "db_ready", job.started, "OK", Some(&reader));
                         trace(&job.frame, "query_start", job.started, "START", None);

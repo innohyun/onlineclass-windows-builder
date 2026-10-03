@@ -210,7 +210,8 @@ pub(crate) fn get_local_teacher_record(
             .ok_or("local_store_unavailable")?;
         let (tenant, kind, id) =
             scope(&json!({"tenantId":tenant_id,"kind":kind,"recordId":record_id}))?;
-        get(&store, &tenant, &kind, &id)
+        let scoped = crate::native_class_authority::for_native_tenant(&state, &tenant)?;
+        scoped.with_class_access(|store| get(store, &tenant, &kind, &id))
     })();
     result.unwrap_or_else(|error: String| json!({"ok":false,"error":error}))
 }
@@ -223,7 +224,8 @@ pub(crate) fn save_local_teacher_record(state: tauri::State<'_, AppState>, input
             .map_err(|_| "local_store_unavailable")?
             .clone()
             .ok_or("local_store_unavailable")?;
-        save(&store, input)
+        let scoped = crate::native_class_authority::for_native_tenant(&state, input["tenantId"].as_str().unwrap_or_default())?;
+        scoped.with_class_access(|store| save(store, input))
     })();
     result.unwrap_or_else(|error: String| json!({"ok":false,"error":error}))
 }

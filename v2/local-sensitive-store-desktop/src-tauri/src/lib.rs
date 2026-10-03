@@ -45,6 +45,9 @@ mod local_record_commands;
 mod device_sync_conflicts;
 mod lesson_plan_bindings;
 mod local_workspaces;
+mod class_store;
+mod native_class_authority;
+mod backup_restore_coordinator;
 mod teaching_sources;
 mod teaching_source_backup;
 mod password_vault;
@@ -78,7 +81,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use url::Url;
 
 const SERVICE_NAME: &str = "onlineclass-local-sensitive-store";
-pub(crate) const SERVICE_VERSION: &str = "2026-10-02.1-teacher-desk-ux";
+pub(crate) const SERVICE_VERSION: &str = "2026-10-03.1-class-databases";
 const WORK_MEETING_ROOT_PAGE_ID: &str = "classaimate:work-meeting-minutes";
 const WORK_MEETING_ROOT_TITLE: &str = "업무 회의록";
 const WORK_MEETING_ROOT_INTRO: &str = "모바일에서 확정한 업무 회의록이 자동으로 들어옵니다.";
@@ -215,6 +218,7 @@ const LOCAL_SENSITIVE_STORE_FEATURES: &[&str] = &[
     "work_note_tree_move",
     "counseling_local_authority",
     "onedrive_device_sync",
+    "class_scoped_databases_v1",
     "work_note_localization_staging_v1",
     "work_note_system_folders_v1",
     "lesson_plan_bindings_v1",
@@ -342,6 +346,10 @@ pub(crate) struct SqliteStore {
     conn: Mutex<Connection>,
     db_path: PathBuf,
     data_dir: PathBuf,
+    shared_data_dir: PathBuf,
+    legacy_db_path: PathBuf,
+    class_tenant: Option<String>,
+    class_stores: Arc<Mutex<std::collections::HashMap<String, std::sync::Weak<SqliteStore>>>>,
 }
 
 struct NormalizedTeacherCounselingSession {
@@ -1539,9 +1547,9 @@ impl BrowserLinkStore {
         )
     }
 
-    fn issue_desktop_for_request(&self, request_id: &str) -> Result<BrowserLinkToken, String> {
+    fn issue_desktop_for_request(&self, request_id: &str, tenant: &str) -> Result<BrowserLinkToken, String> {
         let current = self
-            .latest()
+            .latest_for_tenant(tenant)
             .ok_or_else(|| "browser_link_missing".to_string())?;
         let link = self.issue_for_audience(&json!({
             "tenantId": current.tenant_id,
@@ -1593,6 +1601,10 @@ impl BrowserLinkStore {
             .iter()
             .find(|entry| entry.request_id == safe_request_id)
             .map(|entry| entry.link.clone()))
+    }
+
+    fn latest_for_tenant(&self, tenant: &str) -> Option<BrowserLinkToken> {
+        self.tokens.lock().ok().and_then(|tokens| tokens.iter().filter(|entry|entry.tenant_id == tenant).max_by_key(|entry|entry.created_at_ms).cloned())
     }
 
     fn latest(&self) -> Option<BrowserLinkToken> {
@@ -1729,13 +1741,19 @@ fn is_safe_mobile_meeting_root(page: &Value, include_canonical: bool) -> bool {
 
 impl SqliteStore {
     fn restore_ready(&self, tenant: &str) -> Result<(), String> {
+        if let Some(expected) = self.class_tenant.as_deref() {
+            if expected != tenant { return Err("tenant_scope_mismatch".into()); }
+            backup_restore_coordinator::class_ready(&self.shared_data_dir, tenant)?;
+        } else {
+            backup_restore_coordinator::common_ready(&self.shared_data_dir)?;
+        }
         let conn = self.conn.lock().map_err(|_| "db_lock_failed")?;
         restore_journal::ready(&conn, tenant)
     }
     fn media_access(&self, tenant: &str) -> Result<restore_journal::AccessGuard, String> {
-        let guard = restore_journal::access(&self.data_dir)?;
-        let conn = self.conn.lock().map_err(|_| "db_lock_failed")?;
-        restore_journal::ready(&conn, tenant)?;
+        let guard = restore_journal::access_pair(&self.shared_data_dir, &self.data_dir)?;
+        backup_restore_coordinator::common_ready(&self.shared_data_dir)?;
+        self.restore_ready(tenant)?;
         Ok(guard)
     }
 
@@ -2087,8 +2105,12 @@ impl SqliteStore {
         restore_journal::install_guards(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
+            legacy_db_path: db_path.clone(),
+            shared_data_dir: data_dir.clone(),
             db_path,
             data_dir,
+            class_tenant: None,
+            class_stores: Arc::new(Mutex::new(std::collections::HashMap::new())),
         })
     }
 
@@ -2770,7 +2792,7 @@ impl SqliteStore {
             .map_err(|e| format!("db_stats_student_record_drafts_failed:{e}"))?;
         let import_runs = conn
             .query_row(
-                "SELECT COUNT(*), MAX(finished_at_ms) FROM local_import_runs WHERE tenant_id = ?1",
+                &format!("SELECT COUNT(*), MAX(finished_at_ms) FROM {} WHERE tenant_id = ?1",backup::live_table_source(&conn,"local_import_runs")),
                 params![&safe_tenant],
                 |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?)),
             )
@@ -4479,7 +4501,8 @@ impl SqliteStore {
             return Err("student_record_draft_set_required".to_string());
         }
 
-        let batch_store = SqliteStore::open(self.db_path.clone())?;
+        let opened = SqliteStore::open_initialized(self.db_path.clone())?;
+        let batch_store = self.with_connection(opened.conn.into_inner().map_err(|_| "db_lock_failed")?);
         {
             let conn = batch_store.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
             conn.execute_batch("BEGIN IMMEDIATE")
@@ -4561,6 +4584,9 @@ impl SqliteStore {
             format!("{kind}_{started_at_ms}"),
             "import_run_id_required",
         )?;
+        if kind == "teaching_source" || run_id.starts_with("teaching-source:") {
+            return Err("teaching_source_import_run_managed".into());
+        }
         let status = {
             let value = normalize_json_text(input.get("status"), 40);
             if value.is_empty() { "completed".to_string() } else { value }
@@ -4609,7 +4635,11 @@ impl SqliteStore {
             where_parts.push("status = ?".to_string());
             params_vec.push(Box::new(safe_status));
         }
-        self.query_math_payloads("local_import_runs", "payload_json", where_parts, params_vec, "finished_at_ms DESC", limit.clamp(1, 100))
+        let source = {
+            let conn = self.conn.lock().map_err(|_| "db_lock_failed".to_string())?;
+            backup::live_table_source(&conn, "local_import_runs")
+        };
+        self.query_math_payloads(&source, "payload_json", where_parts, params_vec, "finished_at_ms DESC", limit.clamp(1, 100))
     }
 
     fn list_date_student_payloads(&self, table: &str, tenant_id: String, date: String, date_from: String, date_to: String, student_code: String, order: &str, limit: i64) -> Result<Vec<Value>, String> {
@@ -5021,8 +5051,18 @@ fn handle_request(
         };
 
         if request.method() == &Method::Get && path == "/v1/health" {
-            return Ok((200, health_payload(&store, authorized)));
+            let mut payload = health_payload(&store, authorized);
+            if let Some(tenant) = browser_tenant.as_deref() {
+                scope_tenant_id(crate::query(&url, "tenantId"), Some(tenant))?;
+                payload["capabilities"] = json!(["class_scoped_databases_v1"]);
+                payload["storage"] = store.class_storage_status(tenant).unwrap_or_else(|error|json!({"tenantId":tenant,"ready":false,"layout":"class_files_v1","migrationState":"blocked","error":error}));
+            }
+            return Ok((200, payload));
         }
+
+        let store = if !path.starts_with("/v1/password-vault/") {
+            match browser_tenant.as_deref() { Some(tenant) => store.for_tenant(tenant)?, None => Arc::clone(&store) }
+        } else { Arc::clone(&store) };
 
         if path.starts_with("/v1/password-vault/") {
             let principal = browser_links
@@ -5031,10 +5071,21 @@ fn handle_request(
             if browser_tenant.as_deref() != Some(principal.tenant_id.as_str()) {
                 return Err("tenant_scope_mismatch".to_string());
             }
-            return password_vault::handle_http(&mut request, &store, &principal, &url);
+            let identity = device_sync_manager.native_class_identity_for_tenant(&principal.tenant_id)?;
+            if identity["tenantId"] != principal.tenant_id || identity["actorId"] != principal.uid {
+                return Err("tenant_scope_mismatch".into());
+            }
+            let _access = store.media_access(&principal.tenant_id)?;
+            let writes = matches!(request.method(), Method::Post | Method::Put | Method::Delete);
+            let result = password_vault::handle_http(&mut request, &store, &principal, &url)?;
+            if writes && result.0 < 300 {
+                backup::mark_external_sync_dirty(&store, &principal.tenant_id)?;
+            }
+            return Ok(result);
         }
 
         if path.starts_with("/v1/classaimate-mcp/") {
+            let _access = store.media_access(browser_tenant.as_deref().ok_or("browser_token_required")?)?;
             let tenant = browser_tenant
                 .clone()
                 .ok_or_else(|| "browser_token_required".to_string())?;
@@ -5174,8 +5225,26 @@ fn handle_request(
                 scope_tenant_id(explicit_tenant, browser_tenant.as_deref())?;
             }
         }
+        let buffered_body = std::cell::RefCell::new(None);
+        let store = if browser_tenant.is_none() {
+            let mut target = crate::query(&url, "tenantId");
+            if target.is_empty() && matches!(request.method(), Method::Post | Method::Put)
+                && request.body_length().is_some_and(|length| length > 0) {
+                let body = crate::read_body(&mut request)?;
+                target = normalize_tenant_id(body.get("tenantId"));
+                *buffered_body.borrow_mut() = Some(body);
+            }
+            if target.is_empty() { Arc::clone(&store) } else { store.for_tenant(&target)? }
+        } else { Arc::clone(&store) };
+        // Backup/sync own the outer backup-root lock. Canonical data requests
+        // hold both file scopes throughout their reads and writes.
+        let _data_access = if !path.starts_with("/v1/backups/")
+            && !path.starts_with("/v1/device-sync/") && !path.starts_with("/v1/browser-link/") {
+            match store.class_tenant.as_deref() { Some(tenant) => Some(store.media_access(tenant)?), None => None }
+        } else { None };
         let read_body = |request: &mut Request| -> Result<Value, String> {
-            scope_body_to_tenant(crate::read_body(request)?, browser_tenant.as_deref())
+            let body = match buffered_body.borrow_mut().take() { Some(body) => body, None => crate::read_body(request)? };
+            scope_body_to_tenant(body, browser_tenant.as_deref())
         };
         let assert_sync_scope = |status: &Value| -> Result<(), String> {
             let Some(expected) = browser_tenant.as_deref() else { return Ok(()); };
@@ -5191,7 +5260,7 @@ fn handle_request(
             if browser_tenant.is_none() || !browser_links.revoke_request_token(&request)? {
                 return Ok((401, json!({ "ok": false, "error": "unauthorized" })));
             }
-            let device_sync = device_sync_manager.disconnect();
+            let device_sync = device_sync_manager.disconnect_for_tenant(browser_tenant.as_deref().ok_or("browser_token_required")?);
             return match device_sync {
                 Ok(_) => Ok((200, json!({ "ok": true, "disconnected": true, "deviceCredentialRevoked": true }))),
                 Err(error) => Err(error),
@@ -6008,14 +6077,14 @@ fn handle_request(
         }
 
         if request.method() == &Method::Get && path == "/v1/device-sync/status" {
-            let status = device_sync_manager.status()?;
+            let status = match browser_tenant.as_deref() { Some(tenant)=>device_sync_manager.status_for_tenant(tenant)?,None=>device_sync_manager.status()? };
             assert_sync_scope(&status)?;
             return Ok((200, status));
         }
 
         if request.method() == &Method::Post && path == "/v1/device-sync/run" {
-            assert_sync_scope(&device_sync_manager.status()?)?;
-            let status = device_sync_manager.run_once(true)?;
+            let status = match browser_tenant.as_deref() { Some(tenant)=>device_sync_manager.run_once_for_tenant(tenant,true)?,None=>device_sync_manager.run_once(true)? };
+            assert_sync_scope(&status)?;
             return Ok((200, status));
         }
 
@@ -6098,6 +6167,8 @@ fn start_service() -> Result<(
     onedrive_download::configure_diagnostics(&paths.data_dir);
     let pairing_key = ensure_pairing_key(&paths.key_path)?;
     let store = Arc::new(SqliteStore::open(paths.db_path.clone())?);
+    // A pending multi-component operation remains blocked if recovery fails.
+    let _ = backup_restore_coordinator::recover_all(&store);
     let sync_manager = Arc::new(cloud_sync::CloudSyncManager::new(paths.data_dir.clone(), Arc::clone(&store)));
     let device_sync_manager = Arc::new(device_sync::DeviceSyncManager::new(
         paths.data_dir.clone(),
@@ -6159,13 +6230,52 @@ fn start_service() -> Result<(
     Ok((status, store, sync_manager, device_sync_manager, browser_links))
 }
 
+fn selected_local_tenant(state: &AppState, explicit: Option<String>) -> String {
+    explicit.filter(|value| !value.is_empty()).unwrap_or_else(|| state.device_sync_manager.lock().ok()
+        .and_then(|manager| manager.clone()).and_then(|manager| manager.sessions().ok())
+        .and_then(|value| value["selectedTenantId"].as_str().map(str::to_owned)).unwrap_or_default())
+}
+
 #[tauri::command]
-fn get_service_status(state: tauri::State<'_, AppState>) -> ServiceStatus {
-    state
-        .status
-        .lock()
-        .map(|status| status.clone())
-        .unwrap_or_else(|_| ServiceStatus::failed("status_lock_failed".to_string()))
+fn get_local_classes(state: tauri::State<'_, AppState>) -> Value {
+    state.device_sync_manager.lock().ok().and_then(|manager| manager.clone())
+        .and_then(|manager| manager.sessions().ok())
+        .unwrap_or_else(|| json!({"ok":false,"classes":[],"error":"device_sync_unavailable"}))
+}
+
+#[tauri::command]
+fn select_local_class(state: tauri::State<'_, AppState>, tenant_id: String) -> Value {
+    let result = (|| -> Result<Value,String> {
+        let manager = state.device_sync_manager.lock().map_err(|_|"device_sync_unavailable")?.clone().ok_or("device_sync_unavailable")?;
+        let sessions = manager.sessions()?;
+        if !sessions["classes"].as_array().is_some_and(|classes| classes.iter().any(|class| class["tenantId"] == tenant_id)) {
+            return Err("device_sync_session_required".into());
+        }
+        let root = state.store.lock().map_err(|_|"db_lock_failed")?.clone().ok_or("local_store_unavailable")?;
+        let scoped = native_class_authority::for_native_tenant(&state, &tenant_id)?;
+        let storage = scoped.class_storage_status(&tenant_id)?;
+        manager.select_tenant(&tenant_id)?;
+        Ok(json!({"ok":true,"tenantId":tenant_id,"storage":storage}))
+    })();
+    result.unwrap_or_else(|error|json!({"ok":false,"error":error}))
+}
+
+#[tauri::command]
+fn get_service_status(state: tauri::State<'_, AppState>, tenant_id: Option<String>) -> Value {
+    let status = state.status.lock().map(|status|status.clone()).unwrap_or_else(|_|ServiceStatus::failed("status_lock_failed".into()));
+    let mut value = serde_json::to_value(status).unwrap_or_else(|_|json!({"ok":false}));
+    let tenant = selected_local_tenant(&state,tenant_id);
+    if !tenant.is_empty() {
+        match native_class_authority::for_native_tenant(&state, &tenant) {
+            Ok(store) => {
+                value["tenantId"]=json!(tenant); value["dbPath"]=json!(store.db_path.to_string_lossy());
+                value["storage"]=store.class_storage_status(&tenant).unwrap_or_else(|error|json!({"tenantId":tenant,"ready":false,"layout":"class_files_v1","migrationState":"blocked","error":error}));
+            }
+            Err(error) => { value["storage"]=json!({"tenantId":tenant,"ready":false,"layout":"class_files_v1","migrationState":"blocked","error":error}); }
+        }
+    }
+    value["features"]=json!(LOCAL_SENSITIVE_STORE_FEATURES);
+    value
 }
 
 fn device_authorization_api_url() -> String {
@@ -6258,6 +6368,7 @@ fn start_device_authorization(state: tauri::State<'_, AppState>) -> Value {
         "deviceName": status.pc_name,
         "platformLabel": format!("{} {}", status.os, status.arch).trim().to_string(),
         "appVersion": env!("CARGO_PKG_VERSION"),
+        "classScopedDatabasesV1": true,
         "deviceInstanceId": instance_id
     });
     let created = match device_api_response(agent.post(&device_authorization_api_url()).send_json(payload)).and_then(device_api_data) {
@@ -6362,14 +6473,14 @@ fn poll_device_authorization(state: tauri::State<'_, AppState>) -> Value {
     let browser_links = match state.browser_links.lock().ok().and_then(|value| value.clone()) {
         Some(store) => store,
         None => {
-            let _ = device_sync_manager.disconnect();
+            let _ = device_sync_manager.disconnect_for_tenant(consumed["tenantId"].as_str().unwrap_or_default());
             return json!({ "ok": false, "status": "approved", "error": "local_store_service_unavailable" });
         }
     };
     let link = match browser_links.issue_for_request(&pending.request_id, &consumed) {
         Ok(link) => link,
         Err(error) => {
-            let _ = device_sync_manager.disconnect();
+            let _ = device_sync_manager.disconnect_for_tenant(consumed["tenantId"].as_str().unwrap_or_default());
             return json!({ "ok": false, "status": "approved", "error": error });
         }
     };
@@ -6402,8 +6513,10 @@ fn get_cloud_sync_status(state: tauri::State<'_, AppState>) -> Value {
 }
 
 #[tauri::command]
-fn get_device_connection_status(state: tauri::State<'_, AppState>) -> Value {
-    state.browser_links.lock().ok().and_then(|store| store.clone()).and_then(|store| store.latest())
+fn get_device_connection_status(state: tauri::State<'_, AppState>, tenant_id: Option<String>) -> Value {
+    let tenant = selected_local_tenant(&state,tenant_id);
+    if let Err(error) = native_class_authority::authorize_native_tenant(&state,&tenant) { return json!({"ok":false,"connected":false,"error":error}); }
+    state.browser_links.lock().ok().and_then(|store| store.clone()).and_then(|store| store.latest_for_tenant(&tenant))
         .map(|link| json!({ "ok": true, "connected": true, "tenantId": link.tenant_id, "tenantName": link.tenant_name,
             "uid": link.uid, "accountEmail": link.account_email, "accountDisplayName": link.account_display_name,
             "connectedAtMs": link.created_at_ms }))
@@ -6411,18 +6524,21 @@ fn get_device_connection_status(state: tauri::State<'_, AppState>) -> Value {
 }
 
 #[tauri::command]
-fn get_quick_observation_context(state: tauri::State<'_, AppState>) -> Value {
+fn get_quick_observation_context(state: tauri::State<'_, AppState>, tenant_id: Option<String>) -> Value {
     let store = match state.store.lock().ok().and_then(|value| value.clone()) {
         Some(store) => store,
         None => return json!({ "ok": false, "error": "local_store_unavailable" }),
     };
+    let tenant = selected_local_tenant(&state,tenant_id);
     let link = state
         .browser_links
         .lock()
         .ok()
         .and_then(|value| value.clone())
-        .and_then(|store| store.latest());
-    quick_observation::context(&store, link)
+        .and_then(|store| store.latest_for_tenant(&tenant));
+    let link = link.filter(|link| link.tenant_id == tenant);
+    let scoped = match native_class_authority::for_native_tenant(&state, &tenant) { Ok(store)=>store,Err(error)=>return json!({"ok":false,"error":error}) };
+    scoped.with_class_access(|store| quick_observation::context(store, link))
         .unwrap_or_else(|error| json!({ "ok": false, "error": error }))
 }
 
@@ -6432,12 +6548,13 @@ fn save_quick_observation_batch(state: tauri::State<'_, AppState>, input: Value)
         Some(store) => store,
         None => return json!({ "ok": false, "error": "local_store_unavailable" }),
     };
+    let tenant = selected_local_tenant(&state,input["tenantId"].as_str().map(str::to_owned));
     let link = match state
         .browser_links
         .lock()
         .ok()
         .and_then(|value| value.clone())
-        .and_then(|store| store.latest())
+        .and_then(|store| store.latest_for_tenant(&tenant))
     {
         Some(link) => link,
         None => return json!({ "ok": false, "error": "quick_observation_connection_required" }),
@@ -6446,11 +6563,12 @@ fn save_quick_observation_batch(state: tauri::State<'_, AppState>, input: Value)
     if !explicit.is_empty() && explicit != link.tenant_id {
         return json!({ "ok": false, "error": "tenant_scope_mismatch" });
     }
-    let result = quick_observation::save_batch(&store, &link.tenant_id, input)
+    let store = match native_class_authority::for_native_tenant(&state, &link.tenant_id) { Ok(store)=>store,Err(error)=>return json!({"ok":false,"error":error}) };
+    let result = store.with_class_access(|store| quick_observation::save_batch(store, &link.tenant_id, input))
         .unwrap_or_else(|error| json!({ "ok": false, "error": error }));
     if result["ok"] == true {
         if let Some(manager) = state.device_sync_manager.lock().ok().and_then(|m| m.clone()) {
-            thread::spawn(move || { let _ = manager.flush_observation_receipts(); });
+            thread::spawn(move || { let _ = manager.for_tenant(&tenant).and_then(|scoped|scoped.flush_observation_receipts()); });
         }
     }
     result
@@ -6472,7 +6590,9 @@ fn acknowledge_desktop_activation_intent(
 }
 
 #[tauri::command]
-fn prepare_teacher_home_bridge(state: tauri::State<'_, AppState>) -> Value {
+fn prepare_teacher_home_bridge(state: tauri::State<'_, AppState>, tenant_id: Option<String>) -> Value {
+    let tenant = selected_local_tenant(&state,tenant_id);
+    if let Err(error) = native_class_authority::authorize_native_tenant(&state,&tenant) { return json!({"ok":false,"connected":false,"error":error}); }
     let browser_links = match state
         .browser_links
         .lock()
@@ -6483,7 +6603,7 @@ fn prepare_teacher_home_bridge(state: tauri::State<'_, AppState>) -> Value {
         None => return json!({ "ok": false, "connected": false, "error": "local_store_service_unavailable" }),
     };
     let request_id = random_url_token();
-    match browser_links.issue_desktop_for_request(&request_id) {
+    match browser_links.issue_desktop_for_request(&request_id,&tenant) {
         Ok(link) => json!({
             "ok": true,
             "connected": true,
@@ -6592,11 +6712,13 @@ async fn create_teacher_home_webview(app: tauri::AppHandle, options: TeacherHome
 }
 
 #[tauri::command]
-async fn get_device_sync_status(state: tauri::State<'_, AppState>) -> Result<Value, String> {
+async fn get_device_sync_status(state: tauri::State<'_, AppState>, tenant_id: Option<String>) -> Result<Value, String> {
     let Some(manager) = state.device_sync_manager.lock().ok().and_then(|manager| manager.clone()) else {
         return Ok(json!({ "ok": false, "connected": false, "error": "device_sync_unavailable" }));
     };
-    Ok(match tauri::async_runtime::spawn_blocking(move || manager.status()).await {
+    let tenant=selected_local_tenant(&state,tenant_id);
+    native_class_authority::authorize_native_tenant(&state,&tenant)?;
+    Ok(match tauri::async_runtime::spawn_blocking(move || manager.status_for_tenant(&tenant)).await {
         Ok(Ok(status)) => status,
         Ok(Err(error)) => json!({ "ok": false, "connected": false, "error": error }),
         Err(_) => json!({ "ok": false, "connected": false, "error": "device_sync_status_failed" }),
@@ -6604,11 +6726,13 @@ async fn get_device_sync_status(state: tauri::State<'_, AppState>) -> Result<Val
 }
 
 #[tauri::command]
-async fn run_device_sync_now(state: tauri::State<'_, AppState>) -> Result<Value, String> {
+async fn run_device_sync_now(state: tauri::State<'_, AppState>, tenant_id: Option<String>) -> Result<Value, String> {
     let Some(manager) = state.device_sync_manager.lock().ok().and_then(|manager| manager.clone()) else {
         return Ok(json!({ "ok": false, "error": "device_sync_unavailable" }));
     };
-    Ok(match tauri::async_runtime::spawn_blocking(move || manager.run_once(true)).await {
+    let tenant=selected_local_tenant(&state,tenant_id);
+    native_class_authority::authorize_native_tenant(&state,&tenant)?;
+    Ok(match tauri::async_runtime::spawn_blocking(move || manager.run_once_for_tenant(&tenant,true)).await {
         Ok(Ok(status)) => status,
         Ok(Err(error)) => json!({ "ok": false, "error": error }),
         Err(_) => json!({ "ok": false, "error": "device_sync_failed" }),
@@ -6616,42 +6740,23 @@ async fn run_device_sync_now(state: tauri::State<'_, AppState>) -> Result<Value,
 }
 
 #[tauri::command]
-fn disconnect_local_store(state: tauri::State<'_, AppState>) -> Value {
-    let cloud_sync_result = state
-        .sync_manager
-        .lock()
-        .ok()
-        .and_then(|manager| manager.clone())
-        .map(|manager| manager.disconnect())
-        .unwrap_or_else(|| Ok(json!({ "ok": true, "connected": false })));
-    let device_sync_result = state
-        .device_sync_manager
-        .lock()
-        .ok()
-        .and_then(|manager| manager.clone())
-        .map(|manager| manager.disconnect())
-        .unwrap_or_else(|| Ok(json!({ "ok": true, "connected": false })));
-    let link_result = state
-        .browser_links
-        .lock()
-        .ok()
-        .and_then(|store| store.clone())
-        .map(|store| store.revoke_all())
-        .unwrap_or(Ok(()));
-    if let Ok(mut pending) = state.pending_device_authorization.lock() {
-        *pending = None;
-    }
-    match (cloud_sync_result, device_sync_result, link_result) {
-        (Ok(_), Ok(_), Ok(())) => json!({ "ok": true, "connected": false, "localDataPreserved": true }),
-        (cloud_sync, device_sync, links) => json!({
-            "ok": false,
-            "connected": false,
-            "localDataPreserved": true,
-            "error": device_sync.err()
-                .or_else(|| cloud_sync.err())
-                .or_else(|| links.err())
-                .unwrap_or_else(|| "disconnect_failed".to_string())
-        }),
+fn disconnect_local_store(state: tauri::State<'_, AppState>, tenant_id: Option<String>) -> Value {
+    let tenant = selected_local_tenant(&state,tenant_id);
+    if let Err(error) = native_class_authority::authorize_native_tenant(&state,&tenant) { return json!({"ok":false,"connected":false,"error":error}); }
+    if tenant.is_empty() { return json!({"ok":false,"error":"tenant_id_required"}); }
+    let cloud_sync_result = state.sync_manager.lock().ok().and_then(|manager|manager.clone())
+        .map(|manager| match manager.status() {
+            Ok(status) if status["tenantId"] == tenant => manager.disconnect(),
+            Ok(_) => Ok(json!({"ok":true,"otherClassPreserved":true})), Err(error)=>Err(error),
+        }).unwrap_or_else(||Ok(json!({"ok":true})));
+    let device_sync_result = state.device_sync_manager.lock().ok().and_then(|manager|manager.clone())
+        .map(|manager|manager.disconnect_for_tenant(&tenant)).unwrap_or_else(||Ok(json!({"ok":true})));
+    let link_result = state.browser_links.lock().ok().and_then(|store|store.clone())
+        .map(|store|store.revoke_tenant(&tenant)).unwrap_or(Ok(()));
+    match (cloud_sync_result,device_sync_result,link_result) {
+        (Ok(_),Ok(_),Ok(())) => json!({"ok":true,"tenantId":tenant,"connected":false,"localDataPreserved":true,"otherClassesPreserved":true}),
+        (cloud,device,links) => json!({"ok":false,"tenantId":tenant,"localDataPreserved":true,
+            "error":device.err().or_else(||cloud.err()).or_else(||links.err()).unwrap_or_else(||"disconnect_failed".into())})
     }
 }
 
@@ -6702,6 +6807,7 @@ async fn get_backup_status(
     let Some(store) = state.store.lock().ok().and_then(|store| store.clone()) else {
         return Ok(json!({ "ok": false, "error": "local_store_unavailable" }));
     };
+    let store = native_class_authority::for_native_tenant(&state, &tenant_id)?;
     Ok(match tauri::async_runtime::spawn_blocking(move || backup::status(&store, tenant_id)).await {
         Ok(Ok(value)) => value,
         Ok(Err(error)) => json!({ "ok": false, "error": error }),
@@ -6720,6 +6826,7 @@ async fn get_backup_storage_overview(
     let Some(store) = state.store.lock().ok().and_then(|store| store.clone()) else {
         return Ok(json!({ "ok": false, "error": "local_store_unavailable" }));
     };
+    let store = native_class_authority::for_native_tenant(&state, &tenant_id)?;
     Ok(match tauri::async_runtime::spawn_blocking(move || backup::storage_overview(&store, tenant_id)).await {
         Ok(Ok(value)) => value,
         Ok(Err(error)) => json!({ "ok": false, "error": error }),
@@ -6735,6 +6842,7 @@ async fn preview_legacy_backup_cleanup(
     let Some(store) = state.store.lock().ok().and_then(|store| store.clone()) else {
         return Ok(json!({ "ok": false, "error": "local_store_unavailable" }));
     };
+    let store = native_class_authority::for_native_tenant(&state, &tenant_id)?;
     Ok(match tauri::async_runtime::spawn_blocking(move || backup::preview_legacy_cleanup(&store, tenant_id)).await {
         Ok(Ok(value)) => value,
         Ok(Err(error)) => json!({ "ok": false, "error": error }),
@@ -6751,6 +6859,7 @@ async fn apply_legacy_backup_cleanup(
     let Some(store) = state.store.lock().ok().and_then(|store| store.clone()) else {
         return Ok(json!({ "ok": false, "error": "local_store_unavailable" }));
     };
+    let store = native_class_authority::for_native_tenant(&state, &tenant_id)?;
     Ok(match tauri::async_runtime::spawn_blocking(move || backup::apply_legacy_cleanup(&store, tenant_id, preview_token)).await {
         Ok(Ok(value)) => value,
         Ok(Err(error)) => json!({ "ok": false, "error": error }),
@@ -6766,6 +6875,7 @@ async fn undo_legacy_backup_cleanup(
     let Some(store) = state.store.lock().ok().and_then(|store| store.clone()) else {
         return Ok(json!({ "ok": false, "error": "local_store_unavailable" }));
     };
+    let store = native_class_authority::for_native_tenant(&state, &tenant_id)?;
     Ok(match tauri::async_runtime::spawn_blocking(move || backup::undo_legacy_cleanup(&store, tenant_id)).await {
         Ok(Ok(value)) => value,
         Ok(Err(error)) => json!({ "ok": false, "error": error }),
@@ -6778,6 +6888,7 @@ async fn set_backup_folder(state: tauri::State<'_, AppState>, tenant_id: String,
     let Some(store) = state.store.lock().ok().and_then(|store| store.clone()) else {
         return Ok(json!({ "ok": false, "error": "local_store_unavailable" }));
     };
+    let store = native_class_authority::for_native_tenant(&state, &tenant_id)?;
     Ok(match tauri::async_runtime::spawn_blocking(move || backup::set_folder(&store, tenant_id, folder_path)).await {
         Ok(Ok(value)) => value,
         Ok(Err(error)) => json!({ "ok": false, "error": error }),
@@ -6790,6 +6901,7 @@ async fn run_local_backup(state: tauri::State<'_, AppState>, tenant_id: String) 
     let Some(store) = state.store.lock().ok().and_then(|store| store.clone()) else {
         return Ok(json!({ "ok": false, "error": "local_store_unavailable" }));
     };
+    let store = native_class_authority::for_native_tenant(&state, &tenant_id)?;
     Ok(match tauri::async_runtime::spawn_blocking(move || backup::run_now(&store, tenant_id)).await {
         Ok(Ok(value)) => value,
         Ok(Err(error)) => json!({ "ok": false, "error": error }),
@@ -6818,6 +6930,7 @@ async fn list_local_backups(
     let Some(store) = state.store.lock().ok().and_then(|store| store.clone()) else {
         return Ok(json!({ "ok": false, "backups": [], "error": "local_store_unavailable" }));
     };
+    let store = native_class_authority::for_native_tenant(&state, &tenant_id)?;
     Ok(match tauri::async_runtime::spawn_blocking(move || backup::list_backups(&store, tenant_id, limit)).await {
         Ok(Ok(value)) => value,
         Ok(Err(error)) => json!({ "ok": false, "backups": [], "error": error }),
@@ -6834,6 +6947,7 @@ async fn delete_manual_backup(
     let Some(store) = state.store.lock().ok().and_then(|store| store.clone()) else {
         return Ok(json!({ "ok": false, "error": "local_store_unavailable" }));
     };
+    let store = native_class_authority::for_native_tenant(&state, &tenant_id)?;
     Ok(match tauri::async_runtime::spawn_blocking(move || backup::delete_manual_backup(&store, tenant_id, manifest_path)).await {
         Ok(Ok(value)) => value,
         Ok(Err(error)) => json!({ "ok": false, "error": error }),
@@ -6851,6 +6965,7 @@ async fn preview_local_backup_restore(
         Some(store) => store,
         None => return Ok(json!({ "ok": false, "error": "local_store_unavailable" })),
     };
+    let store = native_class_authority::for_native_tenant(&state, &tenant_id)?;
     Ok(match tauri::async_runtime::spawn_blocking(move || backup::restore_preview(
         &store,
         json!({ "tenantId": tenant_id, "manifestPath": manifest_path }),
@@ -6878,6 +6993,7 @@ async fn restore_local_backup(
         Some(store) => store,
         None => return Ok(json!({ "ok": false, "error": "local_store_unavailable" })),
     };
+    let store = native_class_authority::for_native_tenant(&state, &tenant_id)?;
     Ok(match tauri::async_runtime::spawn_blocking(move || {
         // The callback may run under the SQLite lock. Emit the bounded observation only.
         let mut publish = |progress: backup::RestoreProgress| {
@@ -6901,6 +7017,7 @@ fn get_local_overview(state: tauri::State<'_, AppState>, tenant_id: String) -> V
         .lock()
         .ok()
         .and_then(|store| store.clone())
+        .and_then(|_| native_class_authority::for_native_tenant(&state, &tenant_id).ok())
         .and_then(|store| store.overview(tenant_id).ok())
         .unwrap_or_else(|| json!({ "ok": false, "error": "local_overview_failed" }))
 }
@@ -6923,7 +7040,8 @@ fn list_local_data_section(
         Some(store) => store,
         None => return json!({ "ok": false, "error": "local_store_unavailable" }),
     };
-    let result = match safe_route.as_str() {
+    let store = match native_class_authority::for_native_tenant(&state, &tenant_id) { Ok(store) => store, Err(error) => return json!({"ok":false,"error":error}) };
+    let result = store.with_class_access(|store| match safe_route.as_str() {
         "/v1/observations" => store.list_observations(tenant_id.clone(), String::new(), String::new(), String::new(), 0, String::new()),
         "/v1/teacher-counseling-sessions" => store.list_teacher_counseling_sessions(tenant_id.clone(), String::new(), String::new(), false, safe_limit),
         "/v1/student-private-details" => store.list_student_private_details(tenant_id.clone(), String::new()),
@@ -6941,7 +7059,7 @@ fn list_local_data_section(
         "/v1/student-record-drafts" => store.list_student_record_drafts(tenant_id.clone(), String::new(), String::new(), String::new(), safe_limit),
         "/v1/import-runs" => store.list_import_runs(tenant_id, String::new(), String::new(), safe_limit),
         _ => Err("local_data_section_unsupported".to_string()),
-    };
+    });
     match result {
         Ok(records) => json!({ "ok": true, "records": records }),
         Err(error) => json!({ "ok": false, "error": error }),
@@ -7096,7 +7214,7 @@ mod device_authorization_tests {
             .expect("issue previous link");
         let request_id = random_url_token();
         let desktop = store
-            .issue_desktop_for_request(&request_id)
+            .issue_desktop_for_request(&request_id,"tenant-a")
             .expect("issue desktop bridge link");
 
         assert_ne!(previous.token, desktop.token);
@@ -7115,7 +7233,7 @@ mod device_authorization_tests {
 
         let next_request_id = random_url_token();
         let next_desktop = store
-            .issue_desktop_for_request(&next_request_id)
+            .issue_desktop_for_request(&next_request_id,"tenant-a")
             .expect("replace desktop bridge link");
         assert_ne!(desktop.token, next_desktop.token);
         assert!(store.authorize_token(&desktop.token).is_none());
@@ -7368,6 +7486,7 @@ pub async fn run_student_record_mcp_stdio() -> Result<(), String> {
     fs::create_dir_all(&paths.data_dir)
         .map_err(|error| format!("data_dir_create_failed:{error}"))?;
     let store = Arc::new(SqliteStore::open(paths.db_path)?);
+    let _ = backup_restore_coordinator::recover_all(&store);
     let device_sync_manager = Arc::new(device_sync::DeviceSyncManager::new(
         paths.data_dir.clone(),
         Arc::clone(&store),
@@ -7452,6 +7571,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             desktop_local_transport::teacher_local_request,
             get_service_status,
+            get_local_classes,
+            select_local_class,
             get_cloud_sync_status,
             get_device_connection_status,
             get_quick_observation_context,

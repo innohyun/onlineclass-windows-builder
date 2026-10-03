@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { captureLocalClassRequest, isCurrentLocalClassRequest } from './local-class-context';
 
 type WorkNotePage = { pageId: string; parentId?: string | null; title: string; emoji: string; position: number; properties?: Record<string, unknown>; blocks?: Block[]; markdown?: string; updatedAtMs?: number };
 type WorkNoteAttachment = { attachmentId: string; mediaId: string; pageId: string; blockId: string; fileName: string; contentType: string; size: number };
@@ -184,7 +185,9 @@ function openTutorial() { tutorialIndex = 0; renderTutorial(); }
 function closeTutorial() { tutorialIndex = -1; document.querySelectorAll('.local-reader-tutorial-target').forEach((node) => node.classList.remove('local-reader-tutorial-target')); const panel = document.getElementById('workNoteReaderTutorial'); if (panel) panel.hidden = true; }
 
 export async function openWorkNoteReader(nextTenantId: string, pageId: string) {
+  const request = captureLocalClassRequest();
   const result = await invoke<WorkNoteView>('get_local_work_note_view', { tenantId: nextTenantId, pageId });
+  if (!isCurrentLocalClassRequest(request)) return;
   if (result?.ok === false) throw new Error(result.error || 'work_note_reader_failed');
   workspaceMode = ''; tenantId = nextTenantId; pages = new Map((result.pages || []).map((page) => [page.pageId, page])); attachments = result.attachments || [];
   el('workNoteReader').hidden = false; renderPage(result.selectedPageId || result.rootPageId || pageId);
@@ -193,15 +196,19 @@ export async function openWorkNoteReader(nextTenantId: string, pageId: string) {
 
 async function loadWorkspacePage(pageId: string) {
   if (!workspaceMode || !pageId) return;
+  const request = captureLocalClassRequest();
   el('workNoteReaderStatus').textContent = '선택한 원문과 첨부 정보를 불러오는 중입니다.';
   const result = await invoke<WorkspacePage>('get_local_workspace_page', { tenantId, workspace: workspaceMode, pageId });
+  if (!isCurrentLocalClassRequest(request)) return;
   if (result?.ok === false || !result.page) throw new Error(result.error || 'local_workspace_page_failed');
   pages.set(result.page.pageId, result.page); attachments = result.attachments || []; renderPage(result.page.pageId);
   el('workNoteReaderStatus').textContent = '로컬 DB 원문 · 인터넷 없이 열람 가능 · 편집은 교사 홈에서 합니다.';
 }
 
 export async function openWorkspaceWorkNoteReader(nextTenantId: string, workspace: LocalWorkspace, requestedPageId = '') {
+  const request = captureLocalClassRequest();
   const result = await invoke<WorkspaceTree>('get_local_workspace_tree', { tenantId: nextTenantId, workspace });
+  if (!isCurrentLocalClassRequest(request)) return;
   if (result?.ok === false) throw new Error(result.error || 'local_workspace_tree_failed');
   workspaceMode = workspace; tenantId = nextTenantId; pages = new Map((result.pages || []).map((page) => [page.pageId, page])); attachments = [];
   const firstRoot = [...pages.values()].find((page) => !page.parentId) || [...pages.values()][0];
@@ -212,6 +219,7 @@ export async function openWorkspaceWorkNoteReader(nextTenantId: string, workspac
 }
 
 export function initWorkNoteReader() {
+  window.addEventListener('desk:class-changed', () => { el('workNoteReader').hidden=true; tenantId=''; pages.clear(); attachments=[]; workspaceMode=''; closeTutorial(); });
   el('workNoteReaderClose').addEventListener('click', () => { el('workNoteReader').hidden = true; pages.clear(); attachments = []; workspaceMode = ''; closeTutorial(); });
   el('workNoteReaderHelp').addEventListener('click', openTutorial);
   el('workNoteReaderTutorialClose').addEventListener('click', closeTutorial);

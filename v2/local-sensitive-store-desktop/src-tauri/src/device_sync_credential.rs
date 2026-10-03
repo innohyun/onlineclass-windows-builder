@@ -1,5 +1,9 @@
 use keyring::Entry;
 use std::path::PathBuf;
+use std::sync::Mutex;
+
+// Separate class sessions share one OS/DPAPI credential file.
+static CREDENTIAL_LOCK: Mutex<()> = Mutex::new(());
 
 #[cfg(all(test, target_os = "macos"))]
 #[path = "device_sync_credential_macos_tests.rs"]
@@ -13,6 +17,10 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 #[cfg(target_os = "windows")]
 use std::fs;
+#[cfg(target_os = "windows")]
+use std::io::Write;
+#[cfg(target_os = "windows")]
+use fs2::FileExt;
 
 const KEYRING_SERVICE: &str = "OnlineClassLocalSensitiveStore";
 #[cfg(target_os = "windows")]
@@ -155,6 +163,16 @@ impl DeviceSyncCredentialStore {
     }
 
     #[cfg(target_os = "windows")]
+    fn file_lock(&self) -> Result<fs::File, String> {
+        let parent = self.credential_path.parent().ok_or("device_sync_credential_dir_required")?;
+        fs::create_dir_all(parent).map_err(|e| format!("device_sync_credential_file_dir_failed:{e}"))?;
+        let file = fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
+            .open(parent.join("device-sync-credentials.lock")).map_err(|e| format!("device_sync_credential_lock_failed:{e}"))?;
+        file.lock_exclusive().map_err(|e| format!("device_sync_credential_lock_failed:{e}"))?;
+        Ok(file)
+    }
+
+    #[cfg(target_os = "windows")]
     fn load_file(&self) -> Result<CredentialFile, String> {
         if !self.credential_path.exists() {
             return Ok(CredentialFile::default());
@@ -173,8 +191,12 @@ impl DeviceSyncCredentialStore {
         }
         let raw = serde_json::to_string_pretty(credential_file)
             .map_err(|error| format!("device_sync_credential_file_encode_failed:{error}"))?;
-        fs::write(&self.credential_path, format!("{raw}\n"))
-            .map_err(|error| format!("device_sync_credential_file_write_failed:{error}"))
+        let temporary = self.credential_path.with_extension("json.tmp");
+        let mut file = fs::File::create(&temporary).map_err(|error| format!("device_sync_credential_file_write_failed:{error}"))?;
+        file.write_all(format!("{raw}\n").as_bytes()).and_then(|_| file.sync_all())
+            .map_err(|error| format!("device_sync_credential_file_write_failed:{error}"))?;
+        drop(file);
+        fs::rename(&temporary, &self.credential_path).map_err(|error| format!("device_sync_credential_file_write_failed:{error}"))
     }
 
     #[cfg(target_os = "windows")]
@@ -227,6 +249,9 @@ impl DeviceSyncCredentialStore {
     }
 
     pub(crate) fn store(&self, account: &str, credential: &str) -> Result<String, String> {
+        let _guard = CREDENTIAL_LOCK.lock().map_err(|_| "device_sync_credential_lock_failed")?;
+        #[cfg(target_os = "windows")]
+        let _file_guard = self.file_lock()?;
         if !valid_credential(credential) {
             return Err("device_sync_credential_invalid".to_string());
         }
@@ -282,6 +307,9 @@ impl DeviceSyncCredentialStore {
     }
 
     pub(crate) fn read(&self, account: &str) -> Result<String, String> {
+        let _guard = CREDENTIAL_LOCK.lock().map_err(|_| "device_sync_credential_lock_failed")?;
+        #[cfg(target_os = "windows")]
+        let _file_guard = self.file_lock()?;
         let keyring_result = keyring_entry(account).and_then(|entry| {
             entry
                 .get_password()
@@ -320,6 +348,9 @@ impl DeviceSyncCredentialStore {
     }
 
     pub(crate) fn delete(&self, account: &str) {
+        let Ok(_guard) = CREDENTIAL_LOCK.lock() else { return; };
+        #[cfg(target_os = "windows")]
+        let Ok(_file_guard) = self.file_lock() else { return; };
         if let Ok(entry) = keyring_entry(account) {
             let _ = entry.delete_credential();
         }

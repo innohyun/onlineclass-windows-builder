@@ -24,7 +24,9 @@ fn board_mode(payload: &Value) -> String {
 }
 
 #[tauri::command]
-pub(crate) fn search_shared_archive_boards(tenant_id: String, query: String, limit: i64) -> Value {
+pub(crate) fn search_shared_archive_boards(state: tauri::State<'_,crate::AppState>, tenant_id: String, query: String, limit: i64) -> Value {
+    let scoped = match crate::native_class_authority::for_native_tenant(&state,&tenant_id) { Ok(store)=>store, Err(error)=>return json!({"ok":false,"error":error}) };
+    let _access = match scoped.media_access(&tenant_id) { Ok(guard)=>guard, Err(error)=>return json!({"ok":false,"error":error}) };
     match search_archive_boards(&tenant_id, &query, limit) {
         Ok((total, boards)) => json!({"ok":true,"total":total,"boards":boards}),
         Err(error) => json!({"ok":false,"total":0,"boards":[],"error":error}),
@@ -39,7 +41,7 @@ fn search_archive_boards(
     if tenant_id.trim().is_empty() {
         return Err("archive_tenant_missing".to_string());
     }
-    let connection = open_db()?;
+    let connection = super::shared_archive::open_db_for_tenant(tenant_id)?;
     let bounded = limit.clamp(1, 100) as usize;
     let needle = query.trim().to_lowercase();
     let mut statement = connection
@@ -103,8 +105,10 @@ fn search_archive_boards(
 }
 
 #[tauri::command]
-pub(crate) fn get_shared_archive_board_view(tenant_id: String, archive_id: String) -> Value {
-    let result = open_db().and_then(|connection| {
+pub(crate) fn get_shared_archive_board_view(state: tauri::State<'_,crate::AppState>, tenant_id: String, archive_id: String) -> Value {
+    let scoped = match crate::native_class_authority::for_native_tenant(&state,&tenant_id) { Ok(store)=>store, Err(error)=>return json!({"ok":false,"error":error}) };
+    let _access = match scoped.media_access(&tenant_id) { Ok(guard)=>guard, Err(error)=>return json!({"ok":false,"error":error}) };
+    let result = super::shared_archive::open_db_for_tenant(&tenant_id).and_then(|connection| {
         archive_board_view_from_connection(&connection, &tenant_id, &archive_id)
     });
     match result {

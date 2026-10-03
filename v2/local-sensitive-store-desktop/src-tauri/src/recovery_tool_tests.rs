@@ -31,6 +31,15 @@ fn fixture() -> Fixture {
     }
 }
 
+#[test]
+fn offline_single_database_recovery_rejects_known_class_layout_without_class_files() {
+    let f=fixture();
+    fs::create_dir_all(f.target.join("class-migrations")).unwrap();
+    fs::write(f.target.join("class-migrations/known.activated.json"),b"{}").unwrap();
+    assert_eq!(locked_store(&f.target).err().unwrap(),error("recovery_class_layout_requires_coordinated_restore"));
+    assert!(!f.target.join("classes").exists());
+}
+
 fn note(store: &SqliteStore, key: &str, text: &str, time: i64) {
     store.conn.lock().unwrap().execute("INSERT INTO student_private_details VALUES('tenant-a',?1,?2,?3) ON CONFLICT(tenant_id,student_code) DO UPDATE SET payload_json=excluded.payload_json,updated_at_ms=excluded.updated_at_ms",params![key,json!({"text":text}).to_string(),time]).unwrap();
 }

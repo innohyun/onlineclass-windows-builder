@@ -722,11 +722,8 @@ pub(crate) fn ensure_schema(conn: &Connection) -> Result<(), String> {
         result_json TEXT NOT NULL,local_ref TEXT NOT NULL,created_at_ms INTEGER NOT NULL,
         PRIMARY KEY(tenant_id,receipt_id)) WITHOUT ROWID,STRICT;
     "#).map_err(|e|format!("db_classaimate_mcp_schema_failed:{e}"))?;
-    conn.execute(
-        "DELETE FROM classaimate_mcp_local_write_receipts WHERE created_at_ms<?1",
-        params![now_ms() - LOCAL_RECEIPT_TTL_MS],
-    )
-    .map_err(|e| format!("db_classaimate_mcp_receipt_cleanup_failed:{e}"))?;
+    // Opening the shared legacy database must not prune class receipts before
+    // physical migration. Guarded class replay performs the existing TTL cleanup.
     Ok(())
 }
 

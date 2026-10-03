@@ -192,6 +192,7 @@ export async function openArchiveBoardViewer(tenantId: string, archiveId: string
   catch (error) { if (token !== boardEpoch || isDeskRestoreBlocked()) return; throw error; }
   if (token !== boardEpoch || isDeskRestoreBlocked()) return;
   if (result?.ok === false || !result.board) throw new Error(result.error || 'archive_board_open_failed');
+  if (result.board.meta.tenantId !== tenantId) throw new Error('archive_board_tenant_mismatch');
   currentTenantId = tenantId;
   currentBoard = result.board;
   el('archiveBoardViewerClose').textContent = `‹ ${options.returnLabel || '전체 검색'}로 돌아가기`;
@@ -228,6 +229,7 @@ export function initArchiveBoardExplorer() {
   window.addEventListener('desk:student-privacy-changed', refreshPrivacy);
   window.addEventListener('desk:restore-lock-changed', refreshPrivacy);
   window.addEventListener('desk:view-changed', hideViewer);
+  window.addEventListener('desk:class-changed', hideViewer);
   refreshPrivacy();
   el('archiveBoardViewerClose').addEventListener('click', closeViewer);
   el('archiveBoardViewerHelp').addEventListener('click', openTutorial);

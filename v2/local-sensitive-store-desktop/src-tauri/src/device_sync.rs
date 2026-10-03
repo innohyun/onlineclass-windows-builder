@@ -3,6 +3,8 @@ use crate::{backup, local_arch, local_os_name, local_pc_name, normalize_json_tex
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use fs2::FileExt;
+use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -11,7 +13,8 @@ use std::thread;
 use std::time::Duration;
 use url::Url;
 
-const SESSION_FILE_NAME: &str = "device-sync-session.json";
+const SESSION_FILE_NAME: &str = "device-sync-sessions.json";
+const LEGACY_SESSION_FILE_NAME: &str = "device-sync-session.json";
 const DEFAULT_API_ROOT: &str = "https://t.classaimate.com/api/v3/local-store-sync";
 const IDLE_PUBLISH_MS: i64 = 30 * 1000;
 const MAX_DIRTY_MS: i64 = 5 * 60 * 1000;
@@ -33,13 +36,22 @@ struct DeviceSyncSession {
     keyring_account: String,
     credential_storage: String,
     connected_at_ms: i64,
+    tenant_name: String,
+    school_name: String,
+    academic_year: i64,
+    grade: i64,
+    class_number: i64,
+    lifecycle_status: String,
 }
 
 pub(crate) struct DeviceSyncManager {
     session_path: PathBuf,
     credential_store: DeviceSyncCredentialStore,
     store: Arc<SqliteStore>,
-    sync_lock: Mutex<()>,
+    sync_lock: Arc<Mutex<()>>,
+    session_lock: Arc<Mutex<()>>,
+    tenant_locks: Arc<Mutex<BTreeMap<String, Arc<Mutex<()>>>>>,
+    scoped_tenant: Option<String>,
     #[cfg(test)]
     test_api_root: Option<String>,
     #[cfg(test)]
@@ -122,6 +134,8 @@ fn checkpoint_status(checkpoint: Option<&Value>) -> String {
         .to_string()
 }
 
+#[path = "device_sync_sessions.rs"]
+mod sessions;
 #[path = "device_sync_publication.rs"]
 mod publication;
 #[cfg(test)]
@@ -137,7 +151,10 @@ impl DeviceSyncManager {
             session_path: data_dir.join(SESSION_FILE_NAME),
             credential_store: DeviceSyncCredentialStore::new(data_dir),
             store,
-            sync_lock: Mutex::new(()),
+            sync_lock: Arc::new(Mutex::new(())),
+            session_lock: Arc::new(Mutex::new(())),
+            tenant_locks: Arc::new(Mutex::new(BTreeMap::new())),
+            scoped_tenant: None,
             #[cfg(test)]
             test_api_root: None,
             #[cfg(test)]
@@ -157,38 +174,6 @@ impl DeviceSyncManager {
         #[cfg(test)]
         if let Some(root) = &self.test_api_root { return root.clone(); }
         api_root()
-    }
-
-    fn load_session(&self) -> Result<Option<DeviceSyncSession>, String> {
-        if !self.session_path.exists() {
-            return Ok(None);
-        }
-        let raw = fs::read_to_string(&self.session_path)
-            .map_err(|e| format!("device_sync_session_read_failed:{e}"))?;
-        let session = serde_json::from_str::<DeviceSyncSession>(&raw)
-            .map_err(|e| format!("device_sync_session_decode_failed:{e}"))?;
-        if session.version != 1
-            || !valid_identifier(&session.tenant_id, 128)
-            || !valid_identifier(&session.device_id, 128)
-            || session.keyring_account.is_empty()
-        {
-            return Err("device_sync_session_invalid".to_string());
-        }
-        Ok(Some(session))
-    }
-
-    fn save_session(&self, session: &DeviceSyncSession) -> Result<(), String> {
-        if let Some(parent) = self.session_path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("device_sync_session_dir_failed:{e}"))?;
-        }
-        let raw = serde_json::to_string_pretty(session)
-            .map_err(|e| format!("device_sync_session_encode_failed:{e}"))?;
-        let temporary = self.session_path.with_extension("json.tmp");
-        fs::write(&temporary, format!("{raw}\n"))
-            .map_err(|e| format!("device_sync_session_write_failed:{e}"))?;
-        fs::rename(&temporary, &self.session_path)
-            .map_err(|e| format!("device_sync_session_commit_failed:{e}"))
     }
 
     fn credential(&self, session: &DeviceSyncSession) -> Result<String, String> {
@@ -572,7 +557,10 @@ impl DeviceSyncManager {
         {
             return Err("device_sync_credential_invalid".to_string());
         }
-        let previous = self.load_session()?;
+        let scoped = self.scoped_for_authorization(&tenant_id)?;
+        let _guard = scoped.sync_lock.lock().map_err(|_| "device_sync_lock_failed")?;
+        let previous = scoped.load_session()?;
+        let previous_credential = previous.as_ref().and_then(|old| self.credential(old).ok());
         let account = keyring_account(&tenant_id, &device_id);
         let device_id_for_revoke = device_id.clone();
         let credential_storage = match self.credential_store.store(&account, &credential) {
@@ -599,10 +587,19 @@ impl DeviceSyncManager {
             keyring_account: account,
             credential_storage,
             connected_at_ms: now_ms(),
+            tenant_name: normalize_json_text(input.get("tenantName"), 200),
+            school_name: normalize_json_text(input.get("schoolName"), 200),
+            academic_year: input.get("academicYear").and_then(Value::as_i64).unwrap_or(0),
+            grade: input.get("grade").and_then(Value::as_i64).unwrap_or(0),
+            class_number: input.get("classNumber").and_then(Value::as_i64).unwrap_or(0),
+            lifecycle_status: normalize_json_text(input.get("lifecycleStatus"), 30),
         };
         if let Err(error) = self.save_session(&session) {
             let _ = self.authorized_delete(&session, &credential, "/devices/current");
-            self.credential_store.delete(&session.keyring_account);
+            if let (Some(old), Some(old_credential)) = (previous.as_ref(), previous_credential.as_ref()) {
+                if old.keyring_account == session.keyring_account { let _ = self.credential_store.store(&old.keyring_account, old_credential); }
+                else { self.credential_store.delete(&session.keyring_account); }
+            } else { self.credential_store.delete(&session.keyring_account); }
             return Err(error);
         }
         if let Some(previous) = previous {
@@ -611,15 +608,19 @@ impl DeviceSyncManager {
             }
         }
         // Backup discovery runs in the sync worker, after authorization is complete.
-        self.status()
+        self.status_for_tenant(&tenant_id)
     }
 
     pub(crate) fn status(&self) -> Result<Value, String> {
+        if self.scoped_tenant.is_none() {
+            if let Some(session) = self.load_session()? { return self.status_for_tenant(&session.tenant_id); }
+        }
         let session = match self.load_session()? {
             Some(session) => session,
             None => return Ok(json!({ "ok": true, "connected": false })),
         };
         let state = backup::local_sync_state(&self.store, &session.tenant_id)?;
+        let conflicts = crate::device_sync_conflicts::stats(&self.store, &session.tenant_id)?;
         let backup_status = backup::connection_status(&self.store, &session.tenant_id);
         let evidence_root = backup::configured_tenant_dir(&self.store, &session.tenant_id).ok();
         let recovery_required = {
@@ -649,7 +650,7 @@ impl DeviceSyncManager {
             "appVersion": session.app_version,
             "credentialStorage": session.credential_storage,
             "credentialAvailable": self.credential(&session).is_ok(),
-            "mcpWorker": crate::classaimate_mcp_worker::status(),
+            "mcpWorker": crate::classaimate_mcp_worker::status_for_tenant(&session.tenant_id),
             "connectedAtMs": session.connected_at_ms,
             "oneDriveConfigured": backup_status.as_ref().ok().and_then(|value| value.get("configured")).and_then(Value::as_bool).unwrap_or(false),
             "backupError": backup_status.err(),
@@ -669,15 +670,19 @@ impl DeviceSyncManager {
             "lastCheckedAtMs": state.last_checked_at_ms,
             "lastSuccessAtMs": state.last_success_at_ms,
             "lastError": state.last_error,
-            "conflictCount": state.conflict_count,
-            "conflictRetainedCount": state.conflict_count,
-            "conflictUnreviewedCount": state.conflict_unreviewed_count,
-            "conflictLifetimeCount": state.conflict_lifetime_count,
+            "conflictCount": conflicts["retained"],
+            "conflictRetainedCount": conflicts["retained"],
+            "conflictUnreviewedCount": conflicts["unreviewed"],
+            "conflictLifetimeCount": conflicts["lifetime"],
             "waitingForOneDrive": state.latest_generation > state.applied_generation,
         }))
     }
 
     pub(crate) fn run_once(&self, force_publish: bool) -> Result<Value, String> {
+        if self.scoped_tenant.is_none() {
+            if let Some(session) = self.load_session()? { return self.run_once_for_tenant(&session.tenant_id, force_publish); }
+            return Ok(json!({"ok":true,"connected":false}));
+        }
         let _ = self.flush_observation_receipts();
         let _guard = match self.sync_lock.try_lock() {
             Ok(guard) => guard,
@@ -716,6 +721,11 @@ impl DeviceSyncManager {
     }
 
     pub(crate) fn disconnect(&self) -> Result<Value, String> {
+        if self.scoped_tenant.is_none() {
+            if let Some(session) = self.load_session()? { return self.disconnect_for_tenant(&session.tenant_id); }
+            return Ok(json!({"ok":true,"connected":false,"credentialRevoked":true}));
+        }
+        let _guard = self.sync_lock.lock().map_err(|_| "device_sync_lock_failed")?;
         let session = self.load_session()?;
         let mut revoke_error = None;
         if let Some(session) = session.as_ref() {
@@ -731,9 +741,18 @@ impl DeviceSyncManager {
             }
             self.credential_store.delete(&session.keyring_account);
         }
-        if self.session_path.exists() {
-            fs::remove_file(&self.session_path)
-                .map_err(|e| format!("device_sync_session_delete_failed:{e}"))?;
+        if let Some(session) = session {
+            let _guard = self.session_lock.lock().map_err(|_| "device_sync_session_lock_failed")?;
+            let _file_guard = self.registry_file_lock()?;
+            let mut registry = self.load_registry()?;
+            // A new credential may have been registered while remote revocation was in flight.
+            if registry.sessions.get(&session.tenant_id).is_some_and(|current| current.keyring_account == session.keyring_account && current.connected_at_ms == session.connected_at_ms) {
+                registry.sessions.remove(&session.tenant_id);
+                if registry.selected_tenant_id == session.tenant_id {
+                    registry.selected_tenant_id = registry.sessions.keys().next().cloned().unwrap_or_default();
+                }
+                self.save_registry(&registry)?;
+            }
         }
         match revoke_error {
             Some(error) => Err(format!("device_sync_revoke_unconfirmed:{error}")),
@@ -742,6 +761,10 @@ impl DeviceSyncManager {
     }
 
     pub(crate) fn flush_observation_receipts(&self) -> Result<(), String> {
+        if self.scoped_tenant.is_none() {
+            for tenant in self.connected_tenants()? { if let Ok(scoped) = self.for_tenant(&tenant) { let _ = scoped.flush_observation_receipts(); } }
+            return Ok(());
+        }
         let Some(session) = self.load_session()? else { return Ok(()); };
         let entries = self.store.evidence_outbox(&session.tenant_id)?;
         if entries["entries"].as_array().is_none_or(|a| a.is_empty()) { return Ok(()); }
@@ -758,6 +781,10 @@ impl DeviceSyncManager {
     }
 
     fn reconcile_observation_receipts(&self) -> Result<(), String> {
+        if self.scoped_tenant.is_none() {
+            for tenant in self.connected_tenants()? { if let Ok(scoped) = self.for_tenant(&tenant) { let _ = scoped.reconcile_observation_receipts(); } }
+            return Ok(());
+        }
         let Some(session) = self.load_session()? else { return Ok(()); };
         let credential = self.credential(&session)?;
         let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(15)).build();
@@ -777,44 +804,41 @@ impl DeviceSyncManager {
     pub(crate) fn start_background(self: &Arc<Self>) {
         let manager = Arc::clone(self);
         thread::spawn(move || {
-            let _ = manager.reconcile_observation_receipts();
-            let _ = manager.run_once(true);
-            let mut last_tick = now_ms();
+            let mut running: BTreeMap<String, thread::JoinHandle<()>> = BTreeMap::new();
             loop {
-                thread::sleep(Duration::from_secs(BACKGROUND_TICK_SECS));
-                let current = now_ms();
-                let resumed =
-                    current.saturating_sub(last_tick) > (BACKGROUND_TICK_SECS as i64 + 45) * 1000;
-                last_tick = current;
-                let _ = manager.flush_observation_receipts();
-                let session = match manager.load_session() {
-                    Ok(Some(session)) => session,
-                    _ => continue,
-                };
-                let state = match backup::local_sync_state(&manager.store, &session.tenant_id) {
-                    Ok(state) => state,
-                    Err(_) => continue,
-                };
-                if !backup::retry_due(&manager.store, &session.tenant_id, current).unwrap_or(false) { continue; }
-                let retry_pending = backup::retry_pending(&manager.store, &session.tenant_id).unwrap_or(false);
-                let pending = backup::pending_publication(&manager.store, &session.tenant_id)
-                    .map(|value| value.is_some()).unwrap_or(false);
-                let local_commit_ahead =
-                    backup::highest_local_generation(&manager.store, &session.tenant_id)
-                        .map(|generation| generation > state.applied_generation)
-                        .unwrap_or(false);
-                let publish_due = state.tracking_repair_sequence > 0 || (state.first_dirty_at_ms > 0
-                    && (current.saturating_sub(state.last_dirty_at_ms) >= IDLE_PUBLISH_MS
-                        || current.saturating_sub(state.first_dirty_at_ms) >= MAX_DIRTY_MS));
-                let safety_due = state.last_checked_at_ms == 0
-                    || current.saturating_sub(state.last_checked_at_ms) >= SAFETY_CHECK_MS;
-                if resumed || safety_due { let _ = manager.reconcile_observation_receipts(); }
-                if resumed || retry_pending || pending || local_commit_ahead || publish_due || safety_due {
-                    let _ = manager.run_once(false);
+                running.retain(|_, worker| !worker.is_finished());
+                for tenant in manager.connected_tenants().unwrap_or_default() {
+                    if running.contains_key(&tenant) { continue; }
+                    let scoped = match manager.for_tenant(&tenant) { Ok(scoped) => scoped, Err(_) => continue };
+                    running.insert(tenant.clone(), thread::spawn(move || {
+                        let mut last_tick = 0;
+                        while scoped.load_session().ok().flatten().is_some() {
+                            let current = now_ms();
+                            let resumed = current.saturating_sub(last_tick) > (BACKGROUND_TICK_SECS as i64 + 45) * 1000;
+                            last_tick = current;
+                            let _ = scoped.flush_observation_receipts();
+                            if let Ok(state) = backup::local_sync_state(&scoped.store, &tenant) {
+                                if backup::retry_due(&scoped.store, &tenant, current).unwrap_or(false) {
+                                    let safety_due = state.last_checked_at_ms == 0 || current.saturating_sub(state.last_checked_at_ms) >= SAFETY_CHECK_MS;
+                                    let pending = backup::pending_publication(&scoped.store, &tenant).map(|v| v.is_some()).unwrap_or(false);
+                                    let local_commit_ahead = backup::highest_local_generation(&scoped.store, &tenant).map(|g| g > state.applied_generation).unwrap_or(false);
+                                    let publish_due = state.tracking_repair_sequence > 0 || (state.first_dirty_at_ms > 0 &&
+                                        (current.saturating_sub(state.last_dirty_at_ms) >= IDLE_PUBLISH_MS || current.saturating_sub(state.first_dirty_at_ms) >= MAX_DIRTY_MS));
+                                    if resumed || safety_due { let _ = scoped.reconcile_observation_receipts(); }
+                                    if resumed || safety_due || pending || local_commit_ahead || publish_due || backup::retry_pending(&scoped.store, &tenant).unwrap_or(false) {
+                                        let _ = scoped.run_once(false);
+                                    }
+                                }
+                            }
+                            thread::sleep(Duration::from_secs(BACKGROUND_TICK_SECS));
+                        }
+                    }));
                 }
+                thread::sleep(Duration::from_secs(2));
             }
         });
     }
+
 }
 
 #[cfg(test)]

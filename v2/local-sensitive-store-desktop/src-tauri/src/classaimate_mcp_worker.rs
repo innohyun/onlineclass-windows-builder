@@ -4,7 +4,7 @@ use crate::{
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io::{ErrorKind, Read};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::{
@@ -50,19 +50,18 @@ const CAPABILITIES: &[&str] = &[
     "classaimate_mcp_teaching_source_fallback_v1",
 ];
 static STARTED: AtomicBool = AtomicBool::new(false);
-static STATE: Mutex<(&str, &str, i64)> = Mutex::new(("waiting_connection", "", 0));
-static JOB_DIAGNOSTICS: Mutex<Vec<Value>> = Mutex::new(Vec::new());
+static STATE: Mutex<BTreeMap<String, (&str, &str, i64)>> = Mutex::new(BTreeMap::new());
+static JOB_DIAGNOSTICS: Mutex<BTreeMap<String, Vec<Value>>> = Mutex::new(BTreeMap::new());
+thread_local! { static DIAGNOSTIC_TENANT: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) }; }
+fn diagnostic_tenant(tenant: &str) { DIAGNOSTIC_TENANT.with(|scope| *scope.borrow_mut() = tenant.to_string()); }
 
-pub(crate) fn status() -> Value {
-    let (state, error, updated_at) =
-        STATE
-            .lock()
-            .map(|value| *value)
-            .unwrap_or(("unavailable", "MCP_WORKER_UNAVAILABLE", 0));
-    let jobs = JOB_DIAGNOSTICS.lock().map(|value| value.clone()).unwrap_or_default();
+pub(crate) fn status_for_tenant(tenant: &str) -> Value {
+    let (state, error, updated_at) = STATE.lock().ok().and_then(|items| items.get(tenant).copied())
+        .unwrap_or(("waiting_connection", "", 0));
+    let jobs = JOB_DIAGNOSTICS.lock().ok().and_then(|items| items.get(tenant).cloned()).unwrap_or_default();
     json!({"state":state,"errorCode":if error.is_empty(){Value::Null}else{json!(error)},
         "updatedAt":updated_at,"protocolVersion":1,"capabilities":CAPABILITIES,"recentJobs":jobs,
-        "recentReads":reads::diagnostics()})
+        "recentReads":reads::diagnostics_for_tenant(tenant)})
 }
 
 fn uncertain_failure_code(error: &str) -> Option<&str> {
@@ -103,17 +102,18 @@ fn diagnostic_code(error: &str) -> &str {
     }
 }
 
-fn job_diagnostic(receipt: &str, stage: &str, code: &str, claim: &Value, count: usize) {
-    if let Ok(mut jobs) = JOB_DIAGNOSTICS.lock() {
+fn job_diagnostic(tenant: &str, receipt: &str, stage: &str, code: &str, claim: &Value, count: usize) {
+    if let Ok(mut items) = JOB_DIAGNOSTICS.lock() {
+        let jobs = items.entry(tenant.to_string()).or_default();
         if jobs.len() >= 24 { jobs.remove(0); }
         jobs.push(json!({"receiptId":receipt,"stage":stage,"code":code,"claimRevision":claim.as_u64(),
             "itemCount":count,"updatedAt":chrono::Utc::now().timestamp_millis()}));
     }
 }
 
-fn set_state(state: &'static str, error: &'static str) {
-    if let Ok(mut value) = STATE.lock() {
-        *value = (state, error, chrono::Utc::now().timestamp_millis());
+fn set_state(tenant: &str, state: &'static str, error: &'static str) {
+    if let Ok(mut items) = STATE.lock() {
+        items.insert(tenant.to_string(), (state, error, chrono::Utc::now().timestamp_millis()));
     }
 }
 
@@ -563,7 +563,7 @@ fn download_assets(
 }
 
 fn ensure_current(manager: &DeviceSyncManager, authority: &WorkerAuthority) -> Result<(), String> {
-    if !authority.same(&manager.mcp_worker_authority()?) {
+    if !authority.same(&manager.mcp_worker_authority_for_tenant(&authority.tenant_id)?) {
         return Err("MCP_WORKER_AUTHORITY_CHANGED".to_string());
     }
     Ok(())
@@ -706,13 +706,13 @@ fn apply_job(
     if !id(receipt) {
         return Err("MCP_WRITE_JOB_INVALID".to_string());
     }
-    job_diagnostic(receipt, "claim", "STARTED", &Value::Null, 0);
+    job_diagnostic(&authority.tenant_id, receipt, "claim", "STARTED", &Value::Null, 0);
     let claimed = authority.json(
         "POST",
         &format!("write-jobs/{receipt}/claim"),
         Some(json!({})),
     ).map_err(|error| {
-        job_diagnostic(receipt, "claim", diagnostic_code(&error), &Value::Null, 0);
+        job_diagnostic(&authority.tenant_id, receipt, "claim", diagnostic_code(&error), &Value::Null, 0);
         error
     })?;
     let job = &claimed["job"];
@@ -722,12 +722,16 @@ fn apply_job(
     let stage = std::cell::Cell::new("validate");
     let set_stage = |next| {
         stage.set(next);
-        job_diagnostic(receipt, next, "STARTED", claim_revision, count);
+        job_diagnostic(&authority.tenant_id, receipt, next, "STARTED", claim_revision, count);
     };
     let result = (|| {
         set_stage("validate");
         if job["receiptId"] != receipt
             || job.pointer("/target/deviceId") != Some(&json!(authority.device_id))
+            || [job, &claimed["receipt"]].iter().any(|document| {
+                document.get("tenantId").is_some_and(|tenant| tenant != &json!(authority.tenant_id))
+                    || document.get("actorId").is_some_and(|actor| actor != &json!(authority.actor_id))
+            })
         {
             return Err("MCP_WRITE_DEVICE_MISMATCH".to_string());
         }
@@ -738,7 +742,7 @@ fn apply_job(
             "requestSha256":job["requestSha256"],"data":job["data"]});
         validate_authority()?;
         let classify = |error: String| {
-            job_diagnostic(receipt, stage.get(), diagnostic_code(&error), claim_revision, count);
+            job_diagnostic(&authority.tenant_id, receipt, stage.get(), diagnostic_code(&error), claim_revision, count);
             let code = if error == "DRAFT_CONFLICT" && job["operation"] == "student_record_save_drafts" {
                 "MCP_STUDENT_DRAFT_CONFLICT"
             } else { &error };
@@ -782,7 +786,7 @@ fn apply_job(
         if completed["receipt"]["status"] != "saved" {
             return Err("MCP_WORKER_RESPONSE_INVALID".to_string());
         }
-        job_diagnostic(receipt, "saved", "SAVED", claim_revision, count);
+        job_diagnostic(&authority.tenant_id, receipt, "saved", "SAVED", claim_revision, count);
         Ok(())
     })().map_err(|error| {
         if stage.get() == "complete_ack" && matches!(error.as_str(),
@@ -792,7 +796,7 @@ fn apply_job(
     });
     if let Err(error) = &result {
         if stage.get() != "local_apply" && stage.get() != "receipt_replay" {
-            job_diagnostic(receipt, stage.get(), diagnostic_code(error), claim_revision, count);
+            job_diagnostic(&authority.tenant_id, receipt, stage.get(), diagnostic_code(error), claim_revision, count);
         }
         if claim_revision.is_u64() {
             let _ = authority.json("POST", &format!("write-jobs/{receipt}/fail"), Some(json!({
@@ -822,11 +826,12 @@ fn serve_with_validator<F>(
 where
     F: Fn() -> Result<(), String> + Send + Clone + 'static,
 {
-    set_state("connecting", "");
+    diagnostic_tenant(&authority.tenant_id);
+    set_state(&authority.tenant_id, "connecting", "");
     validate_authority()?;
     reads::probe(&store, &authority.tenant_id)?;
     let mut socket = open_socket(authority)?;
-    set_state("ready", "");
+    set_state(&authority.tenant_id, "ready", "");
     let (job_tx, job_rx) = mpsc::sync_channel::<String>(1);
     let (done_tx, done_rx) = mpsc::channel();
     let cancelled = Arc::new(AtomicBool::new(false));
@@ -919,7 +924,7 @@ where
                 WorkerEvent::Jobs(result) => {
                     let batch = result?;
                     set_state(
-                        "ready",
+                        &authority.tenant_id, "ready",
                         if batch.incomplete {
                             "MCP_WORKER_JOBS_INCOMPLETE"
                         } else {
@@ -962,39 +967,42 @@ where
 }
 
 pub(crate) fn start(store: Arc<SqliteStore>, manager: Arc<DeviceSyncManager>) {
-    if STARTED.swap(true, Ordering::SeqCst) {
-        return;
-    }
+    if STARTED.swap(true, Ordering::SeqCst) { return; }
     thread::spawn(move || {
-        let mut failures = 0u32;
+        let mut running: HashMap<String, thread::JoinHandle<()>> = HashMap::new();
         loop {
-            let started = Instant::now();
-            if let Ok(authority) = manager.mcp_worker_authority() {
-                let result = serve(Arc::clone(&store), Arc::clone(&manager), &authority);
-                set_state(
-                    "reconnecting",
-                    match result.as_ref().err().map(String::as_str) {
-                        Some("MCP_WORKER_AUTHORITY_REVOKED") => "MCP_WORKER_AUTHORITY_REVOKED",
-                        Some("MCP_WORKER_AUTHORITY_CHANGED") => "MCP_WORKER_AUTHORITY_CHANGED",
-                        Some("MCP_WORKER_RESPONSE_INVALID") => "MCP_WORKER_RESPONSE_INVALID",
-                        Some("LOCAL_DB_NOT_SELECTED") => "LOCAL_DB_NOT_SELECTED",
-                        Some("LOCAL_DB_LOCKED") => "LOCAL_DB_LOCKED",
-                        Some("LOCAL_DB_QUERY_FAILED") => "LOCAL_DB_QUERY_FAILED",
-                        Some("LOCAL_DB_QUERY_TIMEOUT") => "LOCAL_DB_QUERY_TIMEOUT",
-                        Some("local_store_unavailable") => "local_store_unavailable",
-                        _ => "MCP_WORKER_NETWORK_UNAVAILABLE",
-                    },
-                );
-            } else {
-                set_state("waiting_connection", "MCP_WORKER_CREDENTIAL_UNAVAILABLE");
+            running.retain(|_, worker| !worker.is_finished());
+            for authority in manager.mcp_worker_authorities().unwrap_or_default() {
+                let tenant = authority.tenant_id.clone();
+                if running.contains_key(&tenant) { continue; }
+                let scoped_store = match store.for_tenant(&tenant) { Ok(store) => store, Err(_) => {
+                    set_state(&tenant, "unavailable", "LOCAL_DB_NOT_SELECTED"); continue;
+                }};
+                let manager = Arc::clone(&manager);
+                let worker_tenant = tenant.clone();
+                running.insert(tenant, thread::spawn(move || {
+                    let mut failures = 0u32;
+                    while let Ok(authority) = manager.mcp_worker_authority_for_tenant(&worker_tenant) {
+                        let started = Instant::now();
+                        let result = serve(Arc::clone(&scoped_store), Arc::clone(&manager), &authority);
+                        set_state(&worker_tenant, "reconnecting", match result.as_ref().err().map(String::as_str) {
+                            Some("MCP_WORKER_AUTHORITY_REVOKED") => "MCP_WORKER_AUTHORITY_REVOKED",
+                            Some("MCP_WORKER_AUTHORITY_CHANGED") => "MCP_WORKER_AUTHORITY_CHANGED",
+                            Some("MCP_WORKER_RESPONSE_INVALID") => "MCP_WORKER_RESPONSE_INVALID",
+                            Some("LOCAL_DB_NOT_SELECTED") => "LOCAL_DB_NOT_SELECTED",
+                            Some("LOCAL_DB_LOCKED") => "LOCAL_DB_LOCKED",
+                            Some("LOCAL_DB_QUERY_FAILED") => "LOCAL_DB_QUERY_FAILED",
+                            Some("LOCAL_DB_QUERY_TIMEOUT") => "LOCAL_DB_QUERY_TIMEOUT",
+                            Some("local_store_unavailable") => "local_store_unavailable",
+                            _ => "MCP_WORKER_NETWORK_UNAVAILABLE",
+                        });
+                        failures = if started.elapsed() >= Duration::from_secs(60) { 0 } else { failures.saturating_add(1) };
+                        thread::sleep(Duration::from_secs((1u64 << failures.min(5)).min(30)));
+                    }
+                    set_state(&worker_tenant, "waiting_connection", "MCP_WORKER_CREDENTIAL_UNAVAILABLE");
+                }));
             }
-            failures = if started.elapsed() >= Duration::from_secs(60) {
-                0
-            } else {
-                failures.saturating_add(1)
-            };
-            let delay = (1u64 << failures.min(5)).min(30);
-            thread::sleep(Duration::from_secs(delay));
+            thread::sleep(Duration::from_secs(2));
         }
     });
 }

@@ -59,23 +59,40 @@ pub(crate) fn schema(prefix: &str) -> String {
     )
 }
 
+pub(crate) fn common_schema(conn: &Connection) -> &'static str {
+    let attached = conn
+        .prepare("PRAGMA database_list")
+        .and_then(|mut statement| {
+            statement
+                .query_map([], |row| row.get::<_, String>(1))
+                .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
+        })
+        .unwrap_or_default();
+    if attached.iter().any(|name| name == "shared") {
+        "shared"
+    } else {
+        "main"
+    }
+}
+
 pub(crate) fn capture(conn: &Connection, tenant_id: &str) -> Result<Vec<FileRow>, String> {
+    let live = common_schema(conn);
     conn.execute(
-        "INSERT INTO backup.teaching_source_actor_homes(owner_uid,backup_tenant_id,created_at_ms,updated_at_ms)
-         SELECT owner_uid,backup_tenant_id,created_at_ms,updated_at_ms FROM main.teaching_source_actor_homes
-         WHERE backup_tenant_id=?1",
+        &format!("INSERT INTO backup.teaching_source_actor_homes(owner_uid,backup_tenant_id,created_at_ms,updated_at_ms)
+         SELECT owner_uid,backup_tenant_id,created_at_ms,updated_at_ms FROM {live}.teaching_source_actor_homes
+         WHERE backup_tenant_id=?1"),
         params![tenant_id],
     ).map_err(|e| format!("backup_teaching_source_home_copy_failed:{e}"))?;
     conn.execute(&format!(
         "INSERT INTO backup.teaching_sources({SOURCE_COLUMNS}) SELECT {source_select}
-         FROM main.teaching_sources s JOIN main.teaching_source_actor_homes h ON h.owner_uid=s.owner_uid
+         FROM {live}.teaching_sources s JOIN {live}.teaching_source_actor_homes h ON h.owner_uid=s.owner_uid
          WHERE h.backup_tenant_id=?1",
         source_select = prefixed_columns("s", SOURCE_COLUMNS),
     ), params![tenant_id]).map_err(|e| format!("backup_teaching_source_copy_failed:{e}"))?;
     conn.execute(
         &format!(
             "INSERT INTO backup.teaching_source_chunks({CHUNK_COLUMNS}) SELECT {chunk_select}
-         FROM main.teaching_source_chunks c JOIN backup.teaching_sources s
+         FROM {live}.teaching_source_chunks c JOIN backup.teaching_sources s
            ON s.owner_uid=c.owner_uid AND s.source_id=c.source_id",
             chunk_select = prefixed_columns("c", CHUNK_COLUMNS),
         ),
@@ -85,7 +102,7 @@ pub(crate) fn capture(conn: &Connection, tenant_id: &str) -> Result<Vec<FileRow>
     conn.execute(
         &format!(
             "INSERT INTO backup.curriculum_source_links({LINK_COLUMNS}) SELECT {link_select}
-         FROM main.curriculum_source_links l JOIN backup.teaching_sources s
+         FROM {live}.curriculum_source_links l JOIN backup.teaching_sources s
            ON s.owner_uid=l.owner_uid AND s.source_id=l.source_id",
             link_select = prefixed_columns("l", LINK_COLUMNS),
         ),
@@ -105,13 +122,18 @@ fn prefixed_columns(alias: &str, columns: &str) -> String {
 
 fn valid_schema(schema: &str) -> Result<&str, String> {
     match schema {
-        "main" | "restore" | "backup" => Ok(schema),
+        "main" | "shared" | "restore" | "backup" => Ok(schema),
         _ => Err("teaching_source_backup_schema_invalid".into()),
     }
 }
 
 fn table_exists(conn: &Connection, schema: &str, table: &str) -> Result<bool, String> {
     let schema = valid_schema(schema)?;
+    let schema = if schema == "main" {
+        common_schema(conn)
+    } else {
+        schema
+    };
     conn.query_row(
         &format!(
             "SELECT EXISTS(SELECT 1 FROM {schema}.sqlite_master WHERE type='table' AND name=?1)"
@@ -130,6 +152,11 @@ fn bundle_sha256(
     source: &str,
 ) -> Result<String, String> {
     let schema = valid_schema(schema)?;
+    let schema = if schema == "main" {
+        common_schema(conn)
+    } else {
+        schema
+    };
     let mut hasher = Sha256::new();
     for (kind, sql) in [
         ("source", format!("SELECT json_array({}) FROM {schema}.teaching_sources s WHERE owner_uid=?1 AND source_id=?2", prefixed_columns("s", SOURCE_COLUMNS))),
@@ -155,6 +182,11 @@ pub(crate) fn file_rows(
     tenant_id: &str,
 ) -> Result<Vec<FileRow>, String> {
     let schema = valid_schema(schema)?;
+    let schema = if schema == "main" {
+        common_schema(conn)
+    } else {
+        schema
+    };
     if !table_exists(conn, schema, "teaching_sources")? {
         return Ok(Vec::new());
     }
@@ -208,6 +240,11 @@ pub(crate) fn update_content_hasher(
     hasher: &mut Sha256,
 ) -> Result<(), String> {
     let schema = valid_schema(schema)?;
+    let schema = if schema == "main" {
+        common_schema(conn)
+    } else {
+        schema
+    };
     if !table_exists(conn, schema, "teaching_source_actor_homes")? {
         return Ok(());
     }
@@ -249,6 +286,11 @@ pub(crate) fn update_content_hasher(
 
 fn validate_schema(conn: &Connection, schema: &str, tenant_id: &str) -> Result<bool, String> {
     let schema = valid_schema(schema)?;
+    let schema = if schema == "main" {
+        common_schema(conn)
+    } else {
+        schema
+    };
     let tables = [
         "teaching_source_actor_homes",
         "teaching_sources",
@@ -319,6 +361,11 @@ pub(crate) fn counts(
     tenant_id: &str,
 ) -> Result<(i64, i64, i64, i64), String> {
     let schema = valid_schema(schema)?;
+    let schema = if schema == "main" {
+        common_schema(conn)
+    } else {
+        schema
+    };
     if !table_exists(conn, schema, "teaching_sources")? {
         return Ok((0, 0, 0, 0));
     }
@@ -334,9 +381,12 @@ fn current_state(
     owner: &str,
     source: &str,
 ) -> Result<Option<(i64, String)>, String> {
+    let live = common_schema(conn);
     let revision = conn
         .query_row(
-            "SELECT revision FROM main.teaching_sources WHERE owner_uid=?1 AND source_id=?2",
+            &format!(
+                "SELECT revision FROM {live}.teaching_sources WHERE owner_uid=?1 AND source_id=?2"
+            ),
             params![owner, source],
             |row| row.get::<_, i64>(0),
         )
@@ -360,24 +410,43 @@ pub(crate) fn current_guard(
 /// select the school bundle. Ambiguous revision branches require an explicit
 /// domain edit; never silently retain a different local bundle as "school wins".
 pub(crate) fn recovery_preflight(conn: &Connection, tenant: &str) -> Result<(), String> {
-    if !validate_restore(conn, tenant)? { return Ok(()); }
+    let live = common_schema(conn);
+    if !validate_restore(conn, tenant)? {
+        return Ok(());
+    }
     let mut statement = conn.prepare("SELECT s.owner_uid,s.source_id,s.revision FROM restore.teaching_sources s JOIN restore.teaching_source_actor_homes h ON h.owner_uid=s.owner_uid WHERE h.backup_tenant_id=?1")
         .map_err(|_| "recovery_teaching_source_compare_failed")?;
-    let rows = statement.query_map([tenant], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?)))
+    let rows = statement
+        .query_map([tenant], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        })
         .map_err(|_| "recovery_teaching_source_compare_failed")?;
     for row in rows {
-        let (owner, source, revision) = row.map_err(|_| "recovery_teaching_source_compare_failed")?;
-        let home: Option<String> = conn.query_row("SELECT backup_tenant_id FROM main.teaching_source_actor_homes WHERE owner_uid=?1",[&owner],|r|r.get(0)).optional().map_err(|_| "recovery_teaching_source_compare_failed")?;
-        if home.is_some_and(|value| value != tenant) { return Err("teaching_source_restore_actor_home_conflict".into()); }
-        let incoming_hash = bundle_sha256(conn,"restore",&owner,&source)?;
-        if let Some((current_revision,current_hash)) = current_state(conn,&owner,&source)? {
-            if current_revision > revision || (current_revision == revision && current_hash != incoming_hash) {
+        let (owner, source, revision) =
+            row.map_err(|_| "recovery_teaching_source_compare_failed")?;
+        let home: Option<String> = conn.query_row(&format!("SELECT backup_tenant_id FROM {live}.teaching_source_actor_homes WHERE owner_uid=?1"),[&owner],|r|r.get(0)).optional().map_err(|_| "recovery_teaching_source_compare_failed")?;
+        if home.is_some_and(|value| value != tenant) {
+            return Err("teaching_source_restore_actor_home_conflict".into());
+        }
+        let incoming_hash = bundle_sha256(conn, "restore", &owner, &source)?;
+        if let Some((current_revision, current_hash)) = current_state(conn, &owner, &source)? {
+            if current_revision > revision
+                || (current_revision == revision && current_hash != incoming_hash)
+            {
                 return Err("recovery_teaching_source_canonical_resolution_required".into());
             }
-            if current_hash == incoming_hash { continue; }
+            if current_hash == incoming_hash {
+                continue;
+            }
         }
-        let affects_other_tenant: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM main.curriculum_source_links WHERE owner_uid=?1 AND source_id=?2 AND tenant_id<>?3 UNION ALL SELECT 1 FROM restore.curriculum_source_links WHERE owner_uid=?1 AND source_id=?2 AND tenant_id<>?3)",params![owner,source,tenant],|r|r.get(0)).map_err(|_|"recovery_teaching_source_compare_failed")?;
-        if affects_other_tenant { return Err("recovery_teaching_source_other_class_resolution_required".into()); }
+        let affects_other_tenant: bool = conn.query_row(&format!("SELECT EXISTS(SELECT 1 FROM {live}.curriculum_source_links WHERE owner_uid=?1 AND source_id=?2 AND tenant_id<>?3 UNION ALL SELECT 1 FROM restore.curriculum_source_links WHERE owner_uid=?1 AND source_id=?2 AND tenant_id<>?3)"),params![owner,source,tenant],|r|r.get(0)).map_err(|_|"recovery_teaching_source_compare_failed")?;
+        if affects_other_tenant {
+            return Err("recovery_teaching_source_other_class_resolution_required".into());
+        }
     }
     Ok(())
 }
@@ -390,6 +459,7 @@ pub(crate) fn should_restore_file(
         .conn
         .lock()
         .map_err(|_| "db_lock_failed".to_string())?;
+    let live = common_schema(&conn);
     let current = current_state(&conn, &incoming.owner_uid, &incoming.source_id)?;
     let guard = current
         .as_ref()
@@ -402,7 +472,7 @@ pub(crate) fn should_restore_file(
             return Ok((false, guard));
         }
         if *revision == incoming.revision {
-            let file=conn.query_row("SELECT local_path,sha256,byte_size FROM teaching_sources WHERE owner_uid=?1 AND source_id=?2",params![incoming.owner_uid,incoming.source_id],|r|Ok((r.get::<_,Option<String>>(0)?,r.get::<_,Option<String>>(1)?,r.get::<_,i64>(2)?))).optional().map_err(|e|format!("teaching_source_restore_file_read_failed:{e}"))?;
+            let file=conn.query_row(&format!("SELECT local_path,sha256,byte_size FROM {live}.teaching_sources WHERE owner_uid=?1 AND source_id=?2"),params![incoming.owner_uid,incoming.source_id],|r|Ok((r.get::<_,Option<String>>(0)?,r.get::<_,Option<String>>(1)?,r.get::<_,i64>(2)?))).optional().map_err(|e|format!("teaching_source_restore_file_read_failed:{e}"))?;
             drop(conn);
             let metadata_ok = file.is_some_and(|(path, sha, size)| {
                 path.as_deref() == Some(incoming.local_path.as_str())
@@ -423,6 +493,7 @@ pub(crate) fn should_restore_file(
 }
 
 pub(crate) fn apply(transaction: &Transaction<'_>, tenant_id: &str) -> Result<(i64, i64), String> {
+    let live = common_schema(transaction);
     if !validate_restore(transaction, tenant_id)? {
         return Ok((0, 0));
     }
@@ -464,7 +535,7 @@ pub(crate) fn apply(transaction: &Transaction<'_>, tenant_id: &str) -> Result<(i
     for (owner, source, incoming_revision, incoming_hash) in keys {
         if let Some(home) = transaction
             .query_row(
-                "SELECT backup_tenant_id FROM main.teaching_source_actor_homes WHERE owner_uid=?1",
+                &format!("SELECT backup_tenant_id FROM {live}.teaching_source_actor_homes WHERE owner_uid=?1"),
                 params![owner],
                 |r| r.get::<_, String>(0),
             )
@@ -489,36 +560,38 @@ pub(crate) fn apply(transaction: &Transaction<'_>, tenant_id: &str) -> Result<(i
         }
         transaction
             .execute(
-                "DELETE FROM main.teaching_source_chunks_fts WHERE owner_uid=?1 AND source_id=?2",
+                &format!("DELETE FROM {live}.teaching_source_chunks_fts WHERE owner_uid=?1 AND source_id=?2"),
                 params![owner, source],
             )
             .map_err(|e| format!("teaching_source_restore_fts_clear_failed:{e}"))?;
         transaction
             .execute(
-                "DELETE FROM main.curriculum_source_links WHERE owner_uid=?1 AND source_id=?2",
+                &format!("DELETE FROM {live}.curriculum_source_links WHERE owner_uid=?1 AND source_id=?2"),
                 params![owner, source],
             )
             .map_err(|e| format!("teaching_source_restore_link_clear_failed:{e}"))?;
         transaction
             .execute(
-                "DELETE FROM main.teaching_source_chunks WHERE owner_uid=?1 AND source_id=?2",
+                &format!(
+                    "DELETE FROM {live}.teaching_source_chunks WHERE owner_uid=?1 AND source_id=?2"
+                ),
                 params![owner, source],
             )
             .map_err(|e| format!("teaching_source_restore_chunk_clear_failed:{e}"))?;
         transaction
             .execute(
-                "DELETE FROM main.teaching_sources WHERE owner_uid=?1 AND source_id=?2",
+                &format!("DELETE FROM {live}.teaching_sources WHERE owner_uid=?1 AND source_id=?2"),
                 params![owner, source],
             )
             .map_err(|e| format!("teaching_source_restore_source_clear_failed:{e}"))?;
-        transaction.execute("INSERT INTO main.teaching_source_actor_homes(owner_uid,backup_tenant_id,created_at_ms,updated_at_ms) SELECT owner_uid,backup_tenant_id,created_at_ms,updated_at_ms FROM restore.teaching_source_actor_homes WHERE owner_uid=?1 ON CONFLICT(owner_uid) DO NOTHING",params![owner]).map_err(|e|format!("teaching_source_restore_home_insert_failed:{e}"))?;
-        transaction.execute(&format!("INSERT INTO main.teaching_sources({SOURCE_COLUMNS}) SELECT {SOURCE_COLUMNS} FROM restore.teaching_sources WHERE owner_uid=?1 AND source_id=?2"),params![owner,source]).map_err(|e|format!("teaching_source_restore_source_insert_failed:{e}"))?;
-        transaction.execute(&format!("INSERT INTO main.teaching_source_chunks({CHUNK_COLUMNS}) SELECT {CHUNK_COLUMNS} FROM restore.teaching_source_chunks WHERE owner_uid=?1 AND source_id=?2"),params![owner,source]).map_err(|e|format!("teaching_source_restore_chunk_insert_failed:{e}"))?;
-        transaction.execute(&format!("INSERT INTO main.curriculum_source_links({LINK_COLUMNS}) SELECT {LINK_COLUMNS} FROM restore.curriculum_source_links WHERE owner_uid=?1 AND source_id=?2"),params![owner,source]).map_err(|e|format!("teaching_source_restore_link_insert_failed:{e}"))?;
+        transaction.execute(&format!("INSERT INTO {live}.teaching_source_actor_homes(owner_uid,backup_tenant_id,created_at_ms,updated_at_ms) SELECT owner_uid,backup_tenant_id,created_at_ms,updated_at_ms FROM restore.teaching_source_actor_homes WHERE owner_uid=?1 ON CONFLICT(owner_uid) DO NOTHING"),params![owner]).map_err(|e|format!("teaching_source_restore_home_insert_failed:{e}"))?;
+        transaction.execute(&format!("INSERT INTO {live}.teaching_sources({SOURCE_COLUMNS}) SELECT {SOURCE_COLUMNS} FROM restore.teaching_sources WHERE owner_uid=?1 AND source_id=?2"),params![owner,source]).map_err(|e|format!("teaching_source_restore_source_insert_failed:{e}"))?;
+        transaction.execute(&format!("INSERT INTO {live}.teaching_source_chunks({CHUNK_COLUMNS}) SELECT {CHUNK_COLUMNS} FROM restore.teaching_source_chunks WHERE owner_uid=?1 AND source_id=?2"),params![owner,source]).map_err(|e|format!("teaching_source_restore_chunk_insert_failed:{e}"))?;
+        transaction.execute(&format!("INSERT INTO {live}.curriculum_source_links({LINK_COLUMNS}) SELECT {LINK_COLUMNS} FROM restore.curriculum_source_links WHERE owner_uid=?1 AND source_id=?2"),params![owner,source]).map_err(|e|format!("teaching_source_restore_link_insert_failed:{e}"))?;
         applied += 1;
     }
-    transaction.execute("DELETE FROM main.teaching_source_chunks_fts WHERE owner_uid IN(SELECT owner_uid FROM restore.teaching_source_actor_homes)",[]).map_err(|e|format!("teaching_source_restore_fts_reset_failed:{e}"))?;
-    transaction.execute("INSERT INTO main.teaching_source_chunks_fts(owner_uid,source_id,chunk_id,subject_code,title,unit,topic,text) SELECT c.owner_uid,c.source_id,c.chunk_id,s.subject_code,s.title,c.unit,c.topic,c.text FROM main.teaching_source_chunks c JOIN main.teaching_sources s ON s.owner_uid=c.owner_uid AND s.source_id=c.source_id WHERE c.owner_uid IN(SELECT owner_uid FROM restore.teaching_source_actor_homes)",[]).map_err(|e|format!("teaching_source_restore_fts_rebuild_failed:{e}"))?;
+    transaction.execute(&format!("DELETE FROM {live}.teaching_source_chunks_fts WHERE owner_uid IN(SELECT owner_uid FROM restore.teaching_source_actor_homes)"),[]).map_err(|e|format!("teaching_source_restore_fts_reset_failed:{e}"))?;
+    transaction.execute(&format!("INSERT INTO {live}.teaching_source_chunks_fts(owner_uid,source_id,chunk_id,subject_code,title,unit,topic,text) SELECT c.owner_uid,c.source_id,c.chunk_id,s.subject_code,s.title,c.unit,c.topic,c.text FROM {live}.teaching_source_chunks c JOIN {live}.teaching_sources s ON s.owner_uid=c.owner_uid AND s.source_id=c.source_id WHERE c.owner_uid IN(SELECT owner_uid FROM restore.teaching_source_actor_homes)"),[]).map_err(|e|format!("teaching_source_restore_fts_rebuild_failed:{e}"))?;
     if retained > 0 {
         let now = chrono::Utc::now().timestamp_millis();
         transaction.execute("INSERT INTO local_store_device_sync_state(tenant_id,first_dirty_at_ms,last_dirty_at_ms,change_sequence) VALUES(?1,?2,?2,1) ON CONFLICT(tenant_id) DO UPDATE SET first_dirty_at_ms=COALESCE(first_dirty_at_ms,excluded.first_dirty_at_ms),last_dirty_at_ms=excluded.last_dirty_at_ms,change_sequence=change_sequence+1",params![tenant_id,now]).map_err(|e|format!("teaching_source_restore_retain_dirty_failed:{e}"))?;
@@ -558,7 +631,7 @@ pub(crate) fn checked_target(
     if !safe.starts_with(expected) {
         return Err("teaching_source_backup_path_invalid".into());
     }
-    Ok(store.data_dir.join(safe))
+    Ok(store.shared_data_dir.join(safe))
 }
 
 pub(crate) fn source_path(
@@ -567,10 +640,10 @@ pub(crate) fn source_path(
     relative: &str,
 ) -> Result<PathBuf, String> {
     let target = checked_target(store, owner, relative)?;
-    let root =
-        fs::canonicalize(&store.data_dir).map_err(|e| format!("local_data_dir_missing:{e}"))?;
+    let root = fs::canonicalize(&store.shared_data_dir)
+        .map_err(|e| format!("local_data_dir_missing:{e}"))?;
     let relative_target = target
-        .strip_prefix(&store.data_dir)
+        .strip_prefix(&store.shared_data_dir)
         .map_err(|_| "teaching_source_backup_path_invalid")?;
     let mut cursor = root.clone();
     for component in relative_target.components() {

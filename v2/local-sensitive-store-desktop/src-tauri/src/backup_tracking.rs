@@ -207,6 +207,9 @@ pub(crate) fn install_sync_tracking(conn: &Connection) -> Result<(), String> {
 }
 
 pub(crate) fn seed_sync_records(store: &SqliteStore, tenant_id: &str) -> Result<(), String> {
+    if store.class_tenant.is_some() {
+        seed_sync_records(store.shared_store()?.as_ref(), tenant_id)?;
+    }
     let mut conn = store
         .conn
         .lock()
@@ -291,18 +294,41 @@ pub(crate) fn seed_sync_records(store: &SqliteStore, tenant_id: &str) -> Result<
         .map_err(|e| format!("db_sync_seed_commit_failed:{e}"))
 }
 
+// Personal import progress is committed atomically with the common teaching
+// library. Other import kinds remain in the requested class database.
+pub(crate) fn live_table_source(conn: &Connection, table: &str) -> String {
+    let common = crate::teaching_source_backup::common_schema(conn);
+    if common == "shared" && table == "local_import_runs" {
+        "(SELECT * FROM main.local_import_runs WHERE kind<>'teaching_source' UNION ALL SELECT * FROM shared.local_import_runs WHERE kind='teaching_source') AS local_import_runs".into()
+    } else if table.starts_with("password_vault_") {
+        format!("{common}.{table}")
+    } else {
+        format!("main.{table}")
+    }
+}
+
 pub(super) fn sync_manifest(
     conn: &Connection,
     tenant_id: &str,
     generation: i64,
 ) -> Result<Value, String> {
+    let schema = crate::teaching_source_backup::common_schema(conn);
+    let sql = if schema == "shared" {
+        "SELECT table_name, record_key, dirty_base_generation, record_version, changed_generation,tombstone,changed_at_ms
+         FROM main.local_store_device_sync_records r WHERE tenant_id=?1 AND table_name NOT LIKE 'password_vault_%'
+           AND NOT (table_name='local_import_runs' AND (json_extract(record_key,'$[0]') LIKE 'teaching-source:%'
+             OR EXISTS(SELECT 1 FROM shared.local_import_runs i WHERE i.tenant_id=r.tenant_id AND i.run_id=json_extract(r.record_key,'$[0]') AND i.kind='teaching_source')))
+         UNION ALL SELECT table_name,record_key,dirty_base_generation,record_version,changed_generation,tombstone,changed_at_ms
+         FROM shared.local_store_device_sync_records r WHERE tenant_id=?1 AND (table_name LIKE 'password_vault_%'
+           OR (table_name='local_import_runs' AND (json_extract(record_key,'$[0]') LIKE 'teaching-source:%'
+             OR EXISTS(SELECT 1 FROM shared.local_import_runs i WHERE i.tenant_id=r.tenant_id AND i.run_id=json_extract(r.record_key,'$[0]') AND i.kind='teaching_source'))))
+         ORDER BY table_name,record_key"
+    } else {
+        "SELECT table_name,record_key,dirty_base_generation,record_version,changed_generation,tombstone,changed_at_ms
+         FROM main.local_store_device_sync_records WHERE tenant_id=?1 ORDER BY table_name,record_key"
+    };
     let mut statement = conn
-        .prepare(
-            "SELECT table_name, record_key, dirty_base_generation, record_version,
-                    changed_generation, tombstone, changed_at_ms
-             FROM local_store_device_sync_records WHERE tenant_id = ?1
-             ORDER BY table_name, record_key",
-        )
+        .prepare(sql)
         .map_err(|e| format!("db_sync_manifest_prepare_failed:{e}"))?;
     let rows = statement
         .query_map(params![tenant_id], |row| {
@@ -389,8 +415,8 @@ pub(super) fn database_content_hasher(
             .collect::<Vec<_>>()
             .join(", ");
         let sql = format!(
-            "SELECT json_array({columns}) FROM {name} WHERE tenant_id = ?1 ORDER BY {keys}",
-            name = table.name,
+            "SELECT json_array({columns}) FROM {source} WHERE tenant_id = ?1 ORDER BY {keys}",
+            source = live_table_source(conn, table.name),
             keys = table.key_columns.join(", "),
         );
         let mut statement = conn
@@ -517,6 +543,7 @@ pub(crate) fn mark_sync_published(
     latest_status: &str,
     captured_sequence: i64,
 ) -> Result<(), String> {
+    let _access = store.media_access(tenant_id)?;
     let manifest = read_manifest(manifest_path)?;
     let authoritative = crate::backup_v4::projection(manifest_path, &manifest)?;
     let records = authoritative
@@ -524,6 +551,39 @@ pub(crate) fn mark_sync_published(
         .and_then(|sync| sync.get("records"))
         .and_then(Value::as_array)
         .ok_or_else(|| "backup_sync_records_required".to_string())?;
+    let mut common_records = HashSet::new();
+    if store.class_tenant.is_some() {
+        let common = store.shared_store()?;
+        let mut conn = common.conn.lock().map_err(|_| "db_lock_failed")?;
+        let transaction = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| format!("db_sync_common_publish_transaction_failed:{e}"))?;
+        for record in records {
+            let table = record["table"].as_str().ok_or("backup_sync_table_invalid")?;
+            let keys = record["recordKey"].as_array().ok_or("backup_sync_record_key_invalid")?;
+            let personal_import = if table == "local_import_runs" {
+                let run = keys.first().and_then(Value::as_str).ok_or("backup_sync_record_key_invalid")?;
+                run.starts_with("teaching-source:") || transaction.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM local_import_runs WHERE tenant_id=?1 AND run_id=?2 AND kind='teaching_source')",
+                    params![tenant_id,run], |row| row.get::<_,bool>(0),
+                ).map_err(|e| format!("db_sync_common_publish_kind_failed:{e}"))?
+            } else { false };
+            if !table.starts_with("password_vault_") && !personal_import { continue; }
+            let key = serde_json::to_string(keys).map_err(|e| format!("backup_sync_record_key_encode_failed:{e}"))?;
+            common_records.insert((table.to_string(), key.clone()));
+            if record["changedGeneration"].as_i64() != Some(generation) { continue; }
+            transaction.execute(
+                "UPDATE local_store_device_sync_records SET changed_generation=?4,dirty_base_generation=?4 WHERE tenant_id=?1 AND table_name=?2 AND record_key=?3 AND changed_generation=0 AND record_version=?5",
+                params![tenant_id,table,key,generation,record["recordVersion"].as_i64().unwrap_or(0)],
+            ).map_err(|e| format!("db_sync_common_publish_records_failed:{e}"))?;
+        }
+        transaction.execute(
+            "INSERT INTO local_store_device_sync_state(tenant_id,applied_generation,published_generation) VALUES(?1,?2,?2) ON CONFLICT(tenant_id) DO UPDATE SET applied_generation=MAX(applied_generation,?2),published_generation=MAX(published_generation,?2)",
+            params![tenant_id,generation],
+        ).map_err(|e| format!("db_sync_common_publish_state_failed:{e}"))?;
+        // Publication bookkeeping is idempotent and precedes class cleanliness.
+        // Failure afterward leaves the class dirty and safe to publish again.
+        transaction.commit().map_err(|e| format!("db_sync_common_publish_commit_failed:{e}"))?;
+    }
     let conn = store
         .conn
         .lock()
@@ -544,6 +604,7 @@ pub(crate) fn mark_sync_published(
             .get("recordVersion")
             .and_then(Value::as_i64)
             .unwrap_or(0);
+        if common_records.contains(&(table_name.clone(),record_key.clone())) { continue; }
         let changed_generation = record
             .get("changedGeneration")
             .and_then(Value::as_i64)
@@ -566,10 +627,14 @@ pub(crate) fn mark_sync_published(
             )
             .map_err(|e| format!("db_sync_publish_records_failed:{e}"))?;
     }
+    let dirty_sql = if store.class_tenant.is_some() {
+        "SELECT COUNT(*) FROM main.local_store_device_sync_records r WHERE tenant_id=?1 AND changed_generation=0 AND table_name NOT LIKE 'password_vault_%' AND NOT (table_name='local_import_runs' AND (json_extract(record_key,'$[0]') LIKE 'teaching-source:%' OR EXISTS(SELECT 1 FROM shared.local_import_runs i WHERE i.tenant_id=r.tenant_id AND i.run_id=json_extract(r.record_key,'$[0]') AND i.kind='teaching_source')))"
+    } else {
+        "SELECT COUNT(*) FROM local_store_device_sync_records WHERE tenant_id=?1 AND changed_generation=0"
+    };
     let remaining_dirty: i64 = transaction
         .query_row(
-            "SELECT COUNT(*) FROM local_store_device_sync_records
-         WHERE tenant_id = ?1 AND changed_generation = 0",
+            dirty_sql,
             params![tenant_id],
             |row| row.get(0),
         )
@@ -694,6 +759,12 @@ pub(crate) fn mark_sync_error(store: &SqliteStore, tenant_id: &str, error: &str)
 }
 
 pub(crate) fn mark_external_sync_dirty(store: &SqliteStore, tenant_id: &str) -> Result<(), String> {
+    // Common personal-library writes notify the class's publication state.
+    // Do not mutate the preserved legacy class runtime as a fallback.
+    if store.class_tenant.is_none() && crate::class_store::class_directory(&store.shared_data_dir,tenant_id)?.join("class-storage.json").is_file() {
+        let scoped = store.for_tenant(tenant_id)?;
+        return mark_external_sync_dirty(scoped.as_ref(), tenant_id);
+    }
     let timestamp = now_ms();
     let conn = store
         .conn

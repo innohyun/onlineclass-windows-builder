@@ -4,6 +4,7 @@ import { backupFolderLabel } from "./backup-display-utils";
 import { getDeviceSyncPresentation } from "./device-sync-ui";
 import { renderHomeStatus } from "./home-dashboard";
 import { renderSettingsDashboard } from "./settings-dashboard";
+import type { LocalClassStorage } from "./local-class-selector";
 
 export type ServiceStatus = {
   ok: boolean;
@@ -19,6 +20,9 @@ export type ServiceStatus = {
   dbPath: string;
   keyPath: string;
   pairingKey: string;
+  tenantId?: string;
+  storage?: LocalClassStorage;
+  features?: string[];
   error?: string;
 };
 
@@ -247,4 +251,3 @@ export function renderDeskSummary(input: {
     appVersion,
   });
 }
-

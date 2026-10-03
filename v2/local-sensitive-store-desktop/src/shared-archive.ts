@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { captureLocalClassRequest, isCurrentLocalClassRequest } from "./local-class-context";
 import { save } from "@tauri-apps/plugin-dialog";
 import { openArchiveBoardViewer } from "./archive-board-explorer";
 import { isDeskRestoreBlocked } from "./desk-restore-lock";
@@ -66,9 +67,9 @@ type RecordPresentation = {
 };
 
 const tauriBridge: ArchiveBridge = {
-  list: () => invoke<ArchiveCommandResult>("list_shared_archives"),
-  detail: (archiveId) => invoke<ArchiveCommandResult>("get_shared_archive", { archiveId }),
-  import: (code) => invoke<ArchiveCommandResult>("import_shared_archive", { baseUrl: DEFAULT_API_URL, code }),
+  list: () => invoke<ArchiveCommandResult>("list_shared_archives", { tenantId: archiveTenantId() || null }),
+  detail: (archiveId) => invoke<ArchiveCommandResult>("get_shared_archive", { archiveId, tenantId: archiveTenantId() || null }),
+  import: (code) => invoke<ArchiveCommandResult>("import_shared_archive", { baseUrl: DEFAULT_API_URL, code, tenantId: archiveTenantId() || null }),
   async exportArchive(archiveId, title) {
     const targetPath = await save({
       defaultPath: `${title || "공유자료"}-보관본.json`,
@@ -76,12 +77,13 @@ const tauriBridge: ArchiveBridge = {
     });
     if (!targetPath) return { ok: false, error: "archive_export_cancelled" };
     if (isDeskRestoreBlocked() || isStudentPrivacyEnabled() || selectedArchiveId !== archiveId) return { ok: false, error: "archive_export_cancelled" };
-    return invoke<ArchiveCommandResult>("export_shared_archive", { archiveId, targetPath });
+    return invoke<ArchiveCommandResult>("export_shared_archive", { archiveId, targetPath, tenantId: archiveTenantId() || null });
   },
   openFile: (tenantId, archiveId, ordinal) => invoke<ArchiveCommandResult>("open_shared_archive_file", { tenantId, archiveId, ordinal }),
 };
 
 let activeBridge = tauriBridge;
+let archiveTenantId = () => "";
 let archives: ArchiveSummary[] = [];
 let selectedArchiveId = "";
 let selectedRecordOrdinal = -1;
@@ -302,12 +304,14 @@ function render() {
 async function loadArchives(options: { announce?: boolean; throwOnError?: boolean } = {}) {
   if (busy) return;
   busy = true;
+  const request = captureLocalClassRequest();
   render();
   let loadFirst = false;
   try {
     const result = await activeBridge.list();
+    if (!isCurrentLocalClassRequest(request)) return;
     if (!result.ok) throw new Error(result.error);
-    archives = result.archives || [];
+    archives = (result.archives || []).filter(item => !archiveTenantId() || item.tenantId === archiveTenantId());
     if (selectedArchiveId && !archives.some((item) => item.id === selectedArchiveId)) {
       selectedArchiveId = "";
       selectedRecordOrdinal = -1;
@@ -319,11 +323,11 @@ async function loadArchives(options: { announce?: boolean; throwOnError?: boolea
     }
     if (options.announce !== false) setStatus(`${archives.length}개의 로컬 보관본을 확인했습니다.`, "ok");
   } catch (error) {
+    if (!isCurrentLocalClassRequest(request)) return;
     setStatus(errorText((error as Error).message), "error");
     if (options.throwOnError) throw error;
   } finally {
-    busy = false;
-    render();
+    if (isCurrentLocalClassRequest(request)) { busy = false; render(); }
   }
   if (loadFirst) {
     await selectArchive(selectedArchiveId).catch((error) => setStatus(errorText((error as Error).message), "error"));
@@ -333,6 +337,7 @@ async function loadArchives(options: { announce?: boolean; throwOnError?: boolea
 async function selectArchive(id: string) {
   if (isDeskRestoreBlocked()) return;
   const token = ++selectionEpoch;
+  const request = captureLocalClassRequest();
   selectedArchiveId = id;
   selectedRecordOrdinal = -1;
   detail = null;
@@ -340,13 +345,14 @@ async function selectArchive(id: string) {
   render();
   try {
     const result = await activeBridge.detail(id);
-    if (token !== selectionEpoch || id !== selectedArchiveId) return;
+    if (token !== selectionEpoch || id !== selectedArchiveId || !isCurrentLocalClassRequest(request)) return;
     if (!result.ok || !result.archive) throw new Error(result.error);
+    if (archiveTenantId() && result.archive.meta.tenantId !== archiveTenantId()) throw new Error('archive_tenant_mismatch');
     detail = result.archive;
   } catch (error) {
-    if (token === selectionEpoch && id === selectedArchiveId) throw error;
+    if (token === selectionEpoch && id === selectedArchiveId && isCurrentLocalClassRequest(request)) throw error;
   } finally {
-    if (token === selectionEpoch && id === selectedArchiveId) { detailLoading = false; render(); }
+    if (token === selectionEpoch && id === selectedArchiveId && isCurrentLocalClassRequest(request)) { detailLoading = false; render(); }
   }
 }
 
@@ -397,6 +403,7 @@ async function exportArchive() {
 
 export function initSharedArchive(options: { bridge?: ArchiveBridge; getTenantId?: () => string } = {}) {
   activeBridge = options.bridge || tauriBridge;
+  archiveTenantId = options.getTenantId || (() => "");
   archives = [];
   selectedArchiveId = "";
   selectedRecordOrdinal = -1;
@@ -415,6 +422,10 @@ export function initSharedArchive(options: { bridge?: ArchiveBridge; getTenantId
   document.querySelectorAll<HTMLButtonElement>("[data-archive-kind]").forEach((button) => button.addEventListener("click", () => { archiveKind = button.dataset.archiveKind || ""; document.querySelectorAll<HTMLButtonElement>("[data-archive-kind]").forEach(node => node.setAttribute("aria-pressed", String(node === button))); renderArchiveList(); }));
   window.addEventListener("desk:student-privacy-changed", render);
   window.addEventListener("desk:restore-lock-changed", render);
+  window.addEventListener("desk:class-changed", () => {
+    archives=[]; selectedArchiveId=""; selectedRecordOrdinal=-1; detail=null; detailLoading=false; busy=false; selectionEpoch+=1;
+    el<HTMLInputElement>("sharedArchiveCodeInput").value=""; archiveQuery=""; render();
+  });
   el<HTMLButtonElement>("sharedArchiveImportButton").addEventListener("click", () => void importArchive());
   el<HTMLInputElement>("sharedArchiveCodeInput").addEventListener("keydown", (event) => {
     if (event.key === "Enter") void importArchive();

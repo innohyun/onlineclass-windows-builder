@@ -37,6 +37,11 @@ pub(super) fn export(
     generation: i64,
 ) -> Result<Capture, String> {
     seed_sync_records(store, tenant_id)?;
+    // Existing component connections intentionally omit SQLITE_OPEN_CREATE.
+    // ATTACH inherits that flag, so claim this operation's new snapshot file
+    // explicitly before attaching it; never create a missing source component.
+    fs::OpenOptions::new().write(true).create_new(true).open(db_path)
+        .map_err(|e| format!("backup_db_create_failed:{e}"))?;
     let conn = store
         .conn
         .lock()
@@ -62,7 +67,8 @@ pub(super) fn export(
             }
             let columns = table.columns.join(", ");
             transaction.execute(&format!(
-                "INSERT INTO backup.{0} ({columns}) SELECT {columns} FROM main.{0} WHERE tenant_id=?1", table.name), params![tenant_id])
+                "INSERT INTO backup.{0} ({columns}) SELECT {columns} FROM {source} WHERE tenant_id=?1", table.name,
+                source=live_table_source(&transaction,table.name)), params![tenant_id])
                 .map_err(|e| format!("backup_table_copy_failed:{}:{e}", table.name))?;
         }
         let teaching_sources = crate::teaching_source_backup::capture(&transaction, tenant_id)?;
@@ -113,9 +119,26 @@ fn check_tracking_coverage(conn: &Connection, tenant: &str) -> Result<(), String
         if !table_exists(conn, table.name)? { continue; }
         let name = table.name;
         let key = record_key_expression(name, table);
+        let schema = if name.starts_with("password_vault_") { crate::teaching_source_backup::common_schema(conn) } else { "main" };
+        if name == "local_import_runs"
+            && crate::teaching_source_backup::common_schema(conn) == "shared"
+        {
+            for (component, kind) in [
+                ("main", "kind<>'teaching_source'"),
+                ("shared", "kind='teaching_source'"),
+            ] {
+                let missing: bool = conn.query_row(&format!(
+                    "SELECT EXISTS(SELECT 1 FROM {component}.local_import_runs WHERE tenant_id=?1 AND {kind} AND NOT EXISTS(SELECT 1 FROM {component}.local_store_device_sync_records r WHERE r.tenant_id=local_import_runs.tenant_id AND r.table_name='local_import_runs' AND r.record_key={key} AND r.tombstone=0))"),params![tenant],|row|row.get(0))
+                    .map_err(|e| format!("backup_sync_tracking_check_failed:{e}"))?;
+                if missing {
+                    return Err("backup_sync_tracking_incomplete:local_import_runs".into());
+                }
+            }
+            continue;
+        }
         let missing: bool = conn.query_row(&format!(
-            "SELECT EXISTS(SELECT 1 FROM main.{name} WHERE tenant_id=?1 AND NOT EXISTS (
-              SELECT 1 FROM local_store_device_sync_records r WHERE r.tenant_id={name}.tenant_id
+            "SELECT EXISTS(SELECT 1 FROM {schema}.{name} WHERE tenant_id=?1 AND NOT EXISTS (
+              SELECT 1 FROM {schema}.local_store_device_sync_records r WHERE r.tenant_id={name}.tenant_id
               AND r.table_name='{name}' AND r.record_key={key} AND r.tombstone=0))"),
             params![tenant], |row| row.get(0))
             .map_err(|e| format!("backup_sync_tracking_check_failed:{e}"))?;

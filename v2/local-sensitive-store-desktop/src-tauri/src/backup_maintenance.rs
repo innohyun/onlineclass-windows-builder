@@ -210,6 +210,7 @@ pub(super) fn run_if_due(
     now: i64,
     force: bool,
 ) -> Result<Value, String> {
+    crate::backup_restore_coordinator::maintenance_ready(&store.shared_data_dir, tenant)?;
     let state = maintenance_status(store, tenant)?;
     if !force && now < state["nextRetryAtMs"].as_i64().unwrap_or(0) {
         return Ok(json!({"ok":state["ok"],"skipped":true,"nextRunAtMs":state["nextRetryAtMs"]}));
@@ -217,6 +218,7 @@ pub(super) fn run_if_due(
     let root = configured_tenant_dir(store, tenant)?;
     let _operation = root_operation(store, &root)?;
     // Recheck after acquiring the cross-process root lock.
+    crate::backup_restore_coordinator::maintenance_ready(&store.shared_data_dir, tenant)?;
     let mut state = maintenance_status(store, tenant)?;
     if !force && now < state["nextRetryAtMs"].as_i64().unwrap_or(0) {
         return Ok(json!({"ok":state["ok"],"skipped":true}));

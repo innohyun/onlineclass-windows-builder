@@ -14,9 +14,11 @@ thread_local! { static DEPTH: RefCell<HashMap<PathBuf, usize>> = RefCell::new(Ha
 pub(crate) struct AccessGuard {
     root: PathBuf,
     file: Option<File>,
+    secondary: Option<Box<AccessGuard>>,
 }
 impl Drop for AccessGuard {
     fn drop(&mut self) {
+        drop(self.secondary.take());
         DEPTH.with(|depth| {
             let mut depth = depth.borrow_mut();
             if let Some(n) = depth.get_mut(&self.root) {
@@ -38,6 +40,17 @@ pub(crate) fn access(root: &Path) -> Result<AccessGuard, String> {
     access_with_deadline(root, None)
 }
 
+pub(crate) fn access_pair(common: &Path, class: &Path) -> Result<AccessGuard, String> {
+    let mut guard = access(common)?;
+    guard.secondary = Some(Box::new(access(class)?));
+    Ok(guard)
+}
+pub(crate) fn access_pair_until(common: &Path, class: &Path, deadline: std::time::Instant) -> Result<AccessGuard, String> {
+    let mut guard = access_until(common, deadline)?;
+    guard.secondary = Some(Box::new(access_until(class, deadline)?));
+    Ok(guard)
+}
+
 // MCP reads must never wait for a restore longer than their response budget.
 pub(crate) fn access_until(root: &Path, deadline: std::time::Instant) -> Result<AccessGuard, String> {
     access_with_deadline(root, Some(deadline))
@@ -54,7 +67,7 @@ fn access_with_deadline(root: &Path, deadline: Option<std::time::Instant>) -> Re
             false
         }
     }) {
-        return Ok(AccessGuard { root, file: None });
+        return Ok(AccessGuard { root, file: None, secondary: None });
     }
     let file = fs::OpenOptions::new()
         .create(true)
@@ -84,6 +97,7 @@ fn access_with_deadline(root: &Path, deadline: Option<std::time::Instant>) -> Re
     Ok(AccessGuard {
         root,
         file: Some(file),
+        secondary: None,
     })
 }
 
@@ -157,7 +171,10 @@ fn checked(root: &Path, relative: &Path) -> Result<PathBuf, String> {
 
 pub(crate) fn install(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS local_store_restore_journal (
+        "CREATE TABLE IF NOT EXISTS local_store_component_restore_blocks (
+      tenant_id TEXT PRIMARY KEY, operation_id TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS local_store_restore_journal (
       tenant_id TEXT PRIMARY KEY, operation_id TEXT NOT NULL UNIQUE,
       generation INTEGER NOT NULL, artifact_root TEXT NOT NULL,
       phase TEXT NOT NULL CHECK(phase IN ('prepared','applying','committed')),
@@ -191,6 +208,24 @@ pub(crate) fn install_guards(conn: &Connection) -> Result<(), String> {
               BEGIN SELECT RAISE(ABORT,'restore_recovery_required'); END;"
             ))
             .map_err(|_| error())?;
+            conn.execute_batch(&format!(
+                "CREATE TRIGGER IF NOT EXISTS component_restore_block_{name}_{event}
+              BEFORE {event} ON {name} WHEN EXISTS(SELECT 1 FROM local_store_component_restore_blocks
+                WHERE {scope}) AND NOT EXISTS(SELECT 1 FROM local_store_restore_journal
+                WHERE {scope} AND phase='applying')
+              BEGIN SELECT RAISE(ABORT,'restore_recovery_required'); END;"
+            )).map_err(|_| error())?;
+        }
+    }
+    for name in ["teaching_source_actor_homes", "teaching_sources", "teaching_source_chunks", "curriculum_source_links"] {
+        let exists: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)", params![name], |row| row.get(0)).map_err(|_| error())?;
+        if !exists { continue; }
+        for event in ["INSERT", "UPDATE", "DELETE"] {
+            conn.execute_batch(&format!("CREATE TRIGGER IF NOT EXISTS component_restore_block_{name}_{event}
+                BEFORE {event} ON {name} WHEN EXISTS(SELECT 1 FROM local_store_component_restore_blocks)
+                AND NOT EXISTS(SELECT 1 FROM local_store_restore_journal j JOIN local_store_component_restore_blocks b
+                    ON b.tenant_id=j.tenant_id WHERE j.phase='applying')
+                BEGIN SELECT RAISE(ABORT,'restore_recovery_required'); END;")).map_err(|_| error())?;
         }
     }
     Ok(())
@@ -203,7 +238,10 @@ pub(crate) fn ready(conn: &Connection, tenant: &str) -> Result<(), String> {
             |r| r.get(0),
         )
         .map_err(|_| error())?;
-    if blocked {
+    let component_blocked = if crate::backup_restore_coordinator::bypass(tenant) { false } else {
+        conn.query_row("SELECT EXISTS(SELECT 1 FROM local_store_component_restore_blocks WHERE tenant_id=?1)", params![tenant], |row| row.get::<_, bool>(0)).map_err(|_| error())?
+    };
+    if blocked || component_blocked {
         Err(error())
     } else {
         Ok(())
@@ -383,6 +421,14 @@ pub(crate) fn finish(conn: &Connection, root: &Path, tenant: &str) -> Result<(),
 pub(crate) fn recover(conn: &Connection, root: &Path) -> Result<(), String> {
     let _access = access(root)?;
     install(conn)?;
+    recover_initialized(conn, root)
+}
+
+// Recovery for a known initialized component performs no schema upgrade. It is
+// called by the restore coordinator after both media locks are held, rather
+// than by ordinary shared/class resolution during another live transaction.
+pub(crate) fn recover_initialized(conn: &Connection, root: &Path) -> Result<(), String> {
+    let _access = access(root)?;
     let tenants = conn
         .prepare("SELECT tenant_id FROM local_store_restore_journal")
         .map_err(|_| error())?
@@ -399,11 +445,13 @@ pub(crate) fn recover(conn: &Connection, root: &Path) -> Result<(), String> {
 
 #[cfg(test)]
 pub(crate) fn failpoint(name: &str) {
-    if std::env::var("CLASSAIMATE_QA_RESTORE_CRASH")
-        .ok()
-        .as_deref()
-        == Some(name)
-    {
+    let requested=std::env::var("CLASSAIMATE_QA_RESTORE_CRASH").ok();
+    let component_name=match crate::backup_restore_coordinator::component() {
+        crate::backup_restore_coordinator::Component::Common => format!("component-common-{name}"),
+        crate::backup_restore_coordinator::Component::Class => format!("component-class-{name}"),
+        crate::backup_restore_coordinator::Component::Combined => String::new(),
+    };
+    if requested.as_deref()==Some(name) || (!component_name.is_empty() && requested.as_deref()==Some(component_name.as_str())) {
         let root = PathBuf::from(
             std::env::var("CLASSAIMATE_QA_RESTORE_ROOT").expect("child fixture root"),
         );

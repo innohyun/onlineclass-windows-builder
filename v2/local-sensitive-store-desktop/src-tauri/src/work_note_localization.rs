@@ -571,6 +571,8 @@ pub(crate) fn handle_http_attachment(request: &mut Request, store: &SqliteStore,
     let (authorized, browser_tenant) = request_authority(request, pairing_key, browser_links);
     if !authorized { return Ok(Some(json_response(401, json!({ "ok": false, "error": "unauthorized" }), origin).boxed())); }
     let tenant_id = scope_tenant_id(query(&url, "tenantId"), browser_tenant.as_deref())?;
+    let scoped_store = store.for_tenant(&tenant_id)?;
+    let store = scoped_store.as_ref();
     let document_id = parts[2].to_string();
     if parts.len() == 4 && request.method() == &Method::Get {
         let records = list_attachments(store, tenant_id, document_id, query(&url, "pageId"))?;
@@ -607,7 +609,7 @@ mod tests {
         ensure_schema(&conn).unwrap();
         crate::restore_journal::install(&conn).unwrap();
         crate::restore_journal::install_guards(&conn).unwrap();
-        let store = SqliteStore { conn: Mutex::new(conn), db_path, data_dir: directory.clone() };
+        let store = SqliteStore::from_connection(conn, db_path, directory.clone());
         begin(&store, json!({ "tenantId":"tenant-a","documentId":"document-a","rootPageId":"root-a",
             "documentTitle":"참고자료","preparedRevision":2,"snapshotSha256":"a".repeat(64),"expectedPageCount":2 })).unwrap();
         for page in [
@@ -653,7 +655,7 @@ mod tests {
         ensure_schema(&conn).unwrap();
         crate::restore_journal::install(&conn).unwrap();
         crate::restore_journal::install_guards(&conn).unwrap();
-        let store = SqliteStore { conn: Mutex::new(conn), db_path, data_dir: directory.clone() };
+        let store = SqliteStore::from_connection(conn, db_path, directory.clone());
         begin(&store, json!({ "tenantId":"tenant-a","documentId":"document-a","rootPageId":"old-root",
             "documentTitle":"이전 준비본","preparedRevision":2,"snapshotSha256":"a".repeat(64),"expectedPageCount":1 })).unwrap();
         stage_page(&store, "tenant-a".into(), "document-a".into(), "old-root".into(),
@@ -689,7 +691,7 @@ mod tests {
         ensure_schema(&conn).unwrap();
         crate::restore_journal::install(&conn).unwrap();
         crate::restore_journal::install_guards(&conn).unwrap();
-        let store = SqliteStore { conn: Mutex::new(conn), db_path, data_dir: directory.clone() };
+        let store = SqliteStore::from_connection(conn, db_path, directory.clone());
         let started = begin(&store, json!({ "tenantId":"tenant-a","documentId":"document-a","rootPageId":"root-a",
             "documentTitle":"참고자료","preparedRevision":2,"snapshotSha256":"a".repeat(64),"expectedPageCount":2,
             "destinationParentId":"destination-a" })).unwrap();

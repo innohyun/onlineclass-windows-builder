@@ -53,7 +53,7 @@ fn device_identity_changes_invalidate_worker_and_errors_are_safe() {
         .as_array()
         .unwrap()
         .contains(&json!("lesson_observations_mcp_v1")));
-    assert!(!status().to_string().contains(owner.credential.as_str()));
+    assert!(!status_for_tenant(&owner.tenant_id).to_string().contains(owner.credential.as_str()));
 }
 
 #[test]
@@ -943,4 +943,89 @@ fn blocked_http_catch_up_does_not_block_websocket_read_or_heartbeat() {
     assert_eq!(Arc::strong_count(&store), 1);
     drop(store);
     std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn class_worker_status_and_diagnostics_do_not_mix_receipt_or_request_ids() {
+    let first = format!("qa-worker-2026-{}", crate::random_url_token());
+    let second = format!("qa-worker-2027-{}", crate::random_url_token());
+    set_state(&first, "ready", "");
+    set_state(&second, "reconnecting", "MCP_WORKER_NETWORK_UNAVAILABLE");
+    job_diagnostic(&first, "same-receipt", "saved", "SAVED", &json!(1), 1);
+    job_diagnostic(&second, "same-receipt", "claim", "STARTED", &Value::Null, 0);
+    diagnostic_tenant(&first);
+    reads::trace(&json!({"requestId":"same-read"}), "first-class", Instant::now(), "OK", None);
+    diagnostic_tenant(&second);
+    reads::trace(&json!({"requestId":"same-read"}), "second-class", Instant::now(), "OK", None);
+    let old = status_for_tenant(&first);
+    let new = status_for_tenant(&second);
+    assert_eq!(old["state"], "ready");
+    assert_eq!(old["recentJobs"][0]["stage"], "saved");
+    assert_eq!(old["recentReads"][0]["stage"], "first-class");
+    assert_eq!(new["state"], "reconnecting");
+    assert_eq!(new["recentJobs"][0]["stage"], "claim");
+    assert_eq!(new["recentReads"][0]["stage"], "second-class");
+}
+
+#[test]
+fn delayed_reads_with_identical_ids_keep_their_authenticated_class_database() {
+    let (directory, common) = test_store();
+    let first = common.for_tenant("tenant-2026").unwrap();
+    let second = common.for_tenant("tenant-2027").unwrap();
+    assert_ne!(first.db_path, second.db_path);
+    for (store, tenant, note) in [(&first, "tenant-2026", "old-class-only"), (&second, "tenant-2027", "new-class-only")] {
+        classaimate_mcp_write_jobs::apply(store, &json!({"tenantId":tenant,"receiptId":"same-receipt",
+            "operation":"lesson_observations_manage","requestSha256":"a".repeat(64),
+            "data":{"scope":{"date":"2026-09-08","period":1,"subject":"수학"},"mutationId":"same-mutation",
+            "items":[{"action":"create","studentCode":"STU01","docId":"same-doc","baselineRecords":[],"record":{"note":note}}]}})).unwrap();
+    }
+    let mut old_authority = authority("http://localhost".into());
+    old_authority.tenant_id = "tenant-2026".into();
+    let mut new_authority = old_authority.clone();
+    new_authority.tenant_id = "tenant-2027".into();
+    let mut old = reads::Executor::new(Arc::clone(&first), old_authority, || {
+        thread::sleep(Duration::from_millis(50)); Ok(())
+    });
+    let mut new = reads::Executor::new(Arc::clone(&second), new_authority, || Ok(()));
+    let frame = read_request();
+    assert!(old.submit(frame.clone()).is_none());
+    assert!(new.submit(frame).is_none());
+    let new_response = executor_response(&mut new);
+    let old_response = executor_response(&mut old);
+    assert_eq!(old_response["status"], "ok");
+    assert_eq!(new_response["status"], "ok");
+    assert!(old_response.to_string().contains("old-class-only"));
+    assert!(!old_response.to_string().contains("new-class-only"));
+    assert!(new_response.to_string().contains("new-class-only"));
+    assert!(!new_response.to_string().contains("old-class-only"));
+    drop(old); drop(new); drop(first); drop(second); drop(common);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn a_matching_device_id_cannot_apply_another_class_or_actor_job() {
+    for foreign in [json!({"tenantId":"other-class"}), json!({"actorId":"other-teacher"})] {
+        let (directory, store) = test_store();
+        let job = json!({"receiptId":"scope-receipt","target":{"deviceId":"device-a"},
+            "operation":"lesson_observations_manage","requestSha256":"a".repeat(64),"data":{}});
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let owner = authority(format!("http://{}", server.server_addr()));
+        let serving = thread::spawn(move || {
+            let mut receipt = foreign;
+            receipt["claimRevision"] = json!(1);
+            let claim = server.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+            assert!(claim.url().ends_with("/claim"));
+            claim.respond(tiny_http::Response::from_string(json!({"ok":true,"data":{"job":job,"receipt":receipt}}).to_string())).unwrap();
+            let mut failure = server.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+            assert!(failure.url().ends_with("/fail"));
+            let mut body = String::new(); failure.as_reader().read_to_string(&mut body).unwrap();
+            assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["errorCode"], "MCP_WRITE_DEVICE_MISMATCH");
+            failure.respond(tiny_http::Response::from_string(json!({"ok":true,"data":{}}).to_string())).unwrap();
+        });
+        assert_eq!(apply_job(&store, &owner, "scope-receipt", &AtomicBool::new(false), || Ok(())).unwrap_err(), "MCP_WRITE_DEVICE_MISMATCH");
+        serving.join().unwrap();
+        let count: i64 = store.conn.lock().unwrap().query_row("SELECT count(*) FROM classaimate_mcp_local_write_receipts", [], |row| row.get(0)).unwrap();
+        assert_eq!(count, 0);
+        drop(store); std::fs::remove_dir_all(directory).unwrap();
+    }
 }

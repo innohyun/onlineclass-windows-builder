@@ -34,6 +34,25 @@ pub(crate) fn open_db() -> Result<Connection, String> {
     open_paths(&path, &files)
 }
 
+pub(crate) fn storage_paths_for_tenant(tenant: &str) -> Result<(PathBuf, PathBuf), String> {
+    let (legacy, _) = storage_paths();
+    let root = legacy.parent().ok_or("archive_root_missing")?;
+    let db_path = root.join(crate::DB_FILE_NAME);
+    // Legacy archive-only profiles need one explicit initialization. Verified
+    // profiles resolve handles without schema writes inside backup/MCP/restore.
+    let store = if db_path.is_file() {
+        crate::SqliteStore::open_initialized(db_path)?
+    } else {
+        crate::SqliteStore::open(db_path)?
+    };
+    let class_store = store.for_tenant(tenant)?;
+    Ok((class_store.data_dir.join(DB_FILE), class_store.data_dir.join(FILE_DIR)))
+}
+pub(crate) fn open_db_for_tenant(tenant: &str) -> Result<Connection,String> {
+    let (path,files) = storage_paths_for_tenant(tenant)?;
+    open_paths(&path,&files)
+}
+
 pub(crate) fn open_db_at(root: &Path) -> Result<Connection, String> {
     open_paths(&root.join(DB_FILE), &root.join(FILE_DIR))
 }
@@ -286,8 +305,11 @@ pub(crate) fn import_shared_archive(
     state: tauri::State<'_, super::AppState>,
     base_url: String,
     code: String,
+    tenant_id: String,
 ) -> Value {
-    match import_archive(&base_url, &code, "").and_then(|value| {
+    let scoped = match crate::native_class_authority::for_native_tenant(&state,&tenant_id) { Ok(store)=>store, Err(error)=>return json!({"ok":false,"error":error}) };
+    let _access = match scoped.media_access(&tenant_id) { Ok(guard)=>guard, Err(error)=>return json!({"ok":false,"error":error}) };
+    match import_archive(&base_url, &code, &tenant_id).and_then(|value| {
         let tenant_id = value.get("tenantId").and_then(Value::as_str).unwrap_or("");
         let store = state
             .store
@@ -295,7 +317,8 @@ pub(crate) fn import_shared_archive(
             .map_err(|_| "db_lock_failed".to_string())?
             .clone()
             .ok_or_else(|| "local_store_unavailable".to_string())?;
-        super::backup::mark_external_sync_dirty(&store, tenant_id)?;
+        let scoped = store.for_tenant(tenant_id)?;
+        super::backup::mark_external_sync_dirty(scoped.as_ref(), tenant_id)?;
         Ok(value)
     }) {
         Ok(value) => value,
@@ -384,7 +407,7 @@ fn import_archive(base_url: &str, code: &str, expected_tenant_id: &str) -> Resul
             return Err("archive_record_verify_failed".to_string());
         }
     }
-    let mut connection = open_db()?;
+    let mut connection = open_db_for_tenant(archive_tenant_id)?;
     let existing = connection
         .query_row(
             "SELECT tenant_id,manifest_sha256 FROM shared_archives WHERE id=?1",
@@ -399,7 +422,7 @@ fn import_archive(base_url: &str, code: &str, expected_tenant_id: &str) -> Resul
             return Err("archive_existing_manifest_mismatch".to_string());
         }
     }
-    let (_, file_root) = storage_paths();
+    let (_, file_root) = storage_paths_for_tenant(archive_tenant_id)?;
     let archive_dir = file_root.join(archive_id);
     fs::create_dir_all(&archive_dir).map_err(|e| format!("archive_target_dir_failed:{e}"))?;
     let mut local_files = Vec::new();
@@ -511,15 +534,17 @@ fn import_archive(base_url: &str, code: &str, expected_tenant_id: &str) -> Resul
 }
 
 #[tauri::command]
-pub(crate) fn list_shared_archives() -> Value {
-    match list_archives() {
+pub(crate) fn list_shared_archives(state: tauri::State<'_,crate::AppState>, tenant_id: String) -> Value {
+    let scoped = match crate::native_class_authority::for_native_tenant(&state,&tenant_id) { Ok(store)=>store, Err(error)=>return json!({"ok":false,"error":error}) };
+    let _access = match scoped.media_access(&tenant_id) { Ok(guard)=>guard, Err(error)=>return json!({"ok":false,"error":error}) };
+    match list_archives(&tenant_id) {
         Ok(items) => json!({"ok":true,"archives":items}),
         Err(error) => json!({"ok":false,"archives":[],"error":error}),
     }
 }
 
-fn list_archives() -> Result<Vec<Value>, String> {
-    let connection = open_db()?;
+fn list_archives(tenant_id: &str) -> Result<Vec<Value>, String> {
+    let connection = open_db_for_tenant(tenant_id)?;
     let mut statement = connection
         .prepare(
             "SELECT id,tenant_id,source_type,title,record_count,file_count,total_file_bytes,imported_at,
@@ -537,16 +562,20 @@ fn list_archives() -> Result<Vec<Value>, String> {
 }
 
 #[tauri::command]
-pub(crate) fn get_shared_archive(archive_id: String) -> Value {
-    match archive_detail(&archive_id) {
+pub(crate) fn get_shared_archive(state: tauri::State<'_,crate::AppState>, tenant_id: String, archive_id: String) -> Value {
+    let scoped = match crate::native_class_authority::for_native_tenant(&state,&tenant_id) { Ok(store)=>store, Err(error)=>return json!({"ok":false,"error":error}) };
+    let _access = match scoped.media_access(&tenant_id) { Ok(guard)=>guard, Err(error)=>return json!({"ok":false,"error":error}) };
+    match archive_detail(&tenant_id, &archive_id) {
         Ok(value) => json!({"ok":true,"archive":value}),
         Err(error) => json!({"ok":false,"error":error}),
     }
 }
 
-fn archive_detail(id: &str) -> Result<Value, String> {
-    let connection = open_db()?;
-    archive_detail_from_connection(&connection, id)
+fn archive_detail(tenant_id: &str, id: &str) -> Result<Value, String> {
+    let connection = open_db_for_tenant(tenant_id)?;
+    let value = archive_detail_from_connection(&connection, id)?;
+    if value["meta"]["tenantId"] != tenant_id { return Err("tenant_scope_mismatch".into()); }
+    Ok(value)
 }
 
 pub(crate) fn record_values(
@@ -607,8 +636,10 @@ fn archive_detail_from_connection(connection: &Connection, id: &str) -> Result<V
 }
 
 #[tauri::command]
-pub(crate) fn export_shared_archive(archive_id: String, target_path: String) -> Value {
-    match archive_detail(&archive_id).and_then(|value| {
+pub(crate) fn export_shared_archive(state: tauri::State<'_,crate::AppState>, tenant_id: String, archive_id: String, target_path: String) -> Value {
+    let scoped = match crate::native_class_authority::for_native_tenant(&state,&tenant_id) { Ok(store)=>store, Err(error)=>return json!({"ok":false,"error":error}) };
+    let _access = match scoped.media_access(&tenant_id) { Ok(guard)=>guard, Err(error)=>return json!({"ok":false,"error":error}) };
+    match archive_detail(&tenant_id, &archive_id).and_then(|value| {
         serde_json::to_string_pretty(&value)
             .map_err(|e| format!("archive_export_encode_failed:{e}"))
             .and_then(|raw| {
@@ -623,17 +654,20 @@ pub(crate) fn export_shared_archive(archive_id: String, target_path: String) -> 
 
 #[tauri::command]
 pub(crate) fn open_shared_archive_file(
+    state: tauri::State<'_,crate::AppState>,
     tenant_id: String,
     archive_id: String,
     ordinal: i64,
 ) -> Value {
     let result = (|| -> Result<(), String> {
-        let connection = open_db()?;
+        let scoped = crate::native_class_authority::for_native_tenant(&state,&tenant_id)?;
+        let _access = scoped.media_access(&tenant_id)?;
+        let connection = open_db_for_tenant(&tenant_id)?;
         let path: String = connection
             .query_row("SELECT file.local_path FROM shared_archive_files file JOIN shared_archives archive ON archive.id=file.archive_id WHERE file.archive_id=?1 AND file.ordinal=?2 AND archive.tenant_id=?3", params![archive_id, ordinal, tenant_id], |row| row.get(0))
             .map_err(|_| "archive_file_not_found".to_string())?;
         let target = PathBuf::from(path);
-        let (_, root) = storage_paths();
+        let (_, root) = storage_paths_for_tenant(&tenant_id)?;
         let canonical = target
             .canonicalize()
             .map_err(|e| format!("archive_file_path_failed:{e}"))?;

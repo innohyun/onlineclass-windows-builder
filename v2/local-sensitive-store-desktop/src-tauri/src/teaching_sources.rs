@@ -151,7 +151,10 @@ pub(crate) fn ensure_schema(conn: &Connection) -> Result<(), String> {
         let columns=statement.query_map([],|row|row.get::<_,String>(1)).map_err(|e|format!("db_teaching_sources_schema_inspect_failed:{e}"))?.collect::<Result<Vec<_>,_>>().map_err(|e|format!("db_teaching_sources_schema_inspect_failed:{e}"))?;
         if !columns.iter().any(|value|value==column){conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {definition}" )).map_err(|e|format!("db_teaching_sources_schema_upgrade_failed:{e}"))?;}
     }
-    conn.execute("UPDATE curriculum_source_links SET teaching_source_revision=COALESCE((SELECT revision FROM teaching_sources s WHERE s.owner_uid=curriculum_source_links.owner_uid AND s.source_id=curriculum_source_links.source_id),teaching_source_revision)",[]).map_err(|e|format!("db_teaching_sources_link_revision_backfill_failed:{e}"))?;
+    let restore_blocked = conn.query_row("SELECT EXISTS(SELECT 1 FROM local_store_component_restore_blocks)", [], |row| row.get::<_,bool>(0)).unwrap_or(false);
+    if !restore_blocked {
+        conn.execute("UPDATE curriculum_source_links SET teaching_source_revision=COALESCE((SELECT revision FROM teaching_sources s WHERE s.owner_uid=curriculum_source_links.owner_uid AND s.source_id=curriculum_source_links.source_id),teaching_source_revision)",[]).map_err(|e|format!("db_teaching_sources_link_revision_backfill_failed:{e}"))?;
+    }
     Ok(())
 }
 
@@ -974,6 +977,7 @@ pub(crate) fn handle_http_request(request: &mut Request, store: &SqliteStore, br
     let principal = browser_links.principal_for_request(request).ok_or("browser_token_required")?;
     let tenant = principal.tenant_id;
     let owner = principal.uid;
+    let _access = store.media_access(&tenant)?;
     let result = if path == "/v1/teaching-sources" && request.method() == &Method::Get {
         list_sources(store,&tenant,&owner,&url)?
     } else if path == "/v1/teaching-sources" && request.method() == &Method::Post {

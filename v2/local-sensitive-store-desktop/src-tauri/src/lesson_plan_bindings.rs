@@ -308,11 +308,7 @@ mod tests {
         let conn = opened.conn.into_inner().unwrap();
         ensure_schema(&conn).expect("create binding schema");
         (
-            SqliteStore {
-                conn: Mutex::new(conn),
-                db_path,
-                data_dir: data_dir.clone(),
-            },
+            SqliteStore::from_connection(conn, db_path, data_dir.clone()),
             data_dir,
         )
     }

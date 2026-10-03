@@ -314,7 +314,7 @@ export function initDeskRecordEditor(options: { getTenantId: () => string; onCha
     statusCopy = '현재 기록과 학급 명단을 확인하고 있습니다.'; statusFailed = false; dialog.showModal(); setBusy(true);
     try {
       if (creating) {
-        const result = await invoke<RosterResult>('get_quick_observation_context');
+        const result = await invoke<RosterResult>('get_quick_observation_context', { tenantId });
         if (requestGeneration !== generation || options.getTenantId() !== tenantId) return;
         if (!result.ok || result.tenantId !== tenantId || !Array.isArray(result.roster?.students)) throw new Error(result.error || 'roster_missing');
         roster = result.roster.students.filter(item => item.status !== 'archived' && typeof item.id === 'string' && !!item.id);

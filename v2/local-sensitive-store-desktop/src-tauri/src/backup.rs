@@ -13,7 +13,7 @@ use std::time::Duration;
 
 #[path = "backup_restore.rs"]
 mod restore_runtime;
-pub(crate) use restore_runtime::{recovery_preflight, recovery_restore};
+pub(crate) use restore_runtime::{recovery_preflight, recovery_restore, restore_coordinated_component};
 #[path = "backup_restore_progress.rs"]
 mod restore_progress;
 pub(crate) use restore_progress::{RestoreErrorKind, RestorePhase, RestoreProgress};
@@ -667,7 +667,7 @@ fn backup_schema_sql(prefix: &str) -> String {
 }
 
 fn config_path(store: &SqliteStore) -> PathBuf {
-    store.data_dir.join(BACKUP_CONFIG_FILE)
+    store.shared_data_dir.join(BACKUP_CONFIG_FILE)
 }
 
 fn read_config(store: &SqliteStore) -> Value {
@@ -718,7 +718,7 @@ fn assert_backup_root_allowed(store: &SqliteStore, root: PathBuf) -> Result<Path
     let root = root
         .canonicalize()
         .unwrap_or(root);
-    let data_dir = store.data_dir.canonicalize().unwrap_or_else(|_| store.data_dir.clone());
+    let data_dir = store.shared_data_dir.canonicalize().unwrap_or_else(|_| store.shared_data_dir.clone());
     if root == data_dir || root.starts_with(&data_dir) {
         return Err("backup_root_inside_local_store".to_string());
     }
@@ -1194,6 +1194,8 @@ pub(crate) fn start_background(store: Arc<SqliteStore>) {
         let config = read_config(&store);
         let tenants = config.get("tenants").and_then(|value| value.as_object()).cloned().unwrap_or_default();
         for (tenant_id, tenant) in tenants {
+            let class_store = match store.for_tenant(&tenant_id) { Ok(store) => store, Err(_) => continue };
+            let store = class_store;
             if tenant.get("enabled").and_then(|value| value.as_bool()) == Some(false) {
                 continue;
             }
@@ -1206,4 +1208,13 @@ pub(crate) fn start_background(store: Arc<SqliteStore>) {
         }
         // Due times and bounded backoff are persisted independently of backup creation.
     });
+}
+
+// Restore coordination preserves the backup-root -> common-files -> class-files
+// lock order used by regular backup and retention operations.
+pub(crate) fn with_restore_component_operation<T>(
+    store: &SqliteStore, tenant: &str, operation: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let _guard = root_operation(store, &configured_tenant_dir(store, tenant)?)?;
+    operation()
 }
