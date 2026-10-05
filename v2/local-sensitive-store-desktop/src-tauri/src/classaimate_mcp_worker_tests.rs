@@ -998,7 +998,17 @@ fn delayed_reads_with_identical_ids_keep_their_authenticated_class_database() {
     assert!(!old_response.to_string().contains("new-class-only"));
     assert!(new_response.to_string().contains("new-class-only"));
     assert!(!new_response.to_string().contains("old-class-only"));
-    drop(old); drop(new); drop(first); drop(second); drop(common);
+    drop(old); drop(new);
+    // Detached read executors release their class stores after the channel closes.
+    let shutdown_deadline = Instant::now() + Duration::from_secs(1);
+    while (Arc::strong_count(&first) != 1 || Arc::strong_count(&second) != 1)
+        && Instant::now() < shutdown_deadline
+    {
+        thread::yield_now();
+    }
+    assert_eq!(Arc::strong_count(&first), 1, "old executor must release its class store before cleanup");
+    assert_eq!(Arc::strong_count(&second), 1, "new executor must release its class store before cleanup");
+    drop(first); drop(second); drop(common);
     std::fs::remove_dir_all(directory).unwrap();
 }
 
