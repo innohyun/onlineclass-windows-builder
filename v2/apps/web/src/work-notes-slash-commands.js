@@ -21,13 +21,22 @@ export const workNoteCommandGroups = [
     ["toc", "목차", "toc, 목차", "현재 페이지 제목을 바탕으로 목차를 만듭니다.", "fa-list"],
   ]],
   ["미디어", [
-    ["image", "이미지", "image, 이미지, 사진", "내 PC에 원본 이미지를 저장합니다.", "fa-image"],
-    ["file", "파일", "file, 파일, 첨부", "용량 제한 없이 로컬 파일을 첨부합니다.", "fa-paperclip"],
+    ["image", "이미지", "image, 이미지, 사진", "내 PC의 로컬 저장소에 이미지를 저장합니다.", "fa-image"],
+    ["file", "파일", "file, 파일, 첨부", "내 PC의 로컬 저장소에 파일을 첨부합니다.", "fa-paperclip"],
     ["pdf", "PDF", "pdf, 문서", "PDF를 첨부하고 본문에서 미리 봅니다.", "fa-file-pdf"],
     ["video", "동영상", "video, 동영상, 영상", "로컬 동영상 플레이어를 넣습니다.", "fa-film"],
     ["audio", "오디오", "audio, 오디오, 음성", "로컬 오디오 플레이어를 넣습니다.", "fa-file-audio"],
   ]],
 ];
 
-export const flattenWorkNoteCommands = () => workNoteCommandGroups
-  .flatMap(([group, commands]) => commands.map((command) => ({ group, command })));
+export function flattenWorkNoteCommands({ storageKind = "local", draft = false, canCreatePage = true } = {}) {
+  return workNoteCommandGroups.flatMap(([group, commands]) => commands.map((original) => {
+    const command = [...original];
+    const disabled = command[0] === "page" && !canCreatePage;
+    if (disabled) command[3] = draft ? "업무 등록 후 새 페이지를 만들 수 있습니다." : "문서 소유자만 새 페이지를 만들 수 있습니다.";
+    if (group === "미디어" && storageKind === "cloud") command[3] = draft
+      ? "등록 전 임시 첨부 · 등록 후 파일당 20 MiB · 60일 보관"
+      : "쓰기 권한에서 첨부 · 파일당 20 MiB · 60일 보관";
+    return { group, command, disabled };
+  }));
+}

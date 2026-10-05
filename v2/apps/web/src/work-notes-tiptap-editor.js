@@ -15,6 +15,7 @@ import { createAttachmentBlock } from "./work-notes-attachment-node.js";
 import { deleteWorkNoteAttachmentBlock, deleteWorkNoteBlockRangeAttachments, handleWorkNoteAttachmentDeleteKey } from "./work-notes-attachment-block-actions.js";
 import { createWorkNoteAttachmentUploadController } from "./work-notes-attachment-upload-controller.js";
 import { createWorkNoteBlockInteractions, workNoteFloatingMenuPosition } from "./work-notes-block-interactions.js";
+import { bindWorkNoteToolbarActions, renderWorkNoteSelectionToolbars } from "./work-notes-editor-toolbars.js";
 import {
   canMoveWorkNoteNestedBlock,
   canWorkNoteNestedBlockAction,
@@ -81,7 +82,9 @@ export function classifyWorkNoteTransaction(transaction) {
 
 export function createWorkNotesTiptapEditor(options) {
   const canEdit = () => options.isEditable ? options.isEditable() === true : options.editable !== false;
-  const canUseAi = () => canEdit() && Boolean(options.onOpenAi) && (options.canUseAi?.() ?? true);
+  const canMutate = () => Boolean(editor?.isEditable && canEdit());
+  const canCreatePage = () => canMutate() && (options.canCreatePage?.() ?? true);
+  const canUseAi = () => canMutate() && Boolean(options.onOpenAi) && (options.canUseAi?.() ?? true);
   const ui = {
     slashMenu: document.getElementById("slashMenu"),
     slashCommands: document.getElementById("slashCommands"),
@@ -131,6 +134,9 @@ export function createWorkNotesTiptapEditor(options) {
   });
 
   const pages = () => [...options.getPages()];
+  const hideToolbars = () => {
+    for (const toolbar of [ui.selectionToolbar, ui.tableToolbar, ui.blockRangeToolbar]) toolbar.style.display = "none";
+  };
   const closeMenus = () => {
     menu = null;
     ui.slashMenu.style.display = "none";
@@ -150,13 +156,13 @@ export function createWorkNotesTiptapEditor(options) {
 
   function renderSlash() {
     const needle = menu.query.trim().toLowerCase();
-    const matches = flattenWorkNoteCommands().filter(({ command }) => (command[0] !== "ai" || canUseAi())
+    const matches = flattenWorkNoteCommands({ ...options.commandContext?.(), canCreatePage: canCreatePage() }).filter(({ command }) => (command[0] !== "ai" || canUseAi())
       && (!needle || `${command[1]} ${command[2]} ${command[3]}`.toLowerCase().includes(needle)));
     menu.items = matches;
     menuIndex = Math.min(menuIndex, Math.max(0, matches.length - 1));
     ui.slashCommands.replaceChildren();
     let previousGroup = "";
-    matches.forEach(({ group, command }, index) => {
+    matches.forEach(({ group, command, disabled }, index) => {
       if (group !== previousGroup) {
         const heading = document.createElement("div");
         heading.className = "menu-heading";
@@ -166,6 +172,7 @@ export function createWorkNotesTiptapEditor(options) {
       }
       const button = document.createElement("button");
       button.type = "button";
+      button.disabled = disabled;
       button.className = `slash-command${index === menuIndex ? " active" : ""}`;
       button.innerHTML = `<span class="command-icon"><i class="fa-solid ${command[4]}"></i></span><span class="command-copy"><b>${options.escapeHtml(command[1])}</b><small>${options.escapeHtml(command[3])}</small></span>`;
       button.addEventListener("mousedown", (event) => { event.preventDefault(); applySlash(command[0]); });
@@ -174,6 +181,8 @@ export function createWorkNotesTiptapEditor(options) {
   }
 
   function showSlash(query, from, to) {
+    if (!canMutate()) return closeMenus();
+    hideToolbars();
     const rect = editor.view.coordsAtPos(to);
     menu = { type: "slash", query, from, to, items: [] };
     menuIndex = 0;
@@ -181,7 +190,10 @@ export function createWorkNotesTiptapEditor(options) {
     positionMenu(ui.slashMenu, rect, 320);
   }
 
-  function inlineOptions(mode, query) { return workNoteInlineOptions({ mode, query, pages: pages(), pageId, pagePath: options.pagePath }); }
+  function inlineOptions(mode, query) {
+    return workNoteInlineOptions({ mode, query, pages: pages(), pageId, pagePath: options.pagePath })
+      .filter((item) => canCreatePage() || !["root", "child"].includes(item.action));
+  }
 
   async function loadExternalInline(activeMenu) {
     if (options.searchMentionCandidates && activeMenu.mode === 'at') {
@@ -236,6 +248,8 @@ export function createWorkNotesTiptapEditor(options) {
   }
 
   function showInline(mode, query, from, to) {
+    if (!canMutate()) return closeMenus();
+    hideToolbars();
     const rect = editor.view.coordsAtPos(to);
     menu = { type: "inline", mode, query, from, to, items: [] };
     menuIndex = 0;
@@ -245,7 +259,8 @@ export function createWorkNotesTiptapEditor(options) {
   }
 
   function detectTrigger() {
-    if (!editor || applying || !editor.isEditable) return;
+    if (!canMutate()) return closeMenus();
+    if (applying || getWorkNoteBlockRange(editor) || ["block", "placement"].includes(menu?.type)) return;
     const { $from, from, to } = editor.state.selection;
     if (from !== to || !$from.parent.isTextblock) return closeMenus();
     const before = $from.parent.textBetween(0, $from.parentOffset, "\n", "\n");
@@ -262,8 +277,10 @@ export function createWorkNotesTiptapEditor(options) {
   }
 
   async function applyInline(item) {
-    if (!menu || menu.type !== "inline") return;
+    if (!canMutate() || !menu || menu.type !== "inline") return;
+    if (["root", "child"].includes(item.action) && !canCreatePage()) return;
     const active = menu;
+    const activeEditor = editor;
     applying = true;
     try {
       if (item.action === "date") {
@@ -274,6 +291,7 @@ export function createWorkNotesTiptapEditor(options) {
       } else {
         let page = item.page;
         if (!page) page = await options.createPage(item.action === "root" ? null : pageId, active.query.trim() || "제목 없음", { open: false });
+        if (!canMutate() || editor !== activeEditor) return;
         const href = page.externalHref || (page.external ? `worknote://cloud/${page.documentId}/${page.pageId}` : `worknote://${page.pageId}`);
         editor.chain().focus().deleteRange({ from: active.from, to: active.to }).insertContent({ type: "text", text: page.title, marks: [{ type: "link", attrs: { href, title: page.title, target: null, rel: null, class: "internal-page-link" } }] }).insertContent(" ").run();
       }
@@ -294,14 +312,15 @@ export function createWorkNotesTiptapEditor(options) {
   }
 
   async function insertFiles(files, position = null, requestedKind = "") {
-    if (!files?.length || !canEdit()) return [];
+    if (!files?.length || !canMutate()) return [];
     const choices = await options.chooseAttachmentModes?.([...files], requestedKind || "auto")
       || [...files].map((file) => ({ file, kind: requestedKind || droppedFileKind(file), displayMode: requestedKind === "file" ? "file" : "preview" }));
     return attachmentUploads.insert(choices, position);
   }
 
   async function applySlash(type) {
-    if (!menu || menu.type !== "slash") return;
+    if (!canMutate() || !menu || menu.type !== "slash") return;
+    if (type === "page" && !canCreatePage()) return;
     if (type === "ai" && !canUseAi()) { closeMenus(); return; }
     const range = { from: menu.from, to: menu.to };
     applying = true;
@@ -346,11 +365,20 @@ export function createWorkNotesTiptapEditor(options) {
   }
 
   function handleMenuKey(event) {
-    if (!menu || !["slash", "inline"].includes(menu.type)) return false;
+    if (!menu) return false;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeMenus();
+      return true;
+    }
+    if (!["slash", "inline"].includes(menu.type)) return false;
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
       const count = menu.items.length;
-      if (count) menuIndex = (menuIndex + (event.key === "ArrowDown" ? 1 : -1) + count) % count;
+      for (let step = 0; step < count; step += 1) {
+        menuIndex = (menuIndex + (event.key === "ArrowDown" ? 1 : -1) + count) % count;
+        if (!menu.items[menuIndex].disabled) break;
+      }
       if (menu.type === "slash") renderSlash(); else renderInline({ preserveItems: true });
       return true;
     }
@@ -359,17 +387,12 @@ export function createWorkNotesTiptapEditor(options) {
       if (menu.type === "slash") applySlash(menu.items[menuIndex].command[0]); else applyInline(menu.items[menuIndex]);
       return true;
     }
-    if (event.key === "Escape") {
-      event.preventDefault();
-      closeMenus();
-      return true;
-    }
     return false;
   }
 
   function renderBlockRangeToolbar(range) {
     rangeAnchorIndex = range?.anchor ?? -1;
-    if (!range) {
+    if (!range || !canMutate() || menu) {
       ui.blockRangeToolbar.style.display = "none";
       return;
     }
@@ -384,7 +407,7 @@ export function createWorkNotesTiptapEditor(options) {
     ui.selectionToolbar.style.display = "none";
     ui.tableToolbar.style.display = "none";
     requestAnimationFrame(() => {
-      if (!getWorkNoteBlockRange(editor)) return;
+      if (!canMutate() || menu || !getWorkNoteBlockRange(editor)) return;
       if (matchMedia("(max-width: 740px)").matches) {
         ui.blockRangeToolbar.style.removeProperty("left");
         ui.blockRangeToolbar.style.removeProperty("top");
@@ -401,15 +424,15 @@ export function createWorkNotesTiptapEditor(options) {
   }
 
   function selectBlockRange(index, extend = false) {
-    if (!editor || index < 0) return false;
+    if (!canMutate() || index < 0) return false;
     const anchor = extend && rangeAnchorIndex >= 0 ? rangeAnchorIndex : index;
     closeMenus();
     return setWorkNoteBlockRange(editor, anchor, index);
   }
 
   function blockRangeAction(action) {
-    if (!editor) return false;
-    if (action === "ai") { options.onOpenAi?.("blocks"); return true; }
+    if (!canMutate()) return false;
+    if (action === "ai") { if (!canUseAi()) return false; options.onOpenAi?.("blocks"); return true; }
     if (action === "outdent") return changeWorkNoteBlockIndent(editor, -1);
     if (action === "indent") return changeWorkNoteBlockIndent(editor, 1);
     if (action === "up") return moveWorkNoteBlockRange(editor, -1);
@@ -420,36 +443,14 @@ export function createWorkNotesTiptapEditor(options) {
   }
 
   function selectionToolbar() {
-    if (editor && getWorkNoteBlockRange(editor)) {
-      ui.selectionToolbar.style.display = "none";
-      ui.tableToolbar.style.display = "none";
-      return;
-    }
-    const inTable = Boolean(editor?.isActive("table"));
-    if (inTable && editor.isFocused) {
-      const rect = editor.view.coordsAtPos(editor.state.selection.from);
-      ui.tableToolbar.style.left = `${Math.max(8, Math.min(innerWidth - 430, rect.left))}px`;
-      ui.tableToolbar.style.top = `${Math.max(8, rect.top - 44)}px`;
-      ui.tableToolbar.style.display = "flex";
-    } else ui.tableToolbar.style.display = "none";
-    if (!editor || editor.state.selection.empty || !editor.isFocused || !editor.state.selection.$from.parent.isTextblock) {
-      ui.selectionToolbar.style.display = "none";
-      return;
-    }
-    const start = editor.view.coordsAtPos(editor.state.selection.from);
-    const end = editor.view.coordsAtPos(editor.state.selection.to);
-    ui.selectionToolbar.style.left = `${Math.max(8, Math.min(innerWidth - 390, (start.left + end.right) / 2 - 175))}px`;
-    ui.selectionToolbar.style.top = `${Math.max(8, start.top - 44)}px`;
-    ui.selectionToolbar.style.display = "flex";
-    const aiButton = ui.selectionToolbar.querySelector("[data-ai]");
-    if (aiButton) aiButton.hidden = !canUseAi();
-    for (const button of ui.selectionToolbar.querySelectorAll("[data-mark]")) button.classList.toggle("active", editor.isActive(button.dataset.mark));
+    renderWorkNoteSelectionToolbars({ ui, editor, editable: canMutate(), menuOpen: Boolean(menu), canUseAi });
   }
 
   function blockAction(action, targetId = blockInteractions?.currentId() || "") {
-    if (!editor || !targetId) return false;
+    if (!canMutate() || !targetId) return false;
     ui.blockMenu.style.display = "none";
-    if (action === "ai") { options.onOpenAi?.("current"); return true; }
+    menu = null;
+    if (action === "ai") { if (!canUseAi()) return false; options.onOpenAi?.("current"); return true; }
     if (action === "range") return selectBlockRange(blockInteractions.currentIndex(), false);
     if (action === "move") {
       blockInteractions.beginMobileMove(targetId);
@@ -467,6 +468,11 @@ export function createWorkNotesTiptapEditor(options) {
   }
 
   function renderBlockMenu(rect, targetId, { mobile = false, topLevel = false } = {}) {
+    if (!canMutate()) return closeMenus();
+    closeMenus();
+    clearWorkNoteBlockRange(editor);
+    hideToolbars();
+    menu = { type: "block" };
     blockInteractions?.finishMobileMove();
     ui.blockMenu.classList.toggle("is-mobile", mobile);
     ui.blockMenu.innerHTML = [
@@ -486,6 +492,9 @@ export function createWorkNotesTiptapEditor(options) {
   }
 
   function renderPlacementMenu(rect, sourceId, targetId) {
+    if (!canMutate()) return closeMenus();
+    hideToolbars();
+    menu = { type: "placement" };
     ui.blockMenu.classList.add("is-mobile");
     ui.blockMenu.innerHTML = [["before", "fa-arrow-up", "앞에 놓기"], ["inside", "fa-turn-down", "안에 넣기"], ["after", "fa-arrow-down", "뒤에 놓기"]]
       .map(([action, icon, label]) => `<button type="button" data-placement="${action}"><i class="fa-solid ${icon}"></i>${label}</button>`).join("");
@@ -493,10 +502,10 @@ export function createWorkNotesTiptapEditor(options) {
       button.disabled = !canMoveWorkNoteNestedBlock(editor, sourceId, targetId, button.dataset.placement, blockId);
       button.addEventListener("mousedown", (event) => {
         event.preventDefault();
-        if (button.disabled) return;
+        if (button.disabled || !canMutate()) return;
         moveWorkNoteNestedBlock(editor, sourceId, targetId, button.dataset.placement, blockId);
         blockInteractions.finishMobileMove();
-        ui.blockMenu.style.display = "none";
+        closeMenus();
       });
     }
     positionMenu(ui.blockMenu, rect, 220);
@@ -528,6 +537,9 @@ export function createWorkNotesTiptapEditor(options) {
   }
 
   function mount(page) {
+    closeMenus();
+    hideToolbars();
+    blockInteractions?.reset();
     const generation = ++mountGeneration;
     const realtimeEnabled = Boolean(options.connectRealtime && (options.shouldConnectRealtime?.(page) ?? true));
     const attachmentLocationLabel = typeof options.attachmentLocationLabel === "function" ? options.attachmentLocationLabel(page) : options.attachmentLocationLabel;
@@ -556,7 +568,10 @@ export function createWorkNotesTiptapEditor(options) {
           TaskList,
           TaskItem.configure({ nested: true }),
           TableKit.configure({ table: { resizable: true, allowTableNodeSelection: true } }),
-          Details.configure({ persist: true }), DetailsSummary, DetailsContent,
+          Details.configure({ persist: true, renderToggleButton: ({ element, isOpen }) => {
+            element.setAttribute("aria-label", isOpen ? "내용 접기" : "내용 펼치기");
+            element.setAttribute("aria-expanded", String(isOpen));
+          } }), DetailsSummary, DetailsContent,
           Callout, PageLinkBlock, UserMention, createAttachmentBlock({
             getAttachmentBlob: options.getAttachmentBlob,
             openAttachment: options.openAttachment,
@@ -710,7 +725,7 @@ export function createWorkNotesTiptapEditor(options) {
   }
 
   function editSelectedLink() {
-    if (!editor || !canEdit()) return false;
+    if (!canMutate()) return false;
     const currentHref = String(editor.getAttributes("link").href || "");
     const href = prompt("연결할 주소를 입력하세요. 비우면 링크가 제거됩니다.", currentHref || "https://");
     if (href === null) return false;
@@ -718,43 +733,14 @@ export function createWorkNotesTiptapEditor(options) {
     return href.trim() ? chain.setLink({ href: href.trim() }).run() : chain.unsetLink().run();
   }
 
-  ui.selectionToolbar.addEventListener("mousedown", (event) => {
-    const button = event.target.closest("button");
-    if (!button) return;
-    event.preventDefault();
-    if (button.dataset.ai !== undefined) { options.onOpenAi?.("selection"); return; }
-    const mark = button.dataset.mark;
-    const chain = editor.chain().focus();
-    if (mark === "bold") chain.toggleBold().run();
-    else if (mark === "italic") chain.toggleItalic().run();
-    else if (mark === "underline") chain.toggleUnderline().run();
-    else if (mark === "strike") chain.toggleStrike().run();
-    else if (mark === "code") chain.toggleCode().run();
-    else if (mark === "link") editSelectedLink();
-    else if (button.dataset.color) chain.setColor(button.dataset.color).run();
-    else if (button.dataset.background) chain.setBackgroundColor(button.dataset.background).run();
-  });
-  ui.tableToolbar.addEventListener("mousedown", (event) => {
-    const action = event.target.closest("button")?.dataset.table;
-    if (!action) return;
-    event.preventDefault();
-    const chain = editor.chain().focus();
-    if (action === "rowAfter") chain.addRowAfter().run();
-    else if (action === "colAfter") chain.addColumnAfter().run();
-    else if (action === "deleteRow") chain.deleteRow().run();
-    else if (action === "deleteCol") chain.deleteColumn().run();
-    else if (action === "deleteTable") chain.deleteTable().run();
-  });
-  ui.blockRangeToolbar.addEventListener("mousedown", (event) => {
-    const action = event.target.closest("button")?.dataset.blockRange;
-    if (!action) return;
-    event.preventDefault();
-    blockRangeAction(action);
-  });
+  bindWorkNoteToolbarActions({ ui, getEditor: () => editor, canMutate, canUseAi,
+    onOpenAi: (scope) => options.onOpenAi?.(scope), editSelectedLink, blockRangeAction });
   function addBlockAfter(targetId) {
+    if (!canMutate()) return false;
     const insertedId = insertWorkNoteNestedBlockAfter(editor, targetId, blockId);
     if (!insertedId) return false;
     requestAnimationFrame(() => {
+      if (!canMutate()) return;
       const node = editor.view.dom.querySelector(`[data-block-id="${CSS.escape(insertedId)}"]`);
       if (!node) return;
       const position = Math.min(editor.view.posAtDOM(node, 0) + 1, editor.state.doc.content.size);
@@ -768,12 +754,13 @@ export function createWorkNotesTiptapEditor(options) {
     blockHandle: ui.blockHandle,
     dropIndicator: ui.blockDropIndicator,
     getEditor: () => editor,
+    canEdit: canMutate,
     getRange: () => editor ? getWorkNoteBlockRange(editor) : null,
     selectRange: selectBlockRange,
-    canMoveRangeToIndex: (targetIndex) => editor && canMoveWorkNoteBlockRangeToIndex(editor, targetIndex),
-    moveRangeToIndex: (targetIndex) => editor && moveWorkNoteBlockRangeToIndex(editor, targetIndex),
-    canMoveBlock: (sourceId, targetId, mode) => editor && canMoveWorkNoteNestedBlock(editor, sourceId, targetId, mode, blockId),
-    moveBlock: (sourceId, targetId, mode) => editor && moveWorkNoteNestedBlock(editor, sourceId, targetId, mode, blockId),
+    canMoveRangeToIndex: (targetIndex) => canMutate() && canMoveWorkNoteBlockRangeToIndex(editor, targetIndex),
+    moveRangeToIndex: (targetIndex) => canMutate() && moveWorkNoteBlockRangeToIndex(editor, targetIndex),
+    canMoveBlock: (sourceId, targetId, mode) => canMutate() && canMoveWorkNoteNestedBlock(editor, sourceId, targetId, mode, blockId),
+    moveBlock: (sourceId, targetId, mode) => canMutate() && moveWorkNoteNestedBlock(editor, sourceId, targetId, mode, blockId),
     addAfter: addBlockAfter,
     openMenu: renderBlockMenu,
     openPlacementMenu: renderPlacementMenu,
@@ -816,9 +803,9 @@ export function createWorkNotesTiptapEditor(options) {
     },
     refreshPageLinks,
     closeMenus,
-    setEditable(value) { editor?.setEditable(value === true, false); if (value !== true) { closeMenus(); ui.blockHandle.style.display = "none"; ui.blockRangeToolbar.style.display = "none"; } },
+    setEditable(value) { editor?.setEditable(value === true, false); if (value !== true) { closeMenus(); hideToolbars(); blockInteractions?.reset(); } },
     insertFiles(files) { return insertFiles(files); },
-    insertStoredAttachment(record) { return insertStoredWorkNoteAttachment(editor, canEdit(), record, blockId); },
+    insertStoredAttachment(record) { return insertStoredWorkNoteAttachment(editor, canMutate(), record, blockId); },
     hasBlockingUploads(page = "") { return attachmentUploads.hasBlocking(page); },
     waitForPendingUploads(page = "") { return attachmentUploads.waitForPending(page); },
     async releaseRealtime() {
@@ -842,6 +829,7 @@ export function createWorkNotesTiptapEditor(options) {
       realtime?.destroy?.();
       realtime = null;
       editor?.setEditable(false, false);
+      closeMenus(); hideToolbars(); blockInteractions?.reset();
     },
     resume() {
       const active = options.getPage();
@@ -850,13 +838,13 @@ export function createWorkNotesTiptapEditor(options) {
     focus() { editor?.commands.focus("end"); },
     focusMention(mentionId) { return focusWorkNoteMention(options.element, mentionId); },
     hasSelection() { return Boolean(editor && !editor.state.selection.empty); },
-    isEditable() { return Boolean(editor && canEdit()); },
+    isEditable() { return canMutate(); },
     captureAiTarget(scope = "auto") {
-      return captureWorkNoteAiTarget({ editor, pageId, editable: canEdit(), scope, blockRange: editor ? getWorkNoteBlockRange(editor) : null,
+      return captureWorkNoteAiTarget({ editor, pageId, editable: canMutate(), scope, blockRange: editor ? getWorkNoteBlockRange(editor) : null,
         blockId: scope === "current" ? blockInteractions?.currentId() : "" });
     },
     applyAiProposal(snapshot, proposal) {
-      const applied = applyWorkNoteAiProposal({ editor, pageId, editable: canEdit(), snapshot, proposal });
+      const applied = applyWorkNoteAiProposal({ editor, pageId, editable: canMutate(), snapshot, proposal });
       if (applied) clearWorkNoteBlockRange(editor);
       return applied;
     },
@@ -871,9 +859,9 @@ export function createWorkNotesTiptapEditor(options) {
       return { changed: serialized.changed, persisted };
     },
     retryRealtime() { realtime?.retry?.(); },
-    shortcut(action) { return applyWorkNoteShortcut(editor, action, { editSelectedLink, blockAction }); },
+    shortcut(action) { return canMutate() && applyWorkNoteShortcut(editor, action, { editSelectedLink, blockAction }); },
     blockShortcut(digit) {
-      if (!editor) return false;
+      if (!canMutate()) return false;
       const chain = editor.chain().focus();
       if (digit === "0") return chain.setParagraph().run();
       if (["1", "2", "3"].includes(digit)) return chain.setHeading({ level: Number(digit) }).run();
@@ -883,18 +871,19 @@ export function createWorkNotesTiptapEditor(options) {
       if (digit === "7") return chain.insertContent({ type: "details", attrs: { open: true, blockId: blockId() }, content: [{ type: "detailsSummary", content: textNode("토글") }, { type: "detailsContent", content: [paragraph("")] }] }).run();
       if (digit === "8") return chain.toggleCodeBlock().run();
       if (digit === "9") {
+        if (!canCreatePage()) return false;
         void createLinkedPage().catch((error) => options.onStatus?.(error?.message || "새 페이지를 만들지 못했습니다."));
         return true;
       }
       return false;
     },
     openBlockMenu() {
-      if (!editor) return;
+      if (!canMutate()) return;
       const anchor = editor.view.domAtPos(editor.state.selection.from).node;
       const element = anchor.nodeType === globalThis.Node.TEXT_NODE ? anchor.parentElement : anchor;
-      blockInteractions.showBlockHandle(element);
+      if (!blockInteractions.showBlockHandle(element)) return;
       const target = blockInteractions.currentElement();
-      if (target) renderBlockMenu(target.getBoundingClientRect(), blockInteractions.currentId(), { topLevel: blockInteractions.currentIndex() >= 0 });
+      if (target) renderBlockMenu(target.getBoundingClientRect(), blockInteractions.currentId(), { mobile: matchMedia("(max-width: 740px)").matches, topLevel: blockInteractions.currentIndex() >= 0 });
     },
   };
 }

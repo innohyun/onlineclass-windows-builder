@@ -2,6 +2,15 @@ import { workNoteHandleBlocks } from "./work-notes-nested-blocks.js";
 
 const mobileQuery = "(max-width: 740px)";
 
+export function workNoteEditorToolMode({ editable, range, menuOpen, focused, textSelected, inTable }) {
+  if (!editable) return "none";
+  if (menuOpen) return "menu";
+  if (range) return "range";
+  if (!focused) return "none";
+  if (textSelected) return "text";
+  return inTable ? "table" : "none";
+}
+
 export function workNoteBlockHandlePosition(editorRect, blockRect, leadingControlRect = null) {
   const leadingLeft = Number.isFinite(leadingControlRect?.left) ? leadingControlRect.left : blockRect.left;
   return { left: Math.max(4, leadingLeft - 42), top: blockRect.top + 2 };
@@ -42,14 +51,19 @@ export function createWorkNoteBlockInteractions(options) {
   let dropTarget = null;
 
   const editorBlocks = () => [...(options.getEditor()?.view.dom.children || [])];
-  const canEdit = () => options.getEditor()?.isEditable === true;
+  const canEdit = () => options.getEditor()?.isEditable === true && (options.canEdit?.() ?? true);
+  const cancelLongPress = () => {
+    clearTimeout(mobileLongPressTimer);
+    mobileLongPressTimer = 0;
+    mobilePointerStart = null;
+  };
   const records = () => {
     const editor = options.getEditor();
     return editor ? workNoteHandleBlocks(editor.state.doc) : [];
   };
   const actionableElement = (target) => {
     const editor = options.getEditor();
-    if (!editor || !target?.closest) return null;
+    if (!editor || !target?.closest || target.closest("td,th")) return null;
     const ids = new Set(records().map((record) => record.id).filter(Boolean));
     let element = target.closest("[data-block-id]");
     while (element && editor.view.dom.contains(element)) {
@@ -113,6 +127,9 @@ export function createWorkNoteBlockInteractions(options) {
     const element = actionableElement(target);
     if (!editor || !canEdit() || !element) {
       options.blockHandle.style.display = "none";
+      blockElement = null;
+      blockId = "";
+      blockIndex = -1;
       return false;
     }
     blockElement = element;
@@ -128,7 +145,7 @@ export function createWorkNoteBlockInteractions(options) {
   }
 
   document.addEventListener("pointermove", (event) => {
-    if (!rangePointerActive || !options.getEditor()) return;
+    if (!rangePointerActive || !canEdit()) return;
     if (event.clientY < 80) scrollBy(0, -12);
     else if (event.clientY > innerHeight - 80) scrollBy(0, 12);
     const index = blockIndexAtClientY(event.clientY);
@@ -149,12 +166,13 @@ export function createWorkNoteBlockInteractions(options) {
 
   options.element.addEventListener("pointerdown", (event) => {
     if (!options.getEditor() || !canEdit() || !matchMedia(mobileQuery).matches || event.button > 0) return;
+    if (event.target.closest?.("a,button,input,select,textarea,video,audio")) return;
     const element = actionableElement(event.target);
     if (!element) return;
-    mobilePointerStart = { x: event.clientX, y: event.clientY, element };
-    clearTimeout(mobileLongPressTimer);
+    cancelLongPress();
+    mobilePointerStart = { x: event.clientX, y: event.clientY, element, editor: options.getEditor() };
     mobileLongPressTimer = setTimeout(() => {
-      if (!mobilePointerStart) return;
+      if (!mobilePointerStart || !canEdit() || mobilePointerStart.editor !== options.getEditor()) return cancelLongPress();
       suppressClick = true;
       showBlockHandle(mobilePointerStart.element);
       options.openMenu(firstLineRect(mobilePointerStart.element), blockId, { mobile: true, topLevel: blockIndex >= 0 });
@@ -164,16 +182,19 @@ export function createWorkNoteBlockInteractions(options) {
   options.element.addEventListener("pointermove", (event) => {
     if (!mobilePointerStart) return;
     if (Math.hypot(event.clientX - mobilePointerStart.x, event.clientY - mobilePointerStart.y) > 8) {
-      clearTimeout(mobileLongPressTimer);
-      mobilePointerStart = null;
+      cancelLongPress();
     }
   });
   options.element.addEventListener("pointerup", () => {
-    clearTimeout(mobileLongPressTimer);
-    mobilePointerStart = null;
+    cancelLongPress();
+  });
+  options.element.addEventListener("pointercancel", () => { cancelLongPress(); suppressClick = false; });
+  document.addEventListener("scroll", cancelLongPress, true);
+  options.element.addEventListener("contextmenu", (event) => {
+    if (canEdit() && matchMedia(mobileQuery).matches && actionableElement(event.target)) event.preventDefault();
   });
   options.element.addEventListener("click", (event) => {
-    if (!options.getEditor() || !matchMedia(mobileQuery).matches) return;
+    if (!canEdit() || !matchMedia(mobileQuery).matches) return;
     if (suppressClick) {
       suppressClick = false;
       event.preventDefault();
@@ -200,12 +221,12 @@ export function createWorkNoteBlockInteractions(options) {
   const add = options.blockHandle.querySelector("[data-block-add]");
   grip.draggable = true;
   grip.addEventListener("click", () => {
-    if (!dragged && blockElement) options.openMenu(grip.getBoundingClientRect(), blockId, { mobile: false, topLevel: blockIndex >= 0 });
+    if (canEdit() && !dragged && blockElement) options.openMenu(grip.getBoundingClientRect(), blockId, { mobile: false, topLevel: blockIndex >= 0 });
     dragged = false;
   });
   add.addEventListener("mousedown", (event) => {
     event.preventDefault();
-    if (blockId) options.addAfter(blockId);
+    if (canEdit() && blockId) options.addAfter(blockId);
   });
   grip.addEventListener("dragstart", (event) => {
     if (!canEdit() || !blockId) return event.preventDefault();
@@ -223,13 +244,13 @@ export function createWorkNoteBlockInteractions(options) {
   });
   options.element.addEventListener("mousemove", (event) => {
     const editor = options.getEditor();
-    if (dragging || !editor?.view.dom.contains(event.target)) return;
+    if (!canEdit() || dragging || !editor?.view.dom.contains(event.target)) return;
     if (blockElement && workNoteBlockHandleCorridorContains(event, options.blockHandle.getBoundingClientRect(), firstLineRect(blockElement))) return;
     const element = actionableElement(event.target);
     if (element) showBlockHandle(element);
   });
   options.element.addEventListener("dragover", (event) => {
-    if (!dragging || !dragSource) return;
+    if (!canEdit() || !dragging || !dragSource) return;
     const target = actionableElement(event.target);
     if (!target) return;
     const mode = placementAt(target, event.clientY);
@@ -245,7 +266,7 @@ export function createWorkNoteBlockInteractions(options) {
     showDropIndicator(target, mode);
   });
   options.element.addEventListener("drop", (event) => {
-    if (!dragging || !dragSource) return;
+    if (!canEdit() || !dragging || !dragSource) return;
     event.preventDefault();
     event.stopPropagation();
     if (dropTarget) {
@@ -272,7 +293,20 @@ export function createWorkNoteBlockInteractions(options) {
     currentElement: () => blockElement,
     showBlockHandle,
     isMobileMoving: () => Boolean(mobileMoveSourceId),
-    beginMobileMove(sourceId) { mobileMoveSourceId = sourceId; },
+    beginMobileMove(sourceId) { if (canEdit()) mobileMoveSourceId = sourceId; },
     finishMobileMove() { mobileMoveSourceId = ""; },
+    reset() {
+      cancelLongPress();
+      rangePointerActive = false;
+      suppressClick = false;
+      mobileMoveSourceId = "";
+      dragging = false;
+      dragSource = null;
+      blockIndex = -1;
+      blockId = "";
+      blockElement = null;
+      options.blockHandle.style.display = "none";
+      hideDropIndicator();
+    },
   };
 }
