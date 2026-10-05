@@ -7,7 +7,17 @@ use std::path::Path;
 
 const MAX_PENDING: usize = 8;
 const RESPONSE_MARGIN_MS: i64 = 1_500;
+const READ_CLOCK_SKEW_TOLERANCE_MS: i64 = 30_000;
 static DIAGNOSTICS: Mutex<BTreeMap<String, Vec<Value>>> = Mutex::new(BTreeMap::new());
+
+fn bounded_read_remaining(deadline_at: i64, now: i64, budget_ms: i64) -> Result<i64, &'static str> {
+    let remaining = deadline_at.checked_sub(now).ok_or("INVALID_LOCAL_READ_REQUEST")?;
+    if remaining <= RESPONSE_MARGIN_MS { return Err("LOCAL_DB_QUERY_TIMEOUT"); }
+    if remaining > budget_ms + READ_CLOCK_SKEW_TOLERANCE_MS { return Err("INVALID_LOCAL_READ_REQUEST"); }
+    // The relay enforces its original deadline. A slower local clock must never
+    // turn its absolute timestamp into a longer native execution budget.
+    Ok(remaining.min(budget_ms))
+}
 
 pub(super) fn diagnostics_for_tenant(tenant: &str) -> Vec<Value> {
     DIAGNOSTICS.lock().ok().and_then(|items| items.get(tenant).cloned()).unwrap_or_default()
@@ -138,23 +148,36 @@ impl Executor {
         Self { tx, rx, pending: HashMap::new(), cancelled, completed: VecDeque::new() }
     }
 
-    pub(super) fn submit(&mut self, frame: Value) -> Option<Value> {
+    pub(super) fn submit(&mut self, mut frame: Value) -> Option<Value> {
         let request_id = frame["requestId"].as_str().filter(|value| id(value))?.to_string();
         // An identical socket delivery is still the same pending operation.
         if self.pending.contains_key(&request_id) || self.completed.contains(&request_id) { return None; }
         let started = Instant::now();
         trace(&frame, "app_received", started, "START", None);
-        let remaining = frame["deadlineAt"].as_i64().unwrap_or(0) - chrono::Utc::now().timestamp_millis();
-        let limit = if frame["workspace"] == "teaching_sources" && frame["operation"] != "chunks" { 31_000 } else { 13_000 };
-        let reject = if remaining <= RESPONSE_MARGIN_MS { Some("LOCAL_DB_QUERY_TIMEOUT") }
-            else if remaining > limit || frame["type"] != "local_read_request" { Some("INVALID_LOCAL_READ_REQUEST") }
-            else if self.pending.len() >= MAX_PENDING { Some("MCP_RELAY_BUSY") } else { None };
-        if let Some(code) = reject {
-            self.remember(request_id);
-            return Some(error(&frame, code));
-        }
+        let now = chrono::Utc::now().timestamp_millis();
+        let budget = if frame["workspace"] == "teaching_sources" && frame["operation"] != "chunks" { 30_000 } else { 12_000 };
+        let remaining = if frame["type"] != "local_read_request" { Err("INVALID_LOCAL_READ_REQUEST") }
+            else { frame["deadlineAt"].as_i64().ok_or("INVALID_LOCAL_READ_REQUEST")
+                .and_then(|deadline| bounded_read_remaining(deadline, now, budget)) };
+        let remaining = match remaining {
+            Ok(remaining) if self.pending.len() < MAX_PENDING => remaining,
+            Ok(_) => {
+                trace(&frame, "request_rejected", started, "MCP_RELAY_BUSY", None);
+                self.remember(request_id);
+                return Some(error(&frame, "MCP_RELAY_BUSY"));
+            }
+            Err(code) => {
+                trace(&frame, "request_rejected", started, code, None);
+                self.remember(request_id);
+                return Some(error(&frame, code));
+            }
+        };
+        // Downstream PDF checks use local UTC; normalize only the private native
+        // frame while Instant still bounds SQLite, queued work and returned results.
+        frame["deadlineAt"] = json!(now + remaining);
         let deadline = started + Duration::from_millis((remaining - RESPONSE_MARGIN_MS) as u64);
         if self.tx.try_send(Job { frame: frame.clone(), deadline, started }).is_err() {
+            trace(&frame, "request_rejected", started, "MCP_RELAY_BUSY", None);
             self.remember(request_id);
             return Some(error(&frame, "MCP_RELAY_BUSY"));
         }
@@ -211,6 +234,86 @@ pub(super) fn safe_error(code: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn server_clock_skew_does_not_extend_native_operation_budgets() {
+        let now = 1_000_000;
+        for budget in [12_000, 30_000] {
+            // SONG's local clock was behind by more than the old one-second allowance.
+            assert_eq!(bounded_read_remaining(now + budget + 2_000, now, budget), Ok(budget));
+            assert_eq!(bounded_read_remaining(now + budget + READ_CLOCK_SKEW_TOLERANCE_MS, now, budget), Ok(budget));
+            assert_eq!(bounded_read_remaining(now + budget + READ_CLOCK_SKEW_TOLERANCE_MS + 1, now, budget),
+                Err("INVALID_LOCAL_READ_REQUEST"));
+            assert_eq!(bounded_read_remaining(now + 3_000, now, budget), Ok(3_000));
+            assert_eq!(bounded_read_remaining(now + RESPONSE_MARGIN_MS, now, budget), Err("LOCAL_DB_QUERY_TIMEOUT"));
+            assert_eq!(bounded_read_remaining(now - 1, now, budget), Err("LOCAL_DB_QUERY_TIMEOUT"));
+            assert_eq!(bounded_read_remaining(i64::MIN, now, budget), Err("INVALID_LOCAL_READ_REQUEST"));
+            assert_eq!(bounded_read_remaining(i64::MAX, now, budget), Err("INVALID_LOCAL_READ_REQUEST"));
+        }
+    }
+
+    #[test]
+    fn skewed_material_and_teaching_source_frames_reach_actual_sqlite_reads() {
+        let (directory, store) = super::super::tests::test_store();
+        let store = Arc::new(store);
+        let owner = WorkerAuthority { tenant_id: "tenant-a".into(), actor_id: "owner-a".into(),
+            device_id: "device-a".into(), credential: Zeroizing::new("d".repeat(43)), origin: "http://localhost".into() };
+        let mut executor = Executor::new(Arc::clone(&store), owner, || Ok(()));
+        for (workspace, operation, input, budget) in [
+            ("work_materials", "search", json!({"query":"고려","limit":10}), 12_000),
+            ("teaching_sources", "matches", json!({"lessons":[{"schoolYear":2026,"semester":2,
+                "curriculumSourceKind":"class","curriculumSourceScopeId":"scope-a","curriculumSourceRevision":1,
+                "curriculumItemId":"lesson-a","curriculumStatus":"qualified"}],"limit":10}), 30_000),
+        ] {
+            let request_id = format!("clock-skew-{workspace}");
+            let now = chrono::Utc::now().timestamp_millis();
+            let frame = json!({"type":"local_read_request","requestId":request_id,"workspace":workspace,
+                "operation":operation,"input":input,"deadlineAt":now+budget+2_000});
+            assert!(executor.submit(frame).is_none());
+            let pending = executor.pending.get(&request_id).unwrap();
+            assert_eq!(pending.deadline.duration_since(pending.started), Duration::from_millis((budget-RESPONSE_MARGIN_MS) as u64));
+            let normalized = pending.frame["deadlineAt"].as_i64().unwrap();
+            assert!((now+budget..=chrono::Utc::now().timestamp_millis()+budget).contains(&normalized));
+            let until = Instant::now()+Duration::from_secs(3);
+            loop {
+                let ready = executor.drain();
+                if let Some(response) = ready.first() { assert_eq!(response["status"], "ok", "{response}"); break; }
+                assert!(Instant::now()<until, "skewed read did not reach its SQLite handler");
+                thread::sleep(Duration::from_millis(5));
+            }
+        }
+        drop(executor);
+        for _ in 0..100 { if Arc::strong_count(&store)==1 { break; } thread::sleep(Duration::from_millis(10)); }
+        drop(store);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn invalid_or_expired_frames_report_safe_rejection_diagnostics() {
+        let (directory, store) = super::super::tests::test_store();
+        let store = Arc::new(store);
+        let owner = WorkerAuthority { tenant_id: "tenant-a".into(), actor_id: "owner-a".into(),
+            device_id: "device-a".into(), credential: Zeroizing::new("d".repeat(43)), origin: "http://localhost".into() };
+        let mut executor = Executor::new(Arc::clone(&store), owner, || Ok(()));
+        diagnostic_tenant("clock-skew-rejections");
+        let now = chrono::Utc::now().timestamp_millis();
+        for (request_id, deadline, expected) in [
+            ("clock-skew-rejected", json!(now+12_000+READ_CLOCK_SKEW_TOLERANCE_MS+1_000), "INVALID_LOCAL_READ_REQUEST"),
+            ("clock-skew-expired", json!(0), "LOCAL_DB_QUERY_TIMEOUT"),
+            ("clock-skew-malformed", json!("not-a-timestamp"), "INVALID_LOCAL_READ_REQUEST"),
+        ] {
+            let frame = json!({"type":"local_read_request","requestId":request_id,"workspace":"work_materials",
+                "operation":"search","input":{"query":"private-query"},"deadlineAt":deadline});
+            assert_eq!(executor.submit(frame).unwrap()["errorCode"], expected);
+            assert!(diagnostics_for_tenant("clock-skew-rejections").iter()
+                .any(|entry| entry["requestId"]==request_id && entry["stage"]=="request_rejected" && entry["code"]==expected));
+        }
+        assert!(!serde_json::to_string(&diagnostics_for_tenant("clock-skew-rejections")).unwrap().contains("private-query"));
+        drop(executor);
+        for _ in 0..100 { if Arc::strong_count(&store)==1 { break; } thread::sleep(Duration::from_millis(10)); }
+        drop(store);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     #[test]
     fn private_read_connection_interrupts_sql_and_rejects_writes() {
         let (directory, store) = super::super::tests::test_store();
