@@ -14,11 +14,11 @@
   "rootCanaryProofSha256": "47dd1d9bf8faffe284f9d9a90341db304a10bfcdbd96c3b3b94e89e68d7c3def",
   "inputs": {
     "worker4": {
-      "id": 676479894,
-      "name": "private-worker4-native128-build-inputs.zip",
-      "bytes": 11111652,
-      "sha256": "3dce3b86e92db2ebd63d2dc141c2f2f0c72afdc93c601a2a0511ba423e824728",
-      "packageKind": "combined"
+      "id": 676932396,
+      "name": "worker-overview2-private-build-inputs.zip",
+      "bytes": 9398765,
+      "sha256": "573e44723a4ff1e2e957b40325aa6bf39fdf95990f3f7393f7fa94f7e96ffd84",
+      "packageKind": "worker4"
     },
     "native128": {
       "id": 676907155,
