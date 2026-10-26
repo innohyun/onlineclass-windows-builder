@@ -21,10 +21,10 @@
       "packageKind": "worker4"
     },
     "native128": {
-      "id": 677074103,
-      "name": "private-worker4-native128-release-after-pc627-inputs.zip",
-      "bytes": 35015165,
-      "sha256": "7275bcf7b81ea3467e1a4d11b6f7c2a4386892862eff0184ff56ab58af96aa16",
+      "id": 677135632,
+      "name": "private-worker4-native128-release-isolated-proof-inputs.zip",
+      "bytes": 35012144,
+      "sha256": "f0e2161d34a1776b31a260e325a68076a1f91195a4364ff84d37b8a0156ce02c",
       "packageKind": "combined"
     }
   }
