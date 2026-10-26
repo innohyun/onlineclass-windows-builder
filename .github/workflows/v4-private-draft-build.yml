@@ -4,11 +4,11 @@ on:
     branches: [codex/v4-migration-build-20261026]
 permissions:
   contents: read
-concurrency:
-  group: fixed-draft-build-20261026
-  cancel-in-progress: false
 jobs:
   worker4:
+    concurrency:
+      group: fixed-draft-worker4-20261026
+      cancel-in-progress: false
     if: github.repository == 'innohyun/onlineclass-windows-builder' && github.actor == 'innohyun' && contains(github.event.head_commit.message, '[freebuilder-worker4]')
     runs-on: windows-2022
     timeout-minutes: 25
@@ -27,6 +27,9 @@ jobs:
           FB_REPOSITORY_TOKEN: ${{ github.token }}
         run: ./.freebuilder/controller.ps1 -Kind worker4
   native128:
+    concurrency:
+      group: fixed-draft-native128-20261026
+      cancel-in-progress: false
     if: github.repository == 'innohyun/onlineclass-windows-builder' && github.actor == 'innohyun' && contains(github.event.head_commit.message, '[freebuilder-native128]')
     runs-on: windows-2022
     timeout-minutes: 95
