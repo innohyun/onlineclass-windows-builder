@@ -1,0 +1,46 @@
+name: fixed draft-only Windows build
+on:
+  push:
+    branches: [codex/v4-migration-build-20261026]
+permissions:
+  contents: read
+concurrency:
+  group: fixed-draft-build-20261026
+  cancel-in-progress: false
+jobs:
+  worker4:
+    if: github.repository == 'innohyun/onlineclass-windows-builder' && github.actor == 'innohyun' && contains(github.event.head_commit.message, '[freebuilder-worker4]')
+    runs-on: windows-2022
+    timeout-minutes: 25
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24.19.0'
+      - name: private draft-only controller
+        shell: pwsh
+        env:
+          FB_REPOSITORY_TOKEN: ${{ github.token }}
+        run: ./.freebuilder/controller.ps1 -Kind worker4
+  native128:
+    if: github.repository == 'innohyun/onlineclass-windows-builder' && github.actor == 'innohyun' && contains(github.event.head_commit.message, '[freebuilder-native128]')
+    runs-on: windows-2022
+    timeout-minutes: 95
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.16.0'
+      - name: private draft-only controller
+        shell: pwsh
+        env:
+          FB_REPOSITORY_TOKEN: ${{ github.token }}
+        run: ./.freebuilder/controller.ps1 -Kind native128

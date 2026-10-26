@@ -1,0 +1,19 @@
+{
+  "contract": "private-draft-fixed-build-binding-v1",
+  "repository": "innohyun/onlineclass-windows-builder",
+  "branch": "refs/heads/codex/v4-migration-build-20261026",
+  "mode": "canary-only",
+  "releaseId": 423738310,
+  "releaseTag": "v4-private-build-20261026-cd5b66356e18",
+  "canary": {
+    "id": 676465484,
+    "name": "canary.bin",
+    "bytes": 69,
+    "sha256": "14e496e8f59cf3653633a6978a76e4b724d0f5024805eb9ef967760342bd337f"
+  },
+  "rootCanaryProofSha256": null,
+  "inputs": {
+    "worker4": null,
+    "native128": null
+  }
+}
