@@ -21,10 +21,10 @@
       "packageKind": "combined"
     },
     "native128": {
-      "id": 676650197,
-      "name": "private-worker4-native128-known-vctip-inputs.zip",
-      "bytes": 11116656,
-      "sha256": "a54d33c8365fb71353a5a7e660ec8a3954e2247b030e342c58cf905ff25e9a88",
+      "id": 676744485,
+      "name": "private-worker4-native128-restore-diagnostic-inputs.zip",
+      "bytes": 11236687,
+      "sha256": "11e607cf5969ca5e0a98dd6d4e8cf97dbe5cbb7c581dcef6cd228863fd858f8c",
       "packageKind": "combined"
     }
   }
