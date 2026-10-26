@@ -21,10 +21,10 @@
       "packageKind": "combined"
     },
     "native128": {
-      "id": 676744485,
-      "name": "private-worker4-native128-restore-diagnostic-inputs.zip",
-      "bytes": 11236687,
-      "sha256": "11e607cf5969ca5e0a98dd6d4e8cf97dbe5cbb7c581dcef6cd228863fd858f8c",
+      "id": 676907155,
+      "name": "private-worker4-native128-windows-sqlite-fix-inputs.zip",
+      "bytes": 11243569,
+      "sha256": "eb6e7e6ee1e263b667b2c604e2629acaf197389dd2cd1fe95eaf388a9858e7f8",
       "packageKind": "combined"
     }
   }
