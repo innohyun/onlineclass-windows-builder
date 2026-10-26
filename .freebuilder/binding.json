@@ -21,10 +21,10 @@
       "packageKind": "worker4"
     },
     "native128": {
-      "id": 676907155,
-      "name": "private-worker4-native128-windows-sqlite-fix-inputs.zip",
-      "bytes": 11243569,
-      "sha256": "eb6e7e6ee1e263b667b2c604e2629acaf197389dd2cd1fe95eaf388a9858e7f8",
+      "id": 677074103,
+      "name": "private-worker4-native128-release-after-pc627-inputs.zip",
+      "bytes": 35015165,
+      "sha256": "7275bcf7b81ea3467e1a4d11b6f7c2a4386892862eff0184ff56ab58af96aa16",
       "packageKind": "combined"
     }
   }
