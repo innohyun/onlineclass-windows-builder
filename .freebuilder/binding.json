@@ -21,10 +21,10 @@
       "packageKind": "worker4"
     },
     "native128": {
-      "id": 677526108,
-      "name": "private-worker4-native129-production-protocol-inputs.zip",
-      "bytes": 37001317,
-      "sha256": "39a70a141a836500e56716e8df61feebe10b7bcfaa8297647a31552ef300dbcd",
+      "id": 678514851,
+      "name": "private-worker4-native130-yearbook-r5-fixed-views-inputs.zip",
+      "bytes": 38505255,
+      "sha256": "65867a362010f54cb4e8cda6f3b3888c352b587b895f027c0c76f3f4fed3fe67",
       "packageKind": "combined"
     }
   }
