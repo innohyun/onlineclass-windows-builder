@@ -2,7 +2,7 @@
   "contract": "private-draft-fixed-build-binding-v1",
   "repository": "innohyun/onlineclass-windows-builder",
   "branch": "refs/heads/codex/v4-migration-build-20261026",
-  "mode": "canary-only",
+  "mode": "build",
   "releaseId": 423738310,
   "releaseTag": "v4-private-build-20261026-cd5b66356e18",
   "canary": {
@@ -11,9 +11,21 @@
     "bytes": 69,
     "sha256": "14e496e8f59cf3653633a6978a76e4b724d0f5024805eb9ef967760342bd337f"
   },
-  "rootCanaryProofSha256": null,
+  "rootCanaryProofSha256": "47dd1d9bf8faffe284f9d9a90341db304a10bfcdbd96c3b3b94e89e68d7c3def",
   "inputs": {
-    "worker4": null,
-    "native128": null
+    "worker4": {
+      "id": 676479894,
+      "name": "private-worker4-native128-build-inputs.zip",
+      "bytes": 11111652,
+      "sha256": "3dce3b86e92db2ebd63d2dc141c2f2f0c72afdc93c601a2a0511ba423e824728",
+      "packageKind": "combined"
+    },
+    "native128": {
+      "id": 676479894,
+      "name": "private-worker4-native128-build-inputs.zip",
+      "bytes": 11111652,
+      "sha256": "3dce3b86e92db2ebd63d2dc141c2f2f0c72afdc93c601a2a0511ba423e824728",
+      "packageKind": "combined"
+    }
   }
 }
