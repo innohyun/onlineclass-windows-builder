@@ -21,10 +21,10 @@
       "packageKind": "worker4"
     },
     "native128": {
-      "id": 680066576,
-      "name": "private-worker4-native131-material-idle-prospective-inputs.zip",
-      "bytes": 40317423,
-      "sha256": "88cbd152eb0cf6786d90d1b31fa09e3fb11a163531438662eeb98a094b9270a8",
+      "id": 680184001,
+      "name": "private-worker4-native131-r2-seed-list-inputs.zip",
+      "bytes": 40317483,
+      "sha256": "728b0389c5b73d5709dbbf3c330d80c9a64b24ccb1519316a30d93188ddde037",
       "packageKind": "combined"
     }
   }
