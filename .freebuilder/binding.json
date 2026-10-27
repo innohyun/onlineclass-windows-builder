@@ -21,10 +21,10 @@
       "packageKind": "worker4"
     },
     "native128": {
-      "id": 678514851,
-      "name": "private-worker4-native130-yearbook-r5-fixed-views-inputs.zip",
-      "bytes": 38505255,
-      "sha256": "65867a362010f54cb4e8cda6f3b3888c352b587b895f027c0c76f3f4fed3fe67",
+      "id": 680066576,
+      "name": "private-worker4-native131-material-idle-prospective-inputs.zip",
+      "bytes": 40317423,
+      "sha256": "88cbd152eb0cf6786d90d1b31fa09e3fb11a163531438662eeb98a094b9270a8",
       "packageKind": "combined"
     }
   }
