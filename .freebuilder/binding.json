@@ -21,10 +21,10 @@
       "packageKind": "worker4"
     },
     "native128": {
-      "id": 680184001,
-      "name": "private-worker4-native131-r2-seed-list-inputs.zip",
-      "bytes": 40317483,
-      "sha256": "728b0389c5b73d5709dbbf3c330d80c9a64b24ccb1519316a30d93188ddde037",
+      "id": 680307194,
+      "name": "private-worker4-native131-r3-exact-restore-inputs.zip",
+      "bytes": 40318695,
+      "sha256": "6c7962018af860dd8c98d8838bb35f27435c9a8480cd992114c49ad9e23978d9",
       "packageKind": "combined"
     }
   }
