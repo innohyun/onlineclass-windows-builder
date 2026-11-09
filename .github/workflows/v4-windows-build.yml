@@ -19,6 +19,9 @@ on:
         description: SHA-256 of the previous public installer
         default: '7dcd62c28f0fed2870bdfb8c087798985233621b788615dc43c2804fe21fb88e'
         type: string
+      diagnostic_key:
+        description: Optional base64 PEM public key for encrypted failure diagnostics
+        type: string
 
 permissions:
   contents: read
@@ -71,7 +74,7 @@ jobs:
           }
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: '24'
+          node-version: '22.22.3'
       - name: Build and verify NSIS installer
         shell: pwsh
         env:
@@ -96,10 +99,7 @@ jobs:
           npm --prefix $desktop ci --no-audit --no-fund *> $log
           if ($LASTEXITCODE -ne 0) { throw 'Desktop dependency installation failed' }
           npm --prefix $desktop run build:installer:windows *> $log
-          if ($LASTEXITCODE -ne 0) {
-            Get-Content $log | Where-Object { $_ -match '^error(\[E[0-9]+\])?: ' -or $_ -match '^WINDOWS_[A-Z_]+$' } | Select-Object -First 12
-            throw 'Verified Windows build failed'
-          }
+          if ($LASTEXITCODE -ne 0) { throw 'Verified Windows build failed' }
           $installers = @(Get-ChildItem "$desktop/src-tauri/target/release/bundle/nsis" -File -Filter '*_x64-setup.exe')
           if ($installers.Count -ne 1) { throw 'Expected one verified Windows x64 installer' }
           "V4_INSTALLER=$($installers[0].FullName)" >> $env:GITHUB_ENV
@@ -132,3 +132,40 @@ jobs:
           if-no-files-found: error
           retention-days: 3
           compression-level: 0
+
+      - name: Encrypt build failure diagnostics
+        if: failure() && inputs.diagnostic_key != ''
+        shell: pwsh
+        env:
+          V4_BUILD_DIAGNOSTIC_KEY: ${{ inputs.diagnostic_key }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const crypto = require('node:crypto');
+          const root = process.env.RUNNER_TEMP;
+          const log = path.join(root, 'v4-build.log');
+          if (!fs.existsSync(log)) process.exit(0);
+          const key = crypto.randomBytes(32);
+          const iv = crypto.randomBytes(12);
+          const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+          const wrapped = crypto.publicEncrypt({
+            key: Buffer.from(process.env.V4_BUILD_DIAGNOSTIC_KEY, 'base64'),
+            oaepHash: 'sha256',
+          }, key);
+          const data = Buffer.concat([cipher.update(fs.readFileSync(log)), cipher.final()]);
+          fs.writeFileSync(path.join(root, 'v4-build-diagnostics.json'), JSON.stringify({
+            key: wrapped.toString('base64'),
+            iv: iv.toString('base64'),
+            tag: cipher.getAuthTag().toString('base64'),
+            data: data.toString('base64'),
+          }));
+          '@ | node
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: failure() && inputs.diagnostic_key != ''
+        with:
+          name: v4-windows-encrypted-diagnostics
+          path: ${{ runner.temp }}/v4-build-diagnostics.json
+          if-no-files-found: ignore
+          retention-days: 1
