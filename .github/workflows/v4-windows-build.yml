@@ -144,6 +144,7 @@ jobs:
         if: inputs.candidate_run != ''
         shell: pwsh
         env:
+          V4_TEST_RUNNER_KIND: ${{ runner.environment }}
           RUSTUP_TOOLCHAIN: '1.96.1'
           CARGO_TERM_COLOR: never
           GH_TOKEN: ${{ github.token }}
