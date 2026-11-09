@@ -19,15 +19,19 @@ on:
         description: SHA-256 of the previous public installer
         default: '7dcd62c28f0fed2870bdfb8c087798985233621b788615dc43c2804fe21fb88e'
         type: string
+      candidate_run:
+        description: Candidate run ID for the in-app update test
+        type: string
       diagnostic_key:
         description: Optional base64 PEM public key for encrypted failure diagnostics
         type: string
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
-  group: v4-windows-release-candidate
+  group: v4-windows-${{ inputs.candidate_run == '' && 'release-candidate' || 'in-app-test' }}
   cancel-in-progress: false
 
 jobs:
@@ -76,6 +80,7 @@ jobs:
         with:
           node-version: '22.22.3'
       - name: Build and verify NSIS installer
+        if: inputs.candidate_run == ''
         shell: pwsh
         env:
           RUSTUP_TOOLCHAIN: '1.96.1'
@@ -104,6 +109,7 @@ jobs:
           if ($installers.Count -ne 1) { throw 'Expected one verified Windows x64 installer' }
           "V4_INSTALLER=$($installers[0].FullName)" >> $env:GITHUB_ENV
       - name: Verify installation and retained local data
+        if: inputs.candidate_run == ''
         shell: pwsh
         env:
           V4_PREVIOUS_VERSION: ${{ inputs.previous_version }}
@@ -126,6 +132,7 @@ jobs:
           Copy-Item -LiteralPath "$env:V4_INSTALLER.build.json" -Destination (Join-Path $artifact 'OnlineClass-v4-Windows-Setup.exe.build.json')
           Copy-Item -LiteralPath "$env:V4_INSTALLER.windows-qa.json" -Destination (Join-Path $artifact 'Windows-QA.json')
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: inputs.candidate_run == ''
         with:
           name: v4-windows-x64-candidate
           path: ${{ runner.temp }}/v4-candidate/
@@ -133,6 +140,34 @@ jobs:
           retention-days: 3
           compression-level: 0
 
+      - name: Verify the actual in-app update on Windows
+        if: inputs.candidate_run != ''
+        shell: pwsh
+        env:
+          RUSTUP_TOOLCHAIN: '1.96.1'
+          CARGO_TERM_COLOR: never
+          GH_TOKEN: ${{ github.token }}
+          V4_CANDIDATE_RUN: ${{ inputs.candidate_run }}
+          V4_EXPECTED_VERSION: ${{ inputs.version }}
+          V4_PREVIOUS_VERSION: ${{ inputs.previous_version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Location $env:V4_SOURCE
+          rustup toolchain install 1.96.1 --profile minimal
+          if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain installation failed' }
+          $log = Join-Path $env:RUNNER_TEMP 'v4-build.log'
+          npm ci --no-audit --no-fund *> $log
+          if ($LASTEXITCODE -ne 0) { throw 'V4 dependency installation failed' }
+          npm --prefix local-sensitive-store-desktop-v4 ci --no-audit --no-fund *> $log
+          if ($LASTEXITCODE -ne 0) { throw 'Desktop dependency installation failed' }
+          & ./local-sensitive-store-desktop-v4/scripts/build-windows-updater-fixture.ps1 -CandidateRun $env:V4_CANDIDATE_RUN -Version $env:V4_EXPECTED_VERSION -BootstrapVersion $env:V4_PREVIOUS_VERSION
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: inputs.candidate_run != ''
+        with:
+          name: v4-windows-in-app-update-qa
+          path: ${{ runner.temp }}/V4-Windows-Updater-QA.json
+          if-no-files-found: error
+          retention-days: 3
       - name: Encrypt build failure diagnostics
         if: failure() && inputs.diagnostic_key != ''
         shell: pwsh
