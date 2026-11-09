@@ -1,0 +1,134 @@
+name: V4 Windows release candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: Exact reviewed V4 source commit
+        required: true
+        type: string
+      version:
+        description: Expected Windows application version
+        required: true
+        type: string
+      previous_version:
+        description: Published Windows version for the upgrade smoke test
+        default: '0.2.147'
+        type: string
+      previous_sha256:
+        description: SHA-256 of the previous public installer
+        default: '7dcd62c28f0fed2870bdfb8c087798985233621b788615dc43c2804fe21fb88e'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v4-windows-release-candidate
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.repository == 'innohyun/onlineclass-windows-builder' && github.ref == 'refs/heads/main' && github.actor == 'innohyun'
+    runs-on: windows-2025
+    environment: v4-windows-build
+    timeout-minutes: 60
+    steps:
+      - name: Fetch pinned V4 sources
+        shell: pwsh
+        env:
+          V4_SOURCE_COMMIT: ${{ inputs.source_commit }}
+          V4_READ_ONLY_DEPLOY_KEY: ${{ secrets.V4_READ_ONLY_DEPLOY_KEY }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:V4_SOURCE_COMMIT -cnotmatch '^[0-9a-f]{40}$' -or -not $env:V4_READ_ONLY_DEPLOY_KEY) {
+            throw 'Expected a pinned source commit and one-time checkout credential'
+          }
+          $source = Join-Path $env:RUNNER_TEMP 'v4-source'
+          $key = Join-Path $env:RUNNER_TEMP 'v4-read-only'
+          $known = Join-Path $env:RUNNER_TEMP 'v4-known-hosts'
+          try {
+            [IO.File]::WriteAllText($key, $env:V4_READ_ONLY_DEPLOY_KEY.Trim() + [char]10)
+            $owner = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+            & icacls.exe $key /inheritance:r /grant:r "$($owner):(R)" | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'Could not restrict checkout credential' }
+            [IO.File]::WriteAllText($known, "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" + [char]10)
+            $env:GIT_SSH_COMMAND = "ssh -i ""$($key.Replace('\','/'))"" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=""$($known.Replace('\','/'))"""
+            git init -q $source
+            Set-Location $source
+            git config core.longpaths true
+            git config core.autocrlf false
+            git fetch -q --depth=1 git@github.com:innohyun/onlineClass-v4.git $env:V4_SOURCE_COMMIT
+            if ($LASTEXITCODE -ne 0) { throw 'V4 source fetch failed' }
+            git checkout -q --detach FETCH_HEAD
+            if ($LASTEXITCODE -ne 0 -or (git rev-parse HEAD) -cne $env:V4_SOURCE_COMMIT) {
+              throw 'V4 source checkout does not match the requested commit'
+            }
+            "V4_SOURCE=$source" >> $env:GITHUB_ENV
+          } finally {
+            Remove-Item -LiteralPath $key,$known -Force -ErrorAction SilentlyContinue
+            Remove-Item Env:GIT_SSH_COMMAND,Env:V4_READ_ONLY_DEPLOY_KEY -ErrorAction SilentlyContinue
+          }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+      - name: Build and verify NSIS installer
+        shell: pwsh
+        env:
+          RUSTUP_TOOLCHAIN: '1.96.1'
+          CLASSAIMATE_WINDOWS_UPDATER_EXTERNAL_SIGNING: '1'
+          CLASSAIMATE_WINDOWS_UPDATER_PUBLIC_KEY: ${{ vars.CLASSAIMATE_WINDOWS_UPDATER_PUBLIC_KEY }}
+          V4_EXPECTED_VERSION: ${{ inputs.version }}
+          CARGO_TERM_COLOR: never
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Location $env:V4_SOURCE
+          $desktop = 'local-sensitive-store-desktop-v4'
+          $package = Get-Content "$desktop/package.json" -Raw | ConvertFrom-Json
+          if ($env:V4_EXPECTED_VERSION -cnotmatch '^\d+\.\d+\.\d+$' -or $package.version -cne $env:V4_EXPECTED_VERSION) {
+            throw 'Pinned V4 source does not contain the requested version'
+          }
+          rustup toolchain install 1.96.1 --profile minimal
+          if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain installation failed' }
+          $log = Join-Path $env:RUNNER_TEMP 'v4-build.log'
+          npm ci --no-audit --no-fund *> $log
+          if ($LASTEXITCODE -ne 0) { throw 'V4 dependency installation failed' }
+          npm --prefix $desktop ci --no-audit --no-fund *> $log
+          if ($LASTEXITCODE -ne 0) { throw 'Desktop dependency installation failed' }
+          npm --prefix $desktop run build:installer:windows *> $log
+          if ($LASTEXITCODE -ne 0) {
+            Get-Content $log | Where-Object { $_ -match '^error(\[E[0-9]+\])?: ' -or $_ -match '^WINDOWS_[A-Z_]+$' } | Select-Object -First 12
+            throw 'Verified Windows build failed'
+          }
+          $installers = @(Get-ChildItem "$desktop/src-tauri/target/release/bundle/nsis" -File -Filter '*_x64-setup.exe')
+          if ($installers.Count -ne 1) { throw 'Expected one verified Windows x64 installer' }
+          "V4_INSTALLER=$($installers[0].FullName)" >> $env:GITHUB_ENV
+      - name: Verify installation and retained local data
+        shell: pwsh
+        env:
+          V4_PREVIOUS_VERSION: ${{ inputs.previous_version }}
+          V4_PREVIOUS_SHA256: ${{ inputs.previous_sha256 }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Location $env:V4_SOURCE
+          if ($env:V4_PREVIOUS_VERSION -cnotmatch '^\d+\.\d+\.\d+$' -or $env:V4_PREVIOUS_SHA256 -cnotmatch '^[0-9a-f]{64}$') {
+            throw 'Expected a pinned previous installer version and hash'
+          }
+          $old = Join-Path $env:RUNNER_TEMP 'v4-previous.exe'
+          Invoke-WebRequest -Uri "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v$($env:V4_PREVIOUS_VERSION)/OnlineClass-v4-Windows-Setup.exe" -OutFile $old
+          if ((Get-FileHash -Algorithm SHA256 $old).Hash.ToLowerInvariant() -cne $env:V4_PREVIOUS_SHA256) {
+            throw 'Known previous installer hash mismatch'
+          }
+          & ./local-sensitive-store-desktop-v4/scripts/verify-windows-installation.ps1 -PreviousInstaller $old -PreviousVersion $env:V4_PREVIOUS_VERSION -Installer $env:V4_INSTALLER
+          $artifact = Join-Path $env:RUNNER_TEMP 'v4-candidate'
+          New-Item -Path $artifact -ItemType Directory | Out-Null
+          Copy-Item -LiteralPath $env:V4_INSTALLER -Destination (Join-Path $artifact 'OnlineClass-v4-Windows-Setup.exe')
+          Copy-Item -LiteralPath "$env:V4_INSTALLER.build.json" -Destination (Join-Path $artifact 'OnlineClass-v4-Windows-Setup.exe.build.json')
+          Copy-Item -LiteralPath "$env:V4_INSTALLER.windows-qa.json" -Destination (Join-Path $artifact 'Windows-QA.json')
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: v4-windows-x64-candidate
+          path: ${{ runner.temp }}/v4-candidate/
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
