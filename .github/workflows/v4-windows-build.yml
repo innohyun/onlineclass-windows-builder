@@ -11,6 +11,10 @@ on:
         description: Expected Windows application version
         required: true
         type: string
+      qa_debug:
+        description: Build only the isolated desktop QA executable
+        default: false
+        type: boolean
       previous_version:
         description: Published Windows version for the upgrade smoke test
         default: '0.2.147'
@@ -31,7 +35,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: v4-windows-${{ inputs.candidate_run == '' && 'release-candidate' || 'in-app-test' }}
+  group: v4-windows-${{ inputs.qa_debug && 'desktop-qa' || (inputs.candidate_run == '' && 'release-candidate' || 'in-app-test') }}
   cancel-in-progress: false
 
 jobs:
@@ -45,9 +49,14 @@ jobs:
         shell: pwsh
         env:
           V4_SOURCE_COMMIT: ${{ inputs.source_commit }}
-          V4_READ_ONLY_DEPLOY_KEY: ${{ secrets.V4_READ_ONLY_DEPLOY_KEY }}
+          V4_READ_ONLY_DEPLOY_KEY: ${{ inputs.qa_debug && secrets.V4_QA_READ_ONLY_DEPLOY_KEY || (!inputs.qa_debug && secrets.V4_READ_ONLY_DEPLOY_KEY) || '' }}
+          V4_QA_DEBUG: ${{ inputs.qa_debug }}
+          V4_CANDIDATE_RUN: ${{ inputs.candidate_run }}
         run: |
           $ErrorActionPreference = 'Stop'
+          if ($env:V4_QA_DEBUG -eq 'true' -and $env:V4_CANDIDATE_RUN) {
+            throw 'Desktop QA cannot be combined with an in-app update test'
+          }
           if ($env:V4_SOURCE_COMMIT -cnotmatch '^[0-9a-f]{40}$' -or -not $env:V4_READ_ONLY_DEPLOY_KEY) {
             throw 'Expected a pinned source commit and one-time checkout credential'
           }
@@ -79,8 +88,55 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '22.22.3'
+      - name: Build the isolated desktop QA executable
+        if: inputs.qa_debug
+        shell: pwsh
+        env:
+          RUSTUP_TOOLCHAIN: '1.96.1'
+          CARGO_PROFILE_DEV_DEBUG: '0'
+          CARGO_PROFILE_DEV_INCREMENTAL: 'false'
+          CARGO_TERM_COLOR: never
+          V4_EXPECTED_VERSION: ${{ inputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Location $env:V4_SOURCE
+          $desktop = 'local-sensitive-store-desktop-v4'
+          $package = Get-Content "$desktop/package.json" -Raw | ConvertFrom-Json
+          if ($env:V4_EXPECTED_VERSION -cnotmatch '^\d+\.\d+\.\d+$' -or $package.version -cne $env:V4_EXPECTED_VERSION) {
+            throw 'Pinned V4 source does not contain the requested version'
+          }
+          $identifier = 'com.classaimate.local-sensitive-store-v4.qa'
+          $config = Join-Path $env:RUNNER_TEMP 'v4-desktop-qa.json'
+          @{ identifier = $identifier } | ConvertTo-Json -Compress | Set-Content -LiteralPath $config -Encoding utf8
+          rustup toolchain install 1.96.1 --profile minimal
+          if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain installation failed' }
+          $log = Join-Path $env:RUNNER_TEMP 'v4-build.log'
+          npm ci --no-audit --no-fund *> $log
+          if ($LASTEXITCODE -ne 0) { throw 'V4 dependency installation failed' }
+          npm --prefix $desktop ci --no-audit --no-fund *> $log
+          if ($LASTEXITCODE -ne 0) { throw 'Desktop dependency installation failed' }
+          npm --prefix $desktop run tauri -- build --debug --no-bundle --ci --config $config -- --locked *> $log
+          if ($LASTEXITCODE -ne 0) { throw 'Desktop QA build failed' }
+          $artifact = Join-Path $env:RUNNER_TEMP 'v4-desktop-qa'
+          New-Item -Path $artifact -ItemType Directory | Out-Null
+          $exe = Join-Path $artifact 'ClassAiMate-v4-Desktop-QA.exe'
+          Copy-Item -LiteralPath "$desktop/src-tauri/target/debug/local-sensitive-store-desktop-v4.exe" -Destination $exe
+          @{
+            sourceCommit = git rev-parse HEAD
+            version = $package.version
+            identifier = $identifier
+            profile = 'debug'
+            sha256 = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $artifact 'Desktop-QA.json') -Encoding utf8
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: inputs.qa_debug
+        with:
+          name: v4-windows-x64-desktop-qa
+          path: ${{ runner.temp }}/v4-desktop-qa/
+          if-no-files-found: error
+          retention-days: 3
       - name: Build and verify NSIS installer
-        if: inputs.candidate_run == ''
+        if: ${{ !inputs.qa_debug && inputs.candidate_run == '' }}
         shell: pwsh
         env:
           RUSTUP_TOOLCHAIN: '1.96.1'
@@ -109,7 +165,7 @@ jobs:
           if ($installers.Count -ne 1) { throw 'Expected one verified Windows x64 installer' }
           "V4_INSTALLER=$($installers[0].FullName)" >> $env:GITHUB_ENV
       - name: Verify installation and retained local data
-        if: inputs.candidate_run == ''
+        if: ${{ !inputs.qa_debug && inputs.candidate_run == '' }}
         shell: pwsh
         env:
           V4_PREVIOUS_VERSION: ${{ inputs.previous_version }}
@@ -132,7 +188,7 @@ jobs:
           Copy-Item -LiteralPath "$env:V4_INSTALLER.build.json" -Destination (Join-Path $artifact 'OnlineClass-v4-Windows-Setup.exe.build.json')
           Copy-Item -LiteralPath "$env:V4_INSTALLER.windows-qa.json" -Destination (Join-Path $artifact 'Windows-QA.json')
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        if: inputs.candidate_run == ''
+        if: ${{ !inputs.qa_debug && inputs.candidate_run == '' }}
         with:
           name: v4-windows-x64-candidate
           path: ${{ runner.temp }}/v4-candidate/
@@ -141,7 +197,7 @@ jobs:
           compression-level: 0
 
       - name: Verify the actual in-app update on Windows
-        if: inputs.candidate_run != ''
+        if: ${{ !inputs.qa_debug && inputs.candidate_run != '' }}
         shell: pwsh
         env:
           V4_TEST_RUNNER_KIND: ${{ runner.environment }}
@@ -163,7 +219,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Desktop dependency installation failed' }
           & ./local-sensitive-store-desktop-v4/scripts/build-windows-updater-fixture.ps1 -CandidateRun $env:V4_CANDIDATE_RUN -Version $env:V4_EXPECTED_VERSION -BootstrapVersion $env:V4_PREVIOUS_VERSION
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        if: inputs.candidate_run != ''
+        if: ${{ !inputs.qa_debug && inputs.candidate_run != '' }}
         with:
           name: v4-windows-in-app-update-qa
           path: ${{ runner.temp }}/V4-Windows-Updater-QA.json
