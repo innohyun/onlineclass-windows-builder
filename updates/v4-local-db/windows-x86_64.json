@@ -1,9 +1,9 @@
 {
-  "version": "0.2.148",
+  "version": "0.2.150",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYS9sSjhOYzJXbDhsK2VjMjhYdVcwc0RKVlQ1V2psM24xdm83STdYR1pMSTRVazJWTE9xVThUWlkvVzVIZzh2YU8xN1h4MUYrb09ISGtUQkZHdnY1SEE4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk0MTk2OTE3CWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUKTUx3bUMwZlZtWVFya2trVmRoNXArMUQ3VElnTG4xcEsrVkdJNUVJMVl0bkNxWUNnUjQ5L2EzeDRRaE5CSms3ZXhXaHdHOEJCN1JydW01UUFQWUxKQUE9PQo=",
-      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.148/OnlineClass-v4-Windows-Setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYTkzdHRCR0dNbmVSbGVCSWtjL3dDTGhvaThzVTFFVzY1anZPbUZXaTdtYVdiOS83cW5WQ1RhM0xHQytqWGdXZGp5V0tsK2pKbWg5YlExVzNCek44eFFnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk0NTU4ODIwCWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMTUwCjhXZlAyY3VLdTJxWXNPRSt2NVdpTmkxNEoyRk9Zb1EyQzVLMytTV2lpTVV1bjRlT3cySWZwcjU3Y3JYa1NkcGxiZXQxTjNTVnNNS09UMVVPZ0tHckJnPT0K",
+      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.150/OnlineClass-v4-Windows-Setup.exe"
     }
   }
 }
