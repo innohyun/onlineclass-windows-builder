@@ -1,0 +1,120 @@
+name: V4 Apple Silicon release candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: Exact reviewed V4 source commit
+        required: true
+        type: string
+      version:
+        description: Expected macOS application version
+        required: true
+        type: string
+      diagnostic_key:
+        description: Optional base64 PEM public key for encrypted failure diagnostics
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.repository == 'innohyun/onlineclass-windows-builder' && github.ref == 'refs/heads/main' && github.actor == 'innohyun'
+    runs-on: macos-15
+    environment: v4-windows-build
+    timeout-minutes: 60
+    steps:
+      - name: Fetch pinned V4 sources
+        env:
+          V4_SOURCE_COMMIT: ${{ inputs.source_commit }}
+          V4_READ_ONLY_DEPLOY_KEY: ${{ secrets.V4_READ_ONLY_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          [[ "$V4_SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          test -n "$V4_READ_ONLY_DEPLOY_KEY"
+          umask 077
+          key="$RUNNER_TEMP/v4-read-only"
+          known="$RUNNER_TEMP/v4-known-hosts"
+          trap 'rm -f "$key" "$known"' EXIT
+          printf '%s\n' "$V4_READ_ONLY_DEPLOY_KEY" > "$key"
+          printf '%s\n' 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' > "$known"
+          export GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$known"
+          source="$RUNNER_TEMP/v4-source"
+          git init -q "$source"
+          git -C "$source" fetch -q --depth=1 git@github.com:innohyun/onlineClass-v4.git "$V4_SOURCE_COMMIT"
+          git -C "$source" checkout -q --detach FETCH_HEAD
+          test "$(git -C "$source" rev-parse HEAD)" = "$V4_SOURCE_COMMIT"
+          echo "V4_SOURCE=$source" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.22.3'
+      - name: Build disk image and verify native sync
+        env:
+          V4_EXPECTED_VERSION: ${{ inputs.version }}
+          RUSTUP_TOOLCHAIN: '1.96.1'
+          CARGO_TERM_COLOR: never
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          cd "$V4_SOURCE"
+          desk=local-sensitive-store-desktop-v4
+          test "$(node -p "require('./$desk/package.json').version")" = "$V4_EXPECTED_VERSION"
+          log="$RUNNER_TEMP/v4-build.log"
+          (
+            set -e
+            rustup toolchain install 1.96.1 --profile minimal
+            npm ci --no-audit --no-fund
+            npm --prefix "$desk" ci --no-audit --no-fund
+            npm --prefix "$desk" run build:installer:mac
+            cargo test --locked --release --manifest-path "$desk/src-tauri/Cargo.toml" --lib device_sync -- --test-threads=1
+            node tools/v4/qa-local-helper-macos.mjs "$desk/src-tauri/target/release/bundle/macos/ClassAiMate 교사 데스크 v4.app"
+            images=("$desk"/src-tauri/target/release/bundle/dmg/*.dmg)
+            test "${#images[@]}" -eq 1
+            node "$desk/scripts/prepare-v4-mac-release.mjs" "${images[0]}"
+            output="$RUNNER_TEMP/v4-candidate"
+            mkdir -p "$output"
+            cp .runtime/v4-helper-macos-release/OnlineClass-v4-Local-Sensitive-Store-arm64.dmg "$output/"
+            cd "$desk/src-tauri/target/release/bundle/macos"
+            COPYFILE_DISABLE=1 tar -czf "$output/OnlineClass-v4-Local-Sensitive-Store-arm64.app.tar.gz" 'ClassAiMate 교사 데스크 v4.app'
+            cd "$output"
+            shasum -a 256 *.dmg *.tar.gz > SHA256SUMS.txt
+          ) >"$log" 2>&1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: v4-macos-arm64-candidate
+          path: ${{ runner.temp }}/v4-candidate/
+          if-no-files-found: error
+          retention-days: 3
+      - name: Encrypt build failure diagnostics
+        if: failure() && inputs.diagnostic_key != ''
+        env:
+          V4_BUILD_DIAGNOSTIC_KEY: ${{ inputs.diagnostic_key }}
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const crypto = require('node:crypto');
+          const root = process.env.RUNNER_TEMP;
+          const log = path.join(root, 'v4-build.log');
+          if (!fs.existsSync(log)) process.exit(0);
+          const key = crypto.randomBytes(32);
+          const iv = crypto.randomBytes(12);
+          const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+          const wrapped = crypto.publicEncrypt({
+            key: Buffer.from(process.env.V4_BUILD_DIAGNOSTIC_KEY, 'base64'),
+            oaepHash: 'sha256',
+          }, key);
+          const data = Buffer.concat([cipher.update(fs.readFileSync(log)), cipher.final()]);
+          fs.writeFileSync(path.join(root, 'v4-build-diagnostics.json'), JSON.stringify({
+            key: wrapped.toString('base64'), iv: iv.toString('base64'),
+            tag: cipher.getAuthTag().toString('base64'), data: data.toString('base64'),
+          }));
+          NODE
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: failure() && inputs.diagnostic_key != ''
+        with:
+          name: v4-macos-encrypted-diagnostics
+          path: ${{ runner.temp }}/v4-build-diagnostics.json
+          if-no-files-found: ignore
+          retention-days: 1

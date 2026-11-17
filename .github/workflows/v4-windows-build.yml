@@ -161,6 +161,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Desktop dependency installation failed' }
           npm --prefix $desktop run build:installer:windows *> $log
           if ($LASTEXITCODE -ne 0) { throw 'Verified Windows build failed' }
+          cargo test --locked --release --manifest-path "$desktop/src-tauri/Cargo.toml" --lib device_sync -- --test-threads=1 *>> $log
+          if ($LASTEXITCODE -ne 0) { throw 'Windows native device sync tests failed' }
           $installers = @(Get-ChildItem "$desktop/src-tauri/target/release/bundle/nsis" -File -Filter '*_x64-setup.exe')
           if ($installers.Count -ne 1) { throw 'Expected one verified Windows x64 installer' }
           "V4_INSTALLER=$($installers[0].FullName)" >> $env:GITHUB_ENV
