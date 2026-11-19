@@ -1,9 +1,9 @@
 {
-  "version": "0.2.156",
+  "version": "0.2.157",
   "platforms": {
     "darwin-aarch64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYXptS0NYd3UwMklwSWUzdyt4TnJlRi9hb3VUMkI0ajFvTmlaV09ucUpOWkZTNk1GVWt3cmJ2dFBxc1NFYzdXMXQrbVhEMHpLR3FObnVvM01EekdHVlFvPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk0OTIzMzY5CWZpbGU6T25saW5lQ2xhc3MtdjQtTG9jYWwtU2Vuc2l0aXZlLVN0b3JlLWFybTY0LmFwcC50YXIuZ3oJdmVyc2lvbjowLjIuMTU2Cm1JeXdJekY1RW9lMjJqL2Z5Zi8rZ3NNOUtNTlRLMHA2clJpOElka2t2SEZZUTAySVNIUG9kM3V5NmQ0c1pacmRVWHhLOENORElTVmcxTVVDQjlNN0NBPT0K",
-      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-macos-v0.2.156/OnlineClass-v4-Local-Sensitive-Store-arm64.app.tar.gz"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYTV4d3FnVWFEeS9WWHRMRmY4MXlhRmFuaDZ5NDRTK1dRWm53RDNTY28vWi81cmJrUDVhN3U1S1E1cnRTT0x5SmVOeG1lYzVqNnJIUUxtS2doemdCUWcwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MDczNzQ4CWZpbGU6T25saW5lQ2xhc3MtdjQtTG9jYWwtU2Vuc2l0aXZlLVN0b3JlLWFybTY0LmFwcC50YXIuZ3oJdmVyc2lvbjowLjIuMTU3Ck1nTjVVZ2VXYmJZSTRmK1hPbm5QMVRmUTRoYlUzQVp0RlZaUXBVMDJYSnE5VThJM2h2UnNJSlR3YnlqckZlZElHSTB2MmMxWk9HU1A2Z1E2MHhlU0JRPT0K",
+      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-macos-v0.2.157/OnlineClass-v4-Local-Sensitive-Store-arm64.app.tar.gz"
     }
   }
 }
