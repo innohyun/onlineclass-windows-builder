@@ -1,11 +1,11 @@
 {
-  "version": "0.2.159",
-  "notes": "학생 기록과 전체 검색에서 관찰 원본을 삭제할 수 있습니다. 현재 학생의 관찰만 골라 삭제할 수 있고, 작성·나이스 선택에서도 제거됩니다.\n\nOneDrive 자동 동기화에서 같은 판본의 삭제를 적용합니다. 정정과 삭제가 겹치면 이 PC의 최신 기록과 충돌 내역을 확인할 수 있습니다. 삭제 이력이 빠진 계정 백업은 현재 DB를 교체하기 전에 중단합니다.",
-  "pub_date": "2026-11-19T12:55:47.846Z",
+  "version": "0.2.161",
+  "notes": "작은 편집을 OneDrive로 보낼 때 변경된 데이터 조각을 재사용하는 증분 동기화를 지원합니다. 운영 서버와 학급의 활성 기기에서 증분 지원이 확인되면 사용할 수 있습니다. 기존 백업도 계속 읽을 수 있습니다.\n\nWindows의 학급 전환을 보완했습니다. 저장 경로가 긴 Windows 환경에서 증분 백업과 복원이 실패하던 문제도 수정했습니다.\n\nWindows x64는 EXE를, Apple Silicon Mac은 DMG를 내려받으세요. 업데이트를 지원하는 기존 앱에서는 설정에서 새 버전을 확인하고 설치할 수 있습니다.",
+  "pub_date": "2026-11-19T23:09:50.054Z",
   "platforms": {
     "darwin-aarch64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYTdEV2VKV2EwcWFKL3BHK2U0cGJ4VEswMXdVNjZIQWl0aGdCZUN1NnhYZ2dNSGJpd0NFdE41SjZMNkFMV2U1STZobnBnOFRDV0RBejNIUUM5Nkt2M1FjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MDkxNTU4CWZpbGU6T25saW5lQ2xhc3MtdjQtTG9jYWwtU2Vuc2l0aXZlLVN0b3JlLWFybTY0LmFwcC50YXIuZ3oJdmVyc2lvbjowLjIuMTU5ClByOXlLR1l6YjdEbmFnMkZpVDFJWWNPYkluVVVaZ2tDZDREM1pUdzNJYzNwTnVuWXZaYnhobUhQVlAyRERicVVlb2tIUW5saHg0eTI0bHdEb0g0YkF3PT0K",
-      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-macos-v0.2.159/OnlineClass-v4-Local-Sensitive-Store-arm64.app.tar.gz"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYXc3TW1nOE5UZGIxUURhRkZremNWcXRKcklEMGxNUDNsV0RJK3lONDV4UlY3MHN5S2J5dE9McW9QUGFTRGVUN0JZUStaUVJOdEljQ2ZRZjRuSVowQ1FrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MTI5MTQ5CWZpbGU6T25saW5lQ2xhc3MtdjQtTG9jYWwtU2Vuc2l0aXZlLVN0b3JlLWFybTY0LmFwcC50YXIuZ3oJdmVyc2lvbjowLjIuMTYxCklPNWdVYUxFQ3JBUFByOGIrMHNuYVB1THJYM1VjSjIrWm5zNGNMNlZ1emg1VWxRRUtabGJtd2R3ZWJ2U3YyVDBEanNQSmVzQlBkMzdQc2ZvTEdZUkFBPT0K",
+      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-macos-v0.2.161/OnlineClass-v4-Local-Sensitive-Store-arm64.app.tar.gz"
     }
   }
 }
