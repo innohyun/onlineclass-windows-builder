@@ -1,11 +1,11 @@
 {
-  "version": "0.2.158",
-  "notes": "행발 작성에서 교사가 선택한 출결 상태 요약을 MCP로 읽을 수 있도록 했습니다. 저장한 행발 키워드의 선택 상태를 유지합니다.\n\n앱은 시작할 때 새 버전을 자동 확인합니다. 앱에서 **업데이트**를 누르면 파일 서명을 확인하고 설치한 뒤 다시 시작합니다.",
-  "pub_date": "2026-11-19T10:53:46.981Z",
+  "version": "0.2.159",
+  "notes": "학생 기록과 전체 검색에서 관찰 원본을 삭제할 수 있습니다. 현재 학생의 관찰만 골라 삭제할 수 있고, 작성·나이스 선택에서도 제거됩니다.\n\nOneDrive 자동 동기화에서 같은 판본의 삭제를 적용합니다. 정정과 삭제가 겹치면 이 PC의 최신 기록과 충돌 내역을 확인할 수 있습니다. 삭제 이력이 빠진 계정 백업은 현재 DB를 교체하기 전에 중단합니다.",
+  "pub_date": "2026-11-19T12:55:47.846Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYSt4c1pyMXYycnBlUEluS0NGNlJUTGxxckVGRHU0MVVhUTBZWlNQZDRNUjFLRUNNUXZBUjhkQzRxQmMyMSthTzJDYTlSa2REWUtscEJHZDNuS0xva0FFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MDg1NDQwCWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMTU4CklKblFlUys2YWw0Nm84ZFdqY2JBNWw1REh6UTN6NGxDaEJRdkZWYXo1QnJscEdjbTUzdFo4ZlpSa0s0bEovMWFnOWRIbTBwS2laZGQrVG52WTNzZkNRPT0K",
-      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.158/OnlineClass-v4-Windows-Setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYS90akVSSy80QUdUT2ZIbkNoRVVzYzBxc3MzUWwzVDY0cTRmTXh2d3FpNE16QnNlVWszTzUrQXFqdzh6OVR1OElSazJUUWd5OFRLUzV4VHpiUlhhTVFrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MDkxNzg3CWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMTU5ClJoQ0dKdHZOY05FOU9hSEVMODl6eXdHYmZUL1VDcUp3eXdPaFNIV3FBZHh3WnRoZVI5MGdTUWFYM3lXOVR1UytCN2h2QXd1L3Z4RWNtZlNtQXRoMUFnPT0K",
+      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.159/OnlineClass-v4-Windows-Setup.exe"
     }
   }
 }
