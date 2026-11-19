@@ -1,9 +1,11 @@
 {
-  "version": "0.2.157",
+  "version": "0.2.158",
+  "notes": "행발 작성에서 교사가 선택한 출결 상태 요약을 MCP로 읽을 수 있도록 했습니다. 저장한 행발 키워드의 선택 상태를 유지합니다.\n\n앱은 시작할 때 새 버전을 자동 확인합니다. 앱에서 **업데이트**를 누르면 파일 서명을 확인하고 설치한 뒤 다시 시작합니다.",
+  "pub_date": "2026-11-19T10:53:46.981Z",
   "platforms": {
     "darwin-aarch64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYTV4d3FnVWFEeS9WWHRMRmY4MXlhRmFuaDZ5NDRTK1dRWm53RDNTY28vWi81cmJrUDVhN3U1S1E1cnRTT0x5SmVOeG1lYzVqNnJIUUxtS2doemdCUWcwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MDczNzQ4CWZpbGU6T25saW5lQ2xhc3MtdjQtTG9jYWwtU2Vuc2l0aXZlLVN0b3JlLWFybTY0LmFwcC50YXIuZ3oJdmVyc2lvbjowLjIuMTU3Ck1nTjVVZ2VXYmJZSTRmK1hPbm5QMVRmUTRoYlUzQVp0RlZaUXBVMDJYSnE5VThJM2h2UnNJSlR3YnlqckZlZElHSTB2MmMxWk9HU1A2Z1E2MHhlU0JRPT0K",
-      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-macos-v0.2.157/OnlineClass-v4-Local-Sensitive-Store-arm64.app.tar.gz"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYTFDWG0vWHhkb21tdDhPWFNtVjRzVkZUMm1ONy9xYzJJeHNOOEY4dG1nZkxtVGx1NTdjeHVaQ0tSUjQwOHRzdDlyLzlVSFQyWExqNWVkQUZXdytxZ3c4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MDg1NTc4CWZpbGU6T25saW5lQ2xhc3MtdjQtTG9jYWwtU2Vuc2l0aXZlLVN0b3JlLWFybTY0LmFwcC50YXIuZ3oJdmVyc2lvbjowLjIuMTU4CnBrcDFyQitWZEhCTDBCWkNLc2FEK0ExZ3FxY3JGWld2aUg0ZU1VdWJUL0tzaUJHcjVLS1ExdVl2Rjl4dzNuZU9GekRVS3N0OU9sZURObTBYZlR5U0JRPT0K",
+      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-macos-v0.2.158/OnlineClass-v4-Local-Sensitive-Store-arm64.app.tar.gz"
     }
   }
 }

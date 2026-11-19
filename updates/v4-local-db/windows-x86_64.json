@@ -1,9 +1,11 @@
 {
-  "version": "0.2.157",
+  "version": "0.2.158",
+  "notes": "행발 작성에서 교사가 선택한 출결 상태 요약을 MCP로 읽을 수 있도록 했습니다. 저장한 행발 키워드의 선택 상태를 유지합니다.\n\n앱은 시작할 때 새 버전을 자동 확인합니다. 앱에서 **업데이트**를 누르면 파일 서명을 확인하고 설치한 뒤 다시 시작합니다.",
+  "pub_date": "2026-11-19T10:53:46.981Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYStHTzNCaEg0ZjVlcVlKaWpBeStvdUVjQUt1UVJJdXNVREVjYnNucFFqTSszMWxPMTlRMWFzS1JrOFk5anNPZFBqNEUwM3MvVXg1RnFiaDVHOFVFZUFNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MDczNjExCWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMTU3Cng3eHpNamxsVG9iYnpNbTJpV1NERkFZMGlqdmNZaVZkSDFYMkN5VUNRSitBaDFvWUJtTnVSRGdJanRmSTI5STREVVJuNG1xNFhoUURCc3VlMGV2Q0JBPT0K",
-      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.157/OnlineClass-v4-Windows-Setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYSt4c1pyMXYycnBlUEluS0NGNlJUTGxxckVGRHU0MVVhUTBZWlNQZDRNUjFLRUNNUXZBUjhkQzRxQmMyMSthTzJDYTlSa2REWUtscEJHZDNuS0xva0FFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MDg1NDQwCWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMTU4CklKblFlUys2YWw0Nm84ZFdqY2JBNWw1REh6UTN6NGxDaEJRdkZWYXo1QnJscEdjbTUzdFo4ZlpSa0s0bEovMWFnOWRIbTBwS2laZGQrVG52WTNzZkNRPT0K",
+      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.158/OnlineClass-v4-Windows-Setup.exe"
     }
   }
 }
