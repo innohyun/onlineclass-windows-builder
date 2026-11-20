@@ -1,11 +1,11 @@
 {
-  "version": "0.2.162",
-  "notes": "## 백업·동기화\n\n- 일반 상태 조회에서 Mac 키체인 승인 창을 열지 않습니다. 기기 인증이 필요하면 백업·동기화의 **기기 인증 확인**에서 승인할 수 있습니다.\n- 동기화 상태 조회가 일시적으로 실패해도 마지막으로 확인한 자동 동기화 체크가 유지됩니다. 현재 설정을 알 수 없으면 미확인으로 표시합니다.\n- v6 증분 게시에서 누락된 목록·커밋·적용 인덱스·DB 조각을 요청하고, 게시 기기는 필요한 파일만 다시 보냅니다. 파일 검증과 DB 반영이 끝난 뒤 수신을 확인합니다.\n\n## 업무 기능\n\n- 사용량 확인의 기록·읽기 횟수와 글쓰기 편집 화면에서 변경된 본문을 불러오는 방식을 개선했습니다.\n\nWindows x64와 Apple Silicon Mac에서 앱 내 업데이트를 사용할 수 있습니다.",
-  "pub_date": "2026-11-20T08:23:38.567Z",
+  "version": "0.2.163",
+  "notes": "## 교사 데스크 v4 0.2.163\n\n- 학생 관리에서 출결 정정, 마음 우체통 보관·교사 메모, 평가, 종합기록으로 이동합니다. 수업자료에서 주간 시간표와 학기 교육과정을 확인할 수 있습니다.\n- 사용 안내에서 주요 작업실을 검색하고, 서식함에서 문서 구성을 미리 봅니다. 이 PC 글쓰기는 저장된 글 목록과 본문을 함께 보여 줍니다.\n- 보기에서 기기별 화면 배율을 90%, 100%, 110%, 125%로 조정할 수 있습니다. 화면 공유용 학생 자료 가림은 기본 꺼짐입니다.\n- 기기 동기화, 백업·복원, 저장공간을 화면별로 확인합니다.\n\nWindows x64는 EXE, Apple Silicon Mac은 DMG를 내려받으세요. 기존 앱은 **설정 → 앱 업데이트**에서 업데이트할 수 있습니다.",
+  "pub_date": "2026-11-20T17:20:40.611Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYXdQcG1YbnlmRm1jdkM0VUcxejdrLzZtNTlMQ2FjUE5yTUxnZGRMQ010VlNZUHdIMk9kU0pET3hmQ0hVKzBRVFMxMHQrRGFCakkrM04yZmZ3ZE1zL1FJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MTYyODM3CWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMTYyCjhUU0o4b1RnNXBvYjBCVS91dUZtTDZNSlAzbkhuRHlhT3ZNTy9aRGViN2Z2WnNLWHk4eGxRTHNrYjdwcjNubzVpWE9BS29xQjZDUW1ST01TV05lNEFnPT0K",
-      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.162/OnlineClass-v4-Windows-Setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYThGK1lRVncvS2ZBbE1Yd3pHZ3JFNGVicWZaK0FjaU9jVkM1Z1B3YmZzOERSM0xYMUJtZHJOVW1sWGJocXJYRm9FVVVDSGFKaE5ualpkczc2eDhLcHdjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MTk0ODk0CWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMTYzCmZhSWhRYkY5bm9NMitUWmxmQldBbEhUSjBGTlRicHNjR1NJN0R1dUNzYkVsOGFHY2xXK0xYUk1PUFNZTXJZMzRqd1YzY0phRXltUVZkais5ejFvV0NnPT0K",
+      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.163/OnlineClass-v4-Windows-Setup.exe"
     }
   }
 }
