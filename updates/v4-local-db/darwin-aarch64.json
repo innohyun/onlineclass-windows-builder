@@ -1,11 +1,11 @@
 {
-  "version": "0.2.161",
-  "notes": "작은 편집을 OneDrive로 보낼 때 변경된 데이터 조각을 재사용하는 증분 동기화를 지원합니다. 운영 서버와 학급의 활성 기기에서 증분 지원이 확인되면 사용할 수 있습니다. 기존 백업도 계속 읽을 수 있습니다.\n\nWindows의 학급 전환을 보완했습니다. 저장 경로가 긴 Windows 환경에서 증분 백업과 복원이 실패하던 문제도 수정했습니다.\n\nWindows x64는 EXE를, Apple Silicon Mac은 DMG를 내려받으세요. 업데이트를 지원하는 기존 앱에서는 설정에서 새 버전을 확인하고 설치할 수 있습니다.",
-  "pub_date": "2026-11-19T23:09:50.054Z",
+  "version": "0.2.162",
+  "notes": "## 백업·동기화\n\n- 일반 상태 조회에서 Mac 키체인 승인 창을 열지 않습니다. 기기 인증이 필요하면 백업·동기화의 **기기 인증 확인**에서 승인할 수 있습니다.\n- 동기화 상태 조회가 일시적으로 실패해도 마지막으로 확인한 자동 동기화 체크가 유지됩니다. 현재 설정을 알 수 없으면 미확인으로 표시합니다.\n- v6 증분 게시에서 누락된 목록·커밋·적용 인덱스·DB 조각을 요청하고, 게시 기기는 필요한 파일만 다시 보냅니다. 파일 검증과 DB 반영이 끝난 뒤 수신을 확인합니다.\n\n## 업무 기능\n\n- 사용량 확인의 기록·읽기 횟수와 글쓰기 편집 화면에서 변경된 본문을 불러오는 방식을 개선했습니다.\n\nWindows x64와 Apple Silicon Mac에서 앱 내 업데이트를 사용할 수 있습니다.",
+  "pub_date": "2026-11-20T08:23:38.567Z",
   "platforms": {
     "darwin-aarch64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYXc3TW1nOE5UZGIxUURhRkZremNWcXRKcklEMGxNUDNsV0RJK3lONDV4UlY3MHN5S2J5dE9McW9QUGFTRGVUN0JZUStaUVJOdEljQ2ZRZjRuSVowQ1FrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MTI5MTQ5CWZpbGU6T25saW5lQ2xhc3MtdjQtTG9jYWwtU2Vuc2l0aXZlLVN0b3JlLWFybTY0LmFwcC50YXIuZ3oJdmVyc2lvbjowLjIuMTYxCklPNWdVYUxFQ3JBUFByOGIrMHNuYVB1THJYM1VjSjIrWm5zNGNMNlZ1emg1VWxRRUtabGJtd2R3ZWJ2U3YyVDBEanNQSmVzQlBkMzdQc2ZvTEdZUkFBPT0K",
-      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-macos-v0.2.161/OnlineClass-v4-Local-Sensitive-Store-arm64.app.tar.gz"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYTFZN1M0NjdmOGRnM3QxZ0NEd3VveW1GT3FxZldLNTdSbWNLL1g0QUlibGtQODN5bVRvYXNWMTR4L1dmUkFSNDdJQTN2YVJjeTN4RDg3OEtLbTZ4SXdRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MTYyNjYyCWZpbGU6T25saW5lQ2xhc3MtdjQtTG9jYWwtU2Vuc2l0aXZlLVN0b3JlLWFybTY0LmFwcC50YXIuZ3oJdmVyc2lvbjowLjIuMTYyCmJpQ2Jqdld2RFdtalhaN2Z6NVVVdUlNNnVpWnhnd3grZWh4Y0JlY0p4U0xXWkEydzdwVk1DcGxZaXE2N1hUejRlQkkzL2Mvekl2ME44dWVtYTNwU0FRPT0K",
+      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-macos-v0.2.162/OnlineClass-v4-Local-Sensitive-Store-arm64.app.tar.gz"
     }
   }
 }
