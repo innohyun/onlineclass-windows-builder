@@ -1,11 +1,11 @@
 {
-  "version": "0.2.165",
-  "notes": "교사 데스크에서 평가와 주간 시간표를 열고, 브라우저 없이 등록·수정할 수 있습니다.\n\n- Yearbook 웹과 데스크에서 같은 항목을 수정하면 최신 변경 내용을 보여주고, 로컬 초안을 유지한 채 다시 적용할 수 있습니다.\n- 교시를 옮기거나 교환하면 기존 수업자료도 새 교시에서 이어서 열 수 있습니다.\n- 이번 설치본은 Windows x64와 Apple Silicon Mac용입니다. 교사 데스크의 설정에서 앱 업데이트를 확인하세요.",
-  "pub_date": "2026-11-21T06:40:46.050Z",
+  "version": "0.2.166",
+  "notes": "## ClassAiMate 교사 데스크 0.2.166\n\n- Mac에서 학급을 바꿀 때 기기 인증이 끝날 때까지 현재 화면을 사용할 수 있습니다. 전환을 취소하거나 대기 시간이 지나면 기존 학급이 유지됩니다.\n- 출결 일괄 가져오기에서 오류가 발생하면 해당 요청의 기록을 모두 되돌립니다.\n- Yearbook 평가 저장이 충돌하면 로컬 초안을 보존하고 최신 평가를 보여 줍니다. 다른 곳에서 판본이 바뀌었으면 최신 값과 비교한 뒤 다시 입력할 수 있습니다.\n\n이미 앱을 쓰고 있다면 설정에서 업데이트를 확인하세요. 설치가 필요하면 Windows x64의 EXE 또는 Apple Silicon Mac의 DMG를 받으세요.",
+  "pub_date": "2026-11-21T08:24:10.788Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYXlUeVZYOUo1VGIrVlc1ejRLaGpKUmtJV2NnR3hXWkNpR2xTcE05V2V3ZlM1QVlDOEN4NFFwNEkrZ0xWNnAzZHcvVFlnaUZyYldvcm1GNTNVUDM1eGdrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MjQyMjY2CWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMTY1CnpSNmJXZXBTcUVWQUxKK1Fyd0lHMmUvRmY2c3F4T0dwREhhdU15SHhCc0syelBKa2Q3dDR6Y1RIMXdTUXYvWWpabmcrUktPd05LTWFLeUdVOTRCQUNRPT0K",
-      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.165/OnlineClass-v4-Windows-Setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYTdBNDRBcnBwK1F4TlI3ajZ2dUFXaURSbWNtRk5EclgyWW9weVJYYWQrbG5KUXdxdzNCbm5ta0VXTjdjRDVCZnVoOGRFRWZVby9aeFdUckh1bmlPWUFzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MjQ4NzA0CWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMTY2ClkyNXZoNjNqSkRDcDRzaW93REhKMlppSm5GSTJXZExtN3lJakZ2Ry9Ib2paQlZHd1JoKzk3RDF5ZTNDbFYzcm5lTHFJNGpHVk5qY1hzajZxbGZ4TUFBPT0K",
+      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.166/OnlineClass-v4-Windows-Setup.exe"
     }
   }
 }
