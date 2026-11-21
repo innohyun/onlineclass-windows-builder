@@ -1,11 +1,11 @@
 {
-  "version": "0.2.167",
-  "notes": "## ClassAiMate 교사 데스크 0.2.167\n\n- 출결에서 하루 또는 기간을 선택해 등록할 수 있습니다. 출결 등록은 오늘과 새로 만들기에서도 열 수 있습니다.\n- 학생 기록에서 종합기록의 근거, 성적 집계, 초안 일괄 검토와 나이스 입력값을 확인할 수 있습니다.\n- 마음 우체통의 종결 기록을 검색하고 페이지를 넘겨 볼 수 있습니다.\n- 시간표에서 연결된 수업자료를 연 뒤 같은 주차와 교시로 돌아갑니다. 평가에 다시 들어가면 선택했던 학생과 필터를 복원합니다.\n- 오늘, 자료 검색, 화면 배율, 백업과 복원 안내를 손봤습니다.\n\n기존 사용자는 설정에서 업데이트를 확인할 수 있습니다. 새로 설치하는 경우 Windows x64용 EXE 또는 Apple Silicon Mac용 DMG를 사용하세요.",
-  "pub_date": "2026-11-21T11:45:02.270Z",
+  "version": "0.2.168",
+  "notes": "## 교사 데스크 v4 0.2.168\n\n- 오늘 화면에서 평일 달력, 팀 허브의 업무·공지와 오늘 시간표를 확인합니다.\n- 팀 허브에서 일정 등록·수정과 우리 반 업무 상태 변경을 처리합니다. 웹에서 먼저 수정한 일정은 다시 불러와 확인할 수 있습니다.\n- 주간·연간 시간표에서 교시를 끌어 이동·교환하고 해당 교시의 수업자료를 엽니다.\n- 평가 숫자키 입력은 다음 학생으로 먼저 이동하고 학생별 저장 상태를 표시합니다.\n- 학급 도구에서 학생 관리, 매일수학, 학급물품 등 자주 쓰는 교사 화면을 앱 안에서 엽니다.",
+  "pub_date": "2026-11-21T14:09:57.522Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYS9nSzAzRnR4THlTcFB4NlJKODd1Y0hwd2NoY1hKZkt5T3M3UTgyMnI0UnA2R1NkSGVxTGFaMlBJUEU0N2ZEbUx4b2tDNkx4aFdoaXBUTUJrcXZ2NUFJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MjYwNDg3CWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMTY3CndTMUVXZHRSUFI3TlpYOVFXSDFURmUzU2x2SGpsKzI1enhvUWw3SXMxZmtsRmdCRThEdDMzZjFHeXVDc0xld0VkVlZjZG0wdVF1RUlKRlVLSDF1YUNRPT0K",
-      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.167/OnlineClass-v4-Windows-Setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYTIySHBLT25aUWVzeW5HYU10Z014THRQd0p0akp2cGFscGw0OXZsSTJKUHVFNU9naVRMeDBNR3pmWWtmU2EvemE2c1hJNC9XUFRTc2xUUXVTOWh1Z2dzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MjY5NDQxCWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMTY4ClZpVGxBc2hoY0lkWHRqdXhtb0JQUVZPNk1QeEFHa0wrWlhHaE5kMWNVb1AxTkF1NVJXQUNvcld4Vi96SzVQVi9NU0t1VWhZdzROSHJCOVhCS3hoNUR3PT0K",
+      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.168/OnlineClass-v4-Windows-Setup.exe"
     }
   }
 }
