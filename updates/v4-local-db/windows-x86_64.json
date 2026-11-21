@@ -1,11 +1,11 @@
 {
-  "version": "0.2.164",
-  "notes": "## 교사 데스크 v4 0.2.164\n\n- 평가와 시간표·교육과정에서 확인된 동기화 사본을 읽기 전용으로 열 수 있습니다. 권한이나 기기 인증을 확인해야 할 때는 해당 상태를 표시합니다.\n- 마음 우체통에서 이 PC의 종료 대화 건수와 확인 시각을 볼 수 있습니다. 교사 메모를 불러오지 못해도 보관된 대화는 열립니다.\n\nWindows x64는 EXE, Apple Silicon Mac은 DMG를 내려받으세요. 기존 앱은 **설정 → 앱 업데이트**에서 업데이트할 수 있습니다.",
-  "pub_date": "2026-11-21T00:44:30.499Z",
+  "version": "0.2.165",
+  "notes": "교사 데스크에서 평가와 주간 시간표를 열고, 브라우저 없이 등록·수정할 수 있습니다.\n\n- Yearbook 웹과 데스크에서 같은 항목을 수정하면 최신 변경 내용을 보여주고, 로컬 초안을 유지한 채 다시 적용할 수 있습니다.\n- 교시를 옮기거나 교환하면 기존 수업자료도 새 교시에서 이어서 열 수 있습니다.\n- 이번 설치본은 Windows x64와 Apple Silicon Mac용입니다. 교사 데스크의 설정에서 앱 업데이트를 확인하세요.",
+  "pub_date": "2026-11-21T06:40:46.050Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYS9LcVU5VWxhUDUwS24rcVM1eVZWU2k1d1J2UC9ja0pqWHVBRlBPMGQ4L0tjbXVPdGVGeVIvSnR5N0tkTzFCTituS0VuU3l6SnZEbFQydmx2UjBkMUFRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MjIxMTc4CWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMTY0Ckw0SDI3a20wUDAxVXZCMXNPMkdKS1B6R2hlY0RDNHAvSEk0MHZOOFYvZEhiR3VZVVpxMG5VRGJQaFVuMnVTMUlEaWRPSW1zeEttcStGcEswNmZ6ckRnPT0K",
-      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.164/OnlineClass-v4-Windows-Setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYXlUeVZYOUo1VGIrVlc1ejRLaGpKUmtJV2NnR3hXWkNpR2xTcE05V2V3ZlM1QVlDOEN4NFFwNEkrZ0xWNnAzZHcvVFlnaUZyYldvcm1GNTNVUDM1eGdrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MjQyMjY2CWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMTY1CnpSNmJXZXBTcUVWQUxKK1Fyd0lHMmUvRmY2c3F4T0dwREhhdU15SHhCc0syelBKa2Q3dDR6Y1RIMXdTUXYvWWpabmcrUktPd05LTWFLeUdVOTRCQUNRPT0K",
+      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.165/OnlineClass-v4-Windows-Setup.exe"
     }
   }
 }
