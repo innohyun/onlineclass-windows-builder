@@ -1,11 +1,11 @@
 {
-  "version": "0.2.163",
-  "notes": "## 교사 데스크 v4 0.2.163\n\n- 학생 관리에서 출결 정정, 마음 우체통 보관·교사 메모, 평가, 종합기록으로 이동합니다. 수업자료에서 주간 시간표와 학기 교육과정을 확인할 수 있습니다.\n- 사용 안내에서 주요 작업실을 검색하고, 서식함에서 문서 구성을 미리 봅니다. 이 PC 글쓰기는 저장된 글 목록과 본문을 함께 보여 줍니다.\n- 보기에서 기기별 화면 배율을 90%, 100%, 110%, 125%로 조정할 수 있습니다. 화면 공유용 학생 자료 가림은 기본 꺼짐입니다.\n- 기기 동기화, 백업·복원, 저장공간을 화면별로 확인합니다.\n\nWindows x64는 EXE, Apple Silicon Mac은 DMG를 내려받으세요. 기존 앱은 **설정 → 앱 업데이트**에서 업데이트할 수 있습니다.",
-  "pub_date": "2026-11-20T17:20:40.611Z",
+  "version": "0.2.164",
+  "notes": "## 교사 데스크 v4 0.2.164\n\n- 평가와 시간표·교육과정에서 확인된 동기화 사본을 읽기 전용으로 열 수 있습니다. 권한이나 기기 인증을 확인해야 할 때는 해당 상태를 표시합니다.\n- 마음 우체통에서 이 PC의 종료 대화 건수와 확인 시각을 볼 수 있습니다. 교사 메모를 불러오지 못해도 보관된 대화는 열립니다.\n\nWindows x64는 EXE, Apple Silicon Mac은 DMG를 내려받으세요. 기존 앱은 **설정 → 앱 업데이트**에서 업데이트할 수 있습니다.",
+  "pub_date": "2026-11-21T00:44:30.499Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYThGK1lRVncvS2ZBbE1Yd3pHZ3JFNGVicWZaK0FjaU9jVkM1Z1B3YmZzOERSM0xYMUJtZHJOVW1sWGJocXJYRm9FVVVDSGFKaE5ualpkczc2eDhLcHdjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MTk0ODk0CWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMTYzCmZhSWhRYkY5bm9NMitUWmxmQldBbEhUSjBGTlRicHNjR1NJN0R1dUNzYkVsOGFHY2xXK0xYUk1PUFNZTXJZMzRqd1YzY0phRXltUVZkais5ejFvV0NnPT0K",
-      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.163/OnlineClass-v4-Windows-Setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYS9LcVU5VWxhUDUwS24rcVM1eVZWU2k1d1J2UC9ja0pqWHVBRlBPMGQ4L0tjbXVPdGVGeVIvSnR5N0tkTzFCTituS0VuU3l6SnZEbFQydmx2UjBkMUFRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MjIxMTc4CWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMTY0Ckw0SDI3a20wUDAxVXZCMXNPMkdKS1B6R2hlY0RDNHAvSEk0MHZOOFYvZEhiR3VZVVpxMG5VRGJQaFVuMnVTMUlEaWRPSW1zeEttcStGcEswNmZ6ckRnPT0K",
+      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.164/OnlineClass-v4-Windows-Setup.exe"
     }
   }
 }
