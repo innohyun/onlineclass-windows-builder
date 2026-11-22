@@ -1,11 +1,11 @@
 {
-  "version": "0.2.169",
-  "notes": "## 교사 데스크 0.2.169\n\n- 앱의 학급 도구에서 학생 관리, 퀘스트, 공지, 보드, 매일수학, 퀴즈, 학급 토큰, 상점, 음성 전사와 학급물품을 열 수 있습니다.\n- 팀 허브에서 수합 업무에 파일을 제출하고, 첨부와 제출 파일을 선택한 폴더에 저장할 수 있습니다.\n- 홈에서 일반 업무를 완료하거나 되돌리고, 팀 허브에서 완료한 업무를 따로 볼 수 있습니다.\n- 주간·연간 시간표에서 교시를 끌어 이동하거나 교환할 수 있습니다. 선택한 교시의 수업자료를 만들고 다시 열 수 있습니다.\n- 설정에서 일정과 업무 마감의 시스템 알림을 켜고 테스트할 수 있습니다.",
-  "pub_date": "2026-11-21T22:34:14.227Z",
+  "version": "0.2.170",
+  "notes": "# ClassAiMate 교사 데스크 0.2.170\n\n- 시간표에서 교시를 옮기거나 교환한 뒤 같은 수업자료를 열 수 있습니다. 시간표에서 만든 수업자료의 본문을 앱에서 수정하고 저장합니다.\n- 학급 도구 10개가 교사 데스크 안에서 열립니다. 학생 관리, 퀘스트, 공지, 보드, 매일수학, 학급 토큰, 상점, 퀴즈, 음성 전사와 학급물품을 현재 학급에 연결합니다.\n- 퀴즈는 클래식 대기실을 열어 학생 참여를 확인하고 진행과 확정 결과 조회까지 이어갑니다. 새 전사는 교사 계정과 학급 권한을 확인한 뒤 마이크 녹음이나 음원 파일을 전사합니다.\n- 학급물품은 앱과 웹에서 같은 서버 대장에 저장합니다. 학생 학습자료의 목록, 작성, 첨부, 공개 미리보기를 앱에서 사용합니다.\n- 팀 허브 일정의 4주 보기와 파일 제출·저장, 홈 시간표의 날짜 이동, 연간 시간표와 사이드 메뉴를 정리했습니다.",
+  "pub_date": "2026-11-22T04:28:48.773Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYTZVWGt2QXRZYjdvblBWemo3cHZ3NEVYSkJGYzQ5djdsOUdaZmVtUXEzQzg1OVRTejZHT2svaUxnSHdDTnRudFQ1RVNkOFNDRG05eXBzeU1xOHRxVkFzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MzAwMjcyCWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMTY5CnNtamV0Y3BBakpoK3JldE1MSnNpMHB2T0N6ZXRYbWtTbDdyRHN4WFVMeGU3L25TbVdtdmd5cTBlRHR0dzRzYXJDazBlSkxQRThqaHBPbUJWbEhJWUJ3PT0K",
-      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.169/OnlineClass-v4-Windows-Setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYXdURzRwdlhYdTRFWVVRczQrNXhKRHJQc1hBSHJoWDhtQ1Y0UGd4SE13alBXcXB1Ym1HVmtGTE9NVnlEYzBSbmN2RlpTSlJDTDBQcjdYNGJhaFlWMndFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MzIwODk4CWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMTcwClorWGZTanc2NGFIK25nU0JNendjdUZGZnhKRkV4TDZEYzVGdE11YmtzQ1ZRcDN3RTQ2QXJCSkFFSkJXWTlYNFNSUHU1bStVODFqbG16ckszNnlPakR3PT0K",
+      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.170/OnlineClass-v4-Windows-Setup.exe"
     }
   }
 }
