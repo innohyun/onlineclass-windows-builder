@@ -146,6 +146,11 @@ jobs:
                 $frame = $automation::FromHandle($script:mainHandle).Current.BoundingRectangle
                 if ($frame.Width -ge 1000 -and $frame.Width -le 1080 -and $frame.Height -ge 700 -and $frame.Height -le 780) {
                   Activate-AppWindow 'Click the captured annual timetable tab'
+                  [void][TeacherDeskFixtureWindow]::SetPhysicalCursorPos([int]($frame.X + 520), [int]($frame.Y + 587))
+                  [TeacherDeskFixtureWindow]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
+                  [TeacherDeskFixtureWindow]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+                  Start-Sleep -Milliseconds 400
+                  Save-TimetableFrame 'selected-weekly-lesson'
                   [void][TeacherDeskFixtureWindow]::SetPhysicalCursorPos([int]($frame.X + 412), [int]($frame.Y + 183))
                   [TeacherDeskFixtureWindow]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
                   [TeacherDeskFixtureWindow]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
@@ -155,7 +160,18 @@ jobs:
               }
             }
           '@
-          [IO.File]::WriteAllText($script, $body.Replace($anchor, "$overlay" + [Environment]::NewLine + $anchor))
+          $body = $body.Replace($anchor, "$overlay" + [Environment]::NewLine + $anchor)
+          $science = '  Press-InApp ''Open synthetic science lesson'' $fixture.overviewLesson'
+          if (-not $body.Contains($science)) { throw 'Pinned classroom proof changed' }
+          $proof = @'
+            [void](Wait-Ui 'Expanded lesson overview' { Find-InApp @($fixture.overviewBack) -Button })
+            Start-Sleep -Milliseconds 500
+            Save-TimetableFrame 'expanded-lesson-overview'
+            if (-not (Find-InApp @($fixture.overviewContent))) {
+              Press-InApp 'Open synthetic science lesson' $fixture.overviewLesson
+            }
+          '@
+          [IO.File]::WriteAllText($script, $body.Replace($science, $proof))
           try {
             & ./local-sensitive-store-desktop-v4/scripts/verify-windows-installation.ps1 -Installer $next -PreviousInstaller $previous -PreviousVersion '0.2.176'
             Copy-Item "$next.windows-qa.json" (Join-Path $capture 'Windows-Installed-Layout-QA.json')
