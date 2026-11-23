@@ -1,11 +1,11 @@
 {
-  "version": "0.2.176",
-  "notes": "## 교사 데스크 0.2.176\n\n- 종합기록 작업실의 학생별 집중 검토에서 관찰·행발 키워드를 오른쪽에 열고, 평어 근거와 나이스 누가기록을 각각 선택할 수 있습니다.\n- 학급 보드에서 게시글과 사진을 보며 평가하고, 보드를 마감·재개하거나 확인 후 삭제할 수 있습니다. 일반 보드는 Enter·E·Z와 방향키, 연결 과제는 웹 과제 점검과 같은 판정 단축키를 사용합니다.\n- 보드 연동 과제의 사진을 웹과 앱 과제 점검 갤러리에서 확인할 수 있습니다.",
-  "pub_date": "2026-11-23T06:20:07.343Z",
+  "version": "0.2.177",
+  "notes": "## 교사 데스크 0.2.177\n\n- **수업 한눈에 보기**에서 학기 전체의 단원·학습주제·학습내용을 비교하고, 교시를 선택해 상세 정보를 확인합니다.\n- **수업자료**에서 전날·다음날과 같은 날의 다른 교시를 살펴보고 자료를 집중해서 읽을 수 있습니다.\n- 사이드 메뉴를 편집해 자주 쓰는 도구를 원하는 그룹에 놓습니다. 홈은 미처리 업무 더 보기와 교사 웹 알림 피드를 제공합니다.\n- 팀 허브의 업무 등록과 조회, 출결의 특이 사항 확인, 학생 관리의 기록 이동을 개선했습니다.\n- 학급 상점의 상품 이미지와 재고 보충을 관리하고, 학급 토큰을 지급하기 전에 학생별 예상 잔액을 확인합니다.",
+  "pub_date": "2026-11-23T10:35:44.917Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYThvc042Q290a00xTzlsQWNKRkZ4Wm1ubWRqSSsvTStnL0hWcVdyZTRMY1RvZWFUTThxOWpwenVGUlAyRmVKUktIWk5kSGVoeDk2dks5SE0xaTk5SUFJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NDEzNjI2CWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMTc2CndSRmtVazRnTWdQSUdFU25hN0ZOQjMwRTZFd0Y5RnRDQUdGOEptTDJhZ0x0SWtEbS9PVklUVFpwQmR3NTJCeHZoY1JoSjV5bDJkNmNTRnNuaTJFbkR3PT0K",
-      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.176/OnlineClass-v4-Windows-Setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYTBzUEpEc1VHLzd3ZzRCaktoYWw4QzZsUlNRWkxCSHFjbWd6WVE0ajNVMURUNytDcGwvVk45RFpjMTB2RnV2ZGlCQ0pWaU5LUkFMWTZ3UUh0MndhcEFBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NDI5MzAxCWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMTc3CjVsSnNnbHJxcnhacVo5MjRrTjJMZzhoZERiT2RhTFh2WXFzdUovNER6S1JjTTg0dSthUytzZC9iTUFuTFQ4SEo1d2I2d1BQMEtYU3NmZHZsK1ZtZkJ3PT0K",
+      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.177/OnlineClass-v4-Windows-Setup.exe"
     }
   }
 }
