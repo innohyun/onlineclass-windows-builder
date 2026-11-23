@@ -53,7 +53,7 @@ jobs:
         shell: pwsh
         env:
           V4_SOURCE_COMMIT: ${{ inputs.source_commit }}
-          V4_READ_ONLY_DEPLOY_KEY: ${{ inputs.qa_debug && secrets.V4_QA_READ_ONLY_DEPLOY_KEY || (!inputs.qa_debug && secrets.V4_READ_ONLY_DEPLOY_KEY) || '' }}
+          V4_READ_ONLY_DEPLOY_KEY: ${{ inputs.store_msix && secrets.V4_STORE_READ_ONLY_DEPLOY_KEY || (!inputs.store_msix && inputs.qa_debug && secrets.V4_QA_READ_ONLY_DEPLOY_KEY) || (!inputs.store_msix && !inputs.qa_debug && secrets.V4_READ_ONLY_DEPLOY_KEY) || '' }}
           V4_QA_DEBUG: ${{ inputs.qa_debug }}
           V4_STORE_MSIX: ${{ inputs.store_msix }}
           V4_CANDIDATE_RUN: ${{ inputs.candidate_run }}
