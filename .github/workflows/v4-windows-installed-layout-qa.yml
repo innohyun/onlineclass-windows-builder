@@ -164,9 +164,19 @@ jobs:
           $science = '  Press-InApp ''Open synthetic science lesson'' $fixture.overviewLesson'
           if (-not $body.Contains($science)) { throw 'Pinned classroom proof changed' }
           $proof = @'
-            [void](Wait-Ui 'Expanded lesson overview' { Find-InApp @($fixture.overviewBack) -Button })
-            Start-Sleep -Milliseconds 500
+            $overviewBack = Find-InApp @($fixture.overviewBack) -Button
+            if (-not $overviewBack) {
+              $frame = $automation::FromHandle($script:mainHandle).Current.BoundingRectangle
+              if ($frame.Width -ge 1000 -and $frame.Width -le 1080 -and $frame.Height -ge 700 -and $frame.Height -le 780) {
+                Activate-AppWindow 'Open the visible lesson overview'
+                [void][TeacherDeskFixtureWindow]::SetPhysicalCursorPos([int]($frame.X + 620), [int]($frame.Y + 416))
+                [TeacherDeskFixtureWindow]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
+                [TeacherDeskFixtureWindow]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+                Start-Sleep -Milliseconds 500
+              }
+            }
             Save-TimetableFrame 'expanded-lesson-overview'
+            [void](Wait-Ui 'Expanded lesson overview' { Find-InApp @($fixture.overviewBack) -Button })
             if (-not (Find-InApp @($fixture.overviewContent))) {
               Press-InApp 'Open synthetic science lesson' $fixture.overviewLesson
             }
