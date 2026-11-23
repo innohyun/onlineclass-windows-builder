@@ -1,11 +1,11 @@
 {
-  "version": "0.2.174",
-  "notes": "- 주간 시간표의 전담 교시에 단원·차시 주제·쪽수를 표시하고 수업 내용을 편집할 수 있습니다.\n- 넓어진 진도 조정 창과 관찰 집중 검토, 학생 기록·관리 화면을 개선했습니다.\n- 오늘 화면의 세 열, 접을 수 있는 사이드바와 빠른 메모를 사용할 수 있습니다.\n- 과제 점검은 최근 조회 기간을 기억합니다. 퀴즈 작성과 라이브 준비를 구분하고 대기실에 입장 QR을 제공합니다.\n- 학급 토큰 온도계에서 목표와 기간을 저장하고 지급 통계를 확인할 수 있습니다.",
-  "pub_date": "2026-11-23T00:09:22.764Z",
+  "version": "0.2.175",
+  "notes": "# ClassAiMate 교사 데스크 v4 0.2.175\n\n- 퀴즈 폴더·목록·상세를 한 화면에 배치하고 제목·교과·상태·문항 수·수정일을 정렬했습니다.\n- 새 문항 작성, 문항 수정, 데모와 공유·정리의 위치를 다듬었습니다. 문항 입력을 스크롤하는 동안 저장 버튼을 확인할 수 있습니다.\n- 라이브 준비, QR 대기실, 응답·정답 확인, 진행 기록과 학생별 결과 화면을 개선했습니다.\n- 데모 답안을 고른 뒤 불필요한 편집 확인이 뜨는 문제를 해결했습니다.",
+  "pub_date": "2026-11-23T01:33:53.330Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYTdPM3B2VWdIcStxaU5lT0xkdmZuUmZmZFpEanRnODd6eEF1QkVJdFZFdnlMSzJuRWZDOXJQMHA5QzNXNFdudkZZS0tFU1lqenhLY0tkZlBTdjhrbUFZPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MzkxNDIzCWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMTc0CmFOL3FJQWlneXFVc1pPODkvaENNMTZ4b3crNVB5UU1VbmZyY0M0dSszV1F4QjF4ajl1cVk2eW5FczhFL0lRNlNhLzlLNXNHN0J6bldLSE1jbTMzN0N3PT0K",
-      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.174/OnlineClass-v4-Windows-Setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYTFnNzdLd015bitESmZSNG1WbTJUa3VlUW9jM090VXJWUytVcUhWUXVXL0V4em9kL1MydlhpZ05SVm9kNlRuWEdoSHFOVnAwa0NsR2hGMGN4UmROWlFNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1Mzk3NTcxCWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMTc1CkxUYXFMQ2MvU2MwRTNDaGxnelBCOVNtN3VUV25VN0o4YXkrcDQ1TXdDZXpiY0ZGeGIwRlBzQjlzV3pOdlZzYjJUR3hZRlZOUDNIMStkL0VVL3ZSRUJRPT0K",
+      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.175/OnlineClass-v4-Windows-Setup.exe"
     }
   }
 }
