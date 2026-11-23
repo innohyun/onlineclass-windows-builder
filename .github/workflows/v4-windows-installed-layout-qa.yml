@@ -142,6 +142,17 @@ jobs:
               Invoke-Button $annualTab 'Activate annual by automation'
               Start-Sleep -Milliseconds 650
               Save-TimetableFrame 'annual-invoke'
+              if (-not (Find-InApp @($fixture.overview) -Button)) {
+                $frame = $automation::FromHandle($script:mainHandle).Current.BoundingRectangle
+                if ($frame.Width -ge 1000 -and $frame.Width -le 1080 -and $frame.Height -ge 700 -and $frame.Height -le 780) {
+                  Activate-AppWindow 'Click the captured annual timetable tab'
+                  [void][TeacherDeskFixtureWindow]::SetPhysicalCursorPos([int]($frame.X + 412), [int]($frame.Y + 183))
+                  [TeacherDeskFixtureWindow]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
+                  [TeacherDeskFixtureWindow]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+                  Start-Sleep -Milliseconds 550
+                  Save-TimetableFrame 'annual-pointer'
+                }
+              }
             }
           '@
           [IO.File]::WriteAllText($script, $body.Replace($anchor, "$overlay" + [Environment]::NewLine + $anchor))
