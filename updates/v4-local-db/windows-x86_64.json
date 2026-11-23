@@ -1,11 +1,11 @@
 {
-  "version": "0.2.173",
-  "notes": "# 교사 데스크 v0.2.173\n\n- 종합기록 작업실에서 교과·창체·행발의 근거를 검토하고 평어에 쓸 기록과 나이스 누가기록을 각각 선택합니다. 교과 성적의 빠른 키 입력을 순서대로 보관합니다.\n- 시간표의 교시에서 로컬 수업자료를 만들고, 교시가 옮겨져도 같은 문서를 엽니다.\n- 과제 판정을 취소할 때 기존 제출을 보존합니다. 보드와 연결한 과제는 점검의 갤러리에서 학생 사진을 열 수 있습니다.\n- 마음 우체통에서 진행 상담과 이 PC의 보관 상담을 함께 조회합니다.\n- 퀴즈 폴더, 공유 퀴즈, 문항 사진 미리보기와 데모 체험을 제공합니다.\n- 오늘 화면을 열별로 정리하고 사이드바 폭 조절·접기를 추가했습니다.",
-  "pub_date": "2026-11-22T14:40:31.209Z",
+  "version": "0.2.174",
+  "notes": "- 주간 시간표의 전담 교시에 단원·차시 주제·쪽수를 표시하고 수업 내용을 편집할 수 있습니다.\n- 넓어진 진도 조정 창과 관찰 집중 검토, 학생 기록·관리 화면을 개선했습니다.\n- 오늘 화면의 세 열, 접을 수 있는 사이드바와 빠른 메모를 사용할 수 있습니다.\n- 과제 점검은 최근 조회 기간을 기억합니다. 퀴즈 작성과 라이브 준비를 구분하고 대기실에 입장 QR을 제공합니다.\n- 학급 토큰 온도계에서 목표와 기간을 저장하고 지급 통계를 확인할 수 있습니다.",
+  "pub_date": "2026-11-23T00:09:22.764Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYTNBMEF6SWRNRlBTNGs1L0hMaVF4MWcwamhxNkdqWWJTTFJRZzlWY1BuV2RVdyt5NVY4SXIyN1YrZ3VBaEMvZ2IyRWJlNXR5NGk3WTBpeUxQMFpsZVFRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MzU3NTM2CWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMTczCkNaS1RMUDg3TVpCMUgwMWFMZWVlV2hOK3lJU25IWDZWR3hLYmhoTHErQyt1MkcyWnNVNlhWb3RwRjc3bjVlSVhweVk1RGVyZkZBSlhUZUhXSGRGK0FRPT0K",
-      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.173/OnlineClass-v4-Windows-Setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYTdPM3B2VWdIcStxaU5lT0xkdmZuUmZmZFpEanRnODd6eEF1QkVJdFZFdnlMSzJuRWZDOXJQMHA5QzNXNFdudkZZS0tFU1lqenhLY0tkZlBTdjhrbUFZPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MzkxNDIzCWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMTc0CmFOL3FJQWlneXFVc1pPODkvaENNMTZ4b3crNVB5UU1VbmZyY0M0dSszV1F4QjF4ajl1cVk2eW5FczhFL0lRNlNhLzlLNXNHN0J6bldLSE1jbTMzN0N3PT0K",
+      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.174/OnlineClass-v4-Windows-Setup.exe"
     }
   }
 }
