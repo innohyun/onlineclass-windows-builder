@@ -1,11 +1,11 @@
 {
-  "version": "0.2.175",
-  "notes": "# ClassAiMate 교사 데스크 v4 0.2.175\n\n- 퀴즈 폴더·목록·상세를 한 화면에 배치하고 제목·교과·상태·문항 수·수정일을 정렬했습니다.\n- 새 문항 작성, 문항 수정, 데모와 공유·정리의 위치를 다듬었습니다. 문항 입력을 스크롤하는 동안 저장 버튼을 확인할 수 있습니다.\n- 라이브 준비, QR 대기실, 응답·정답 확인, 진행 기록과 학생별 결과 화면을 개선했습니다.\n- 데모 답안을 고른 뒤 불필요한 편집 확인이 뜨는 문제를 해결했습니다.",
-  "pub_date": "2026-11-23T01:33:53.330Z",
+  "version": "0.2.176",
+  "notes": "## 교사 데스크 0.2.176\n\n- 종합기록 작업실의 학생별 집중 검토에서 관찰·행발 키워드를 오른쪽에 열고, 평어 근거와 나이스 누가기록을 각각 선택할 수 있습니다.\n- 학급 보드에서 게시글과 사진을 보며 평가하고, 보드를 마감·재개하거나 확인 후 삭제할 수 있습니다. 일반 보드는 Enter·E·Z와 방향키, 연결 과제는 웹 과제 점검과 같은 판정 단축키를 사용합니다.\n- 보드 연동 과제의 사진을 웹과 앱 과제 점검 갤러리에서 확인할 수 있습니다.",
+  "pub_date": "2026-11-23T06:20:07.343Z",
   "platforms": {
     "darwin-aarch64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYXdkV1RNRUthSDBDaENtenVSSzUwOWRKZkMrMVU0ckVTL2ZLclh5UzAyZUMxTFozTkwyWll0bm9ZQmIwM3NXUDBVQlZuQkpSWm93Sm5oWEV5WkVKbEFjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1Mzk3NTcyCWZpbGU6T25saW5lQ2xhc3MtdjQtTG9jYWwtU2Vuc2l0aXZlLVN0b3JlLWFybTY0LmFwcC50YXIuZ3oJdmVyc2lvbjowLjIuMTc1CkFtY2pGVGF5SjY0cmppYnBtMkVXcmljOEIveTB1S2wveHl5NEdJM0llY2xvcm5LbVdDdnVFNjdNQUs5ejNHdnYyZzdhRWN1OHdhMlRVMWorTEhBWENnPT0K",
-      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-macos-v0.2.175/OnlineClass-v4-Local-Sensitive-Store-arm64.app.tar.gz"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYStOaDBoaGhCMTdSSXFQUUw0RC9WUDVvSTk3VUpBR0pRYUl1ekFjMUNrQWVjaFNveGh5cnlZaWhGWXE0ZEZQTUltdExWTWtnc202Qk9GVFFlUXJFNndJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NDE0MDI3CWZpbGU6T25saW5lQ2xhc3MtdjQtTG9jYWwtU2Vuc2l0aXZlLVN0b3JlLWFybTY0LmFwcC50YXIuZ3oJdmVyc2lvbjowLjIuMTc2ClRvVUJwc3F3dW5wTnluOWNOVG1kSytoTjAyZGM2bENZUmNhbDVkb2J1VE56WWNsSnN0cVVXdFpyVnRONUd4VDEySjJJZVljd2NaRUVWUTJUN2FnYkJ3PT0K",
+      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-macos-v0.2.176/OnlineClass-v4-Local-Sensitive-Store-arm64.app.tar.gz"
     }
   }
 }
