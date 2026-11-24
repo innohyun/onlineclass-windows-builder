@@ -1,11 +1,11 @@
 {
-  "version": "0.2.181",
-  "notes": "## 교사 데스크 0.2.181\n\n- 평가 입력을 마친 뒤 종료하고, 필요하면 같은 평가에서 다시 입력을 열 수 있습니다.\n- 수업자료에서 이 PC의 교과서·지도서·평가지 원자료를 바로 찾습니다.\n- 홈은 선택한 날짜의 시간표만 불러오며, 전사 기록은 상태별로 찾을 수 있습니다.",
-  "pub_date": "2026-11-24T01:31:29.428Z",
+  "version": "0.2.182",
+  "notes": "- 팀 허브는 미완료 업무부터 불러오고 완료 목록은 선택할 때 읽습니다. 마감순과 중요도순을 선택하고 업무의 중요도와 이 기기 알림을 설정할 수 있습니다.\n- 업무 노트는 폴더·검색 결과에서 본문을 바로 열고 같은 작업공간에서 편집합니다.\n- 상점의 오늘의 운영에서 요약을 읽을 수 있으며, 조회 실패와 처리할 요청이 없는 상태를 구분합니다.\n- 수업자료는 주간 시간표 학습 내용과 로컬 문서를 한 화면에서 확인합니다. 교시 판본이 바뀌면 최신 연결을 다시 확인합니다.\n- 학생 학습자료의 공개 판본은 학생 화면과 같은 서식으로 렌더링하며, 공개 본문의 영상 링크와 첨부를 열 수 있습니다.",
+  "pub_date": "2026-11-24T03:29:59.866Z",
   "platforms": {
     "darwin-aarch64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYTMzU0xnaWhsd3lBN21ielp2RzRuNG1EWUUzV1ZHWHZ3cTBuV1RUalA2cGxQeWVaUE1EcEt6WTY5b2dJSnlzRkxWZUF4alUwUFJUbzBVWU9sU0NrMlF3PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NDgzMzE1CWZpbGU6T25saW5lQ2xhc3MtdjQtTG9jYWwtU2Vuc2l0aXZlLVN0b3JlLWFybTY0LmFwcC50YXIuZ3oJdmVyc2lvbjowLjIuMTgxCk4zakNuQ3VhMW9YVzd3Uld5TUtYN2ZRVGY1cnJ1MzhVTGRiOHM3SXY4NngvRXExL3hQSjI5QUFhL1Y3Q1J5Y2FFcm5ad2VZblJiTzQwaVR3dWhkekNBPT0K",
-      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-macos-v0.2.181/OnlineClass-v4-Local-Sensitive-Store-arm64.app.tar.gz"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYTBtaDdqRzhOWkI3cE5hM21RaE5DOW1sUnBjM1RBSEVMYU9ObWw0RGpFTGRsakgwbW1LVk5GekdrMXYxSjlsNHQ2NGo5aVZtMDZpdnk3RXF0c2JPaUFFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NDkwNTkzCWZpbGU6T25saW5lQ2xhc3MtdjQtTG9jYWwtU2Vuc2l0aXZlLVN0b3JlLWFybTY0LmFwcC50YXIuZ3oJdmVyc2lvbjowLjIuMTgyCm83R25VSG1Tb1ZxZjV1THZNclNxS2VoYjRaS0x5ZGFDb1ZtYmNFWmlaNUNwMXVWRExvZzdoZnE3dWpJdW5yeWpBaTV1dVVKeVBtdVc4TnJkNXQ2dUR3PT0K",
+      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-macos-v0.2.182/OnlineClass-v4-Local-Sensitive-Store-arm64.app.tar.gz"
     }
   }
 }
