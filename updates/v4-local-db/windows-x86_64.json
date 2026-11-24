@@ -1,11 +1,11 @@
 {
-  "version": "0.2.186",
-  "notes": "- 수업자료를 열 때 교시마다 클라우드 수업 정보와 이 PC 본문·첨부를 확인합니다. 다른 교시로 옮기면 앞 교시의 로딩·오류 문구가 새 초안에 남지 않습니다.\n- 첫 저장 전의 수업자료를 편집하다 다른 교시로 이동하려면 확인창에서 선택합니다. 계속 작성을 선택하면 현재 교시와 작성 내용이 유지됩니다.\n- 교시 교환에서 양쪽 수업 정보와 자료 연결을 보존하고, 교육과정에서 각 차시의 수업일과 교시를 표시합니다.",
-  "pub_date": "2026-11-24T10:34:05.878Z",
+  "version": "0.2.187",
+  "notes": "- 교시를 교환한 뒤 기존 자료가 옮겨간 자리에 다른 수업의 자료를 처음 저장할 수 있습니다.\n- 첫 본문을 저장하면 수업 목록의 ‘연결 자료 없음’이 사라집니다. 옮긴 자료를 시간표에서 열면 현재 교시가 표시됩니다.",
+  "pub_date": "2026-11-24T12:27:15.863Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYTMwcFdIQ3VRMkkxb2VlNXNPNzY1YXBuVlczK0kwbWdxOE0rZG9RcDhDeXJvZG1Sa1ZaNmlCZEY1MTlrVzVpLzEvRGJTV2V0djZ6bjZabGJwNkdCSXdVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NTE1Nzc5CWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMTg2CnpJRTU3V3ZGL3pWK01RbkNRQU14OW51RzJLYldSTzJxLzNYdEpTanh5Q1JOdTNHdzRIUVJrVzhtQ0FuQS9DYjRnbE4yM3RZQmVzQUdZbm01aDVXUEJnPT0K",
-      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.186/OnlineClass-v4-Windows-Setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYXpjbCtWT0FsM3U5TmhKVXo3VU9JN1g1R0tLMG5jdUdaeHZQM3ZITFNaNmZncGtJaSswYm1xWWpwdmNUZTRjQlFaWlUwTjVRT1gvRlJVSEcyVkoyUEFNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NTIzMjE5CWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMTg3ClpGNFJueVZhQS9HMVU0MGpLZzlUNGZwOFhnbjhIOGdvTFZ1SnNLVktBTmFFSXB1S0psYjFOM0ZRRFVLNkJUK0grMFg3QStNenI2S3dEaDI1RmFNdUNRPT0K",
+      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.187/OnlineClass-v4-Windows-Setup.exe"
     }
   }
 }
