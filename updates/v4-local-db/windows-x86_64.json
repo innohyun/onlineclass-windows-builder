@@ -1,11 +1,11 @@
 {
-  "version": "0.2.183",
-  "notes": "- 오늘의 업무를 한 시간 미루고 필요할 때 다시 보이게 할 수 있습니다. 마음 우체통 알림은 앱에서 해당 목록을 엽니다.\n- 과제 목록에서 예약, 진행 중, 마감, 기한 경과와 시작·마감 시간을 확인할 수 있습니다. 제출 학생은 카드로 표시하고 평가 제외는 별도로 표시합니다.\n- 제출물 사진을 확대해 단축키로 판정하면 같은 창에서 다음 학생으로 이동합니다.\n- 업무 노트는 목차와 폴더 이동을 지원합니다. 업무 노트와 수업자료의 PDF는 승인한 학급 저장소에서 바로 읽습니다.\n- 교과서·지도서 등 원자료에 단원·차시의 인쇄 쪽과 PDF 쪽을 연결해 보관할 수 있습니다.\n- 수업 한눈에 보기에서 Esc를 눌러 연간 시간표로 돌아갈 수 있습니다.",
-  "pub_date": "2026-11-24T06:31:48.802Z",
+  "version": "0.2.184",
+  "notes": "- 교사 데스크의 작업 목록 서버가 잠시 응답하지 않아도 기존 연결에서 새 작업 알림을 받습니다. 목록은 간격을 두고 다시 확인합니다.\n- 글쓰기 판본 조회가 일시적으로 실패하면 재시도 간격을 늘리고, 정상 응답을 받으면 적용 중인 판본과 페이지를 이어서 확인합니다.",
+  "pub_date": "2026-11-24T08:05:57.367Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYTlJQmRlNUc5MnY2bjcwOHFmQTJqSWFKUmFUcEhPVlBDeCtFMzhHUzlaMnZZTXk2czdOQVpQZk5MMzhub3JSU3R1VXA5cGFyWTMyNy95ZTM5U2lROEFJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NTAxODgxCWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMTgzCnI4bEh0bVlNN1JOdytpVHdTSWVlK2dibEZkdm0vbXBlNTNKRC9GVExCY1g1RFNRRExnOFRUQ2w3c1laQkV3cVlVY1BzclZLMkhBbXk5SnRjcXB2akFBPT0K",
-      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.183/OnlineClass-v4-Windows-Setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYTNWSVRhRnlidWorUUFIc0d0eTNFZnhNR0FZWEVFaE9VUmZobHdYejVEa0RkcEl4YXJEWDljYkJNSTN3OTlQSSt1aWhrU3NaajFIekFxRlNEb2ZVa2dRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NTA2NjMzCWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMTg0Ck0rYWkyemhDZFB1WGI1bmNEcDRvbkFxTWpCTTRDU2xZZEdoaU15a1A5L1FRZmxuTTZrR25kUnl5U0lzdFN3N21idGQ3VWNzUzV2eXA4TXBZRS9hQ0JnPT0K",
+      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.184/OnlineClass-v4-Windows-Setup.exe"
     }
   }
 }
