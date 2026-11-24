@@ -1,11 +1,11 @@
 {
-  "version": "0.2.180",
-  "notes": "# ClassAiMate 교사 데스크 0.2.180\n\n- 오늘 화면에서 상점 재고 알림을 확인할 수 있습니다. 재고 요약이 바뀌면 다시 미확인으로 표시합니다.\n- 평가 목록을 전체 폭으로 표시하고 교과명과 나이스 상태를 한 줄로 보여 줍니다.\n- 과제 운영에서 학급 반복 과제의 기간·요일·대상을 설정할 수 있습니다.\n- 수업 한눈에 보기에서 Esc를 누르면 연간 시간표의 기존 위치로 돌아갑니다.\n- 다음 학년도 준비를 앱 안에서 열고 등록된 학급을 확인할 수 있습니다.",
-  "pub_date": "2026-11-23T23:17:19.147Z",
+  "version": "0.2.181",
+  "notes": "## 교사 데스크 0.2.181\n\n- 평가 입력을 마친 뒤 종료하고, 필요하면 같은 평가에서 다시 입력을 열 수 있습니다.\n- 수업자료에서 이 PC의 교과서·지도서·평가지 원자료를 바로 찾습니다.\n- 홈은 선택한 날짜의 시간표만 불러오며, 전사 기록은 상태별로 찾을 수 있습니다.",
+  "pub_date": "2026-11-24T01:31:29.428Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYStNUm5PYTJPUEw2VUVYTmtyTjVZWmJITUNMb3RsM3JGM1hST2NkOHZleXBjckR3TCt6RUJhZTkzL09UajFhSFhmVUxpM25obVFYSUVaNmIwb0ZvNndnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NDc0Njk5CWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMTgwClBLcW5JVWZ4WVRaaE9UUUlFMkxlNzlYNVgzcldId0psYUl2WFhJR3pqVFliQ2NEY0M4TTlnSXFWS1BlM3dVYWtvYUMyZng3SEl6ekhYZFdQRzZnb0F3PT0K",
-      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.180/OnlineClass-v4-Windows-Setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYTRlQ0dyclUzd1RiRUp2UDNzcHRHRGNqNUdQeVRiMWlyUG1zVDN6SUR4bC9EQ3E4ZzZkbXBaVlNJNzZFWEE2Z2Mxb1ZmMTBscGlIMjVPYUpEOGF3b0EwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NDgzMTY2CWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMTgxCmFLTjV4RUhZakRIY3U0TU1ZNGZMdHFlR2Y4TlAyQWIyb1p6cERvVUtoSTUxbHE1YVZWaFN5WDA2aUdGMCt4TGxucDI4NU1HazNUYVFoZi8yWFlFUURRPT0K",
+      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.181/OnlineClass-v4-Windows-Setup.exe"
     }
   }
 }
