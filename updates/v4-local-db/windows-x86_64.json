@@ -1,11 +1,11 @@
 {
-  "version": "0.2.187",
-  "notes": "- 교시를 교환한 뒤 기존 자료가 옮겨간 자리에 다른 수업의 자료를 처음 저장할 수 있습니다.\n- 첫 본문을 저장하면 수업 목록의 ‘연결 자료 없음’이 사라집니다. 옮긴 자료를 시간표에서 열면 현재 교시가 표시됩니다.",
-  "pub_date": "2026-11-24T12:27:15.863Z",
+  "version": "0.2.188",
+  "notes": "- 과제 점검 중 저장 응답을 확인하지 못하면 현재 학생 제출을 다시 불러옵니다. 새 제출이 들어온 경우 최신 내용과 판정 상태를 보여 줍니다.\n- 처리 결과가 불명확할 때 ‘저장 결과 다시 확인’은 같은 판정 요청을 사용해 토큰 정산이 중복되지 않게 합니다.",
+  "pub_date": "2026-11-25T04:32:10.238Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYXpjbCtWT0FsM3U5TmhKVXo3VU9JN1g1R0tLMG5jdUdaeHZQM3ZITFNaNmZncGtJaSswYm1xWWpwdmNUZTRjQlFaWlUwTjVRT1gvRlJVSEcyVkoyUEFNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NTIzMjE5CWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMTg3ClpGNFJueVZhQS9HMVU0MGpLZzlUNGZwOFhnbjhIOGdvTFZ1SnNLVktBTmFFSXB1S0psYjFOM0ZRRFVLNkJUK0grMFg3QStNenI2S3dEaDI1RmFNdUNRPT0K",
-      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.187/OnlineClass-v4-Windows-Setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYXl5TVJpZGM1SWJaZVhSREpsNyt1bk5KUTVDTWxSc2JrSVJTYmZ2U1lYVjh4YUJLbTZRdk1xMHNzYkRRdUovdGo0R0gwQ3JVYTYya2kzK1lPWUJDSFFrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NTgxMTEzCWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMTg4CkZsNkFYdmx1NXdwdnoxTGNQam84MWpiQXNpbmJ4b1JvZStrZE10MldkU2p1WTg2VDl4TStkb0o0dTRKVVljcFB1L3RkdFM5RE1WL0tGVXRVMVVxcUN3PT0K",
+      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.188/OnlineClass-v4-Windows-Setup.exe"
     }
   }
 }
