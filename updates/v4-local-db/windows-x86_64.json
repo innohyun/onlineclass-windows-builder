@@ -1,11 +1,11 @@
 {
-  "version": "0.2.188",
-  "notes": "- 과제 점검 중 저장 응답을 확인하지 못하면 현재 학생 제출을 다시 불러옵니다. 새 제출이 들어온 경우 최신 내용과 판정 상태를 보여 줍니다.\n- 처리 결과가 불명확할 때 ‘저장 결과 다시 확인’은 같은 판정 요청을 사용해 토큰 정산이 중복되지 않게 합니다.",
-  "pub_date": "2026-11-25T04:32:10.238Z",
+  "version": "0.2.189",
+  "notes": "### 교사 데스크 0.2.189\n\n- 시간표에서 수업 주제와 학습 내용을 바로 편집하고, 일반 교시를 드래그해 이동합니다. 고정·전담 교시는 표에서 구분합니다.\n- 과제 운영에서 진행 중인 반복 과제, 학생별 과제 미리보기, 제출 본문과 사진 확대 및 판정 단축키를 제공합니다.\n- 팀 편성 및 별도 TV 창, 교우관계 조사 운영·검토·분석, 학부모 코드·공유·포털 미리보기, 설문과 자리 배치를 앱에서 엽니다.\n- 반복 활동별 전용 화면과 한자나무·오늘의 암기 복습, 직업 운영·주급, 게임 관리, 주요 시간표 설정을 제공합니다.\n- 학생 기록과 관찰 연결, 학급물품, 상점 상품 사진, 토큰 내역과 학급 보드 학생 화면 진입을 개선했습니다.\n- 다음 학년도 준비에서 화면을 나간 뒤 숨겨진 편집창 때문에 준비 본문이 보이지 않는 경우를 수정했습니다. 학급을 아직 연결하지 않은 경우에도 교사 로그인부터 시작할 수 있습니다.",
+  "pub_date": "2026-11-26T01:49:11.403Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYXl5TVJpZGM1SWJaZVhSREpsNyt1bk5KUTVDTWxSc2JrSVJTYmZ2U1lYVjh4YUJLbTZRdk1xMHNzYkRRdUovdGo0R0gwQ3JVYTYya2kzK1lPWUJDSFFrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NTgxMTEzCWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMTg4CkZsNkFYdmx1NXdwdnoxTGNQam84MWpiQXNpbmJ4b1JvZStrZE10MldkU2p1WTg2VDl4TStkb0o0dTRKVVljcFB1L3RkdFM5RE1WL0tGVXRVMVVxcUN3PT0K",
-      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.188/OnlineClass-v4-Windows-Setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYTVUWUkxV0VBU0JlVDg0djN6dGJNa0hPSlQ0RmFYYU9ybHFOaWhZVGoySnA3cVFDUFgweVFMVEdNblZDL3lBbHJ0UVprT2RHaWhSZVg4ck15MEVlV1F3PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NjU3NzMzCWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMTg5ClhSRHFyUXYrV0k3Ti9vYzhHNGF1N3loVmVuMGh0NzA1QnhBNDlQL1N3dEswUzBlRTZOSStCTmt2dXNYcEpBRURCb3pnQ3BzdzUrQUZZMlNaTGh1MkNRPT0K",
+      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.189/OnlineClass-v4-Windows-Setup.exe"
     }
   }
 }
