@@ -1,11 +1,11 @@
 {
-  "version": "0.2.193",
-  "notes": "## ClassAiMate 교사 데스크 0.2.193\n\n- 과제 운영은 배포 중인 과제를 최근 7일로 먼저 표시합니다. 상태·기간·검색 조건이 바로 적용되고 이 PC에서 교사와 학급별로 마지막 선택을 기억합니다.\n- 과제 상세의 학생 카드를 누르면 제출물과 판정을 같은 창에서 확인할 수 있습니다. 저장한 뒤 명단과 집계를 갱신합니다.\n- 수업자료 편집에서는 문서 제목과 도구를 위에 두고 그 아래에 수업 정보를 간결하게 표시합니다. 왼쪽 목록은 날짜와 교시를 쉽게 구분하도록 정리했습니다.",
-  "pub_date": "2026-11-26T08:55:46.379Z",
+  "version": "0.2.194",
+  "notes": "학생 기록, 팀 허브, 업무 노트와 퀴즈를 개선했습니다.\n\n- 학생 기록을 학급·학생·교과·날짜별로 조회하고, 오른쪽 상세에서 제목·내용·분류·태그를 수정할 수 있습니다.\n- 조회 결과의 관찰 근거와 나이스 누가기록을 한 번에 선택하거나 해제하고, 조회 결과·선택 학생·학급 전체를 엑셀로 저장할 수 있습니다.\n- 팀 허브에 목록·보드 보기, 빠른 기간 조건과 복수 분류를 적용했습니다.\n- 업무 노트에서 목록 접기, 노트 이동과 되돌리기, 여러 노트 선택과 연결 문서 작업이 편해졌습니다.\n- 퀴즈 시작 후 모드별 상황판을 자동으로 열고 진행 중에도 상황판 버튼으로 다시 열 수 있습니다.",
+  "pub_date": "2026-11-26T14:49:35.405Z",
   "platforms": {
     "darwin-aarch64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYStPaEVOdWphekRsdlk5RnN5dG4rMlVDZzkrUGhBTHRLLzNrLy95dkFhbmFzUyszVXM2ZDh5dzdPU1lrSVB0VkZwSE1BaGFOODBjSDgwQzdERERIVVFRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NjgzMjQwCWZpbGU6T25saW5lQ2xhc3MtdjQtTG9jYWwtU2Vuc2l0aXZlLVN0b3JlLWFybTY0LmFwcC50YXIuZ3oJdmVyc2lvbjowLjIuMTkzCjlrTm5nYVZsOUlHZHRhZElwVERncGRnT3Rwb2VIWk5YMHBVdEJVRGZNVFZheXV3Zi9aQ253UUhYUmltazJxSHlXMGpGUGkzallreTZhWldTZy81c0J3PT0K",
-      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-macos-v0.2.193/OnlineClass-v4-Local-Sensitive-Store-arm64.app.tar.gz"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYTNWdm4zZ1RsTnUvMGZnbnl0K3ZmN1g5UzRiaktVZW5TQS9kRWg4T1JSOWs3MStOWGE4MFNuMThHTTQ1eDNQVUJRcG5RZUtFK3BYQ1FaYVYvcGkzb1FzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NzA0NTQzCWZpbGU6T25saW5lQ2xhc3MtdjQtTG9jYWwtU2Vuc2l0aXZlLVN0b3JlLWFybTY0LmFwcC50YXIuZ3oJdmVyc2lvbjowLjIuMTk0CitqdEVWQXI5dEIvRHJOdzlxR0owQU83RWZENElNQ2lhdFNvOENnMThSVWNFd25BaVgyVFBndHBFNGdxb2lQdmVhZk9Jb0lYNUdVV0RkcjdxOFNmekF3PT0K",
+      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-macos-v0.2.194/OnlineClass-v4-Local-Sensitive-Store-arm64.app.tar.gz"
     }
   }
 }
