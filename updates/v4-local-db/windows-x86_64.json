@@ -1,11 +1,11 @@
 {
-  "version": "0.2.191",
-  "notes": "## 교사 데스크 0.2.191\n\n- 시간표에서 학급 행사 교시를 끌어 옮깁니다. 주간 칸에 행사 수업 주제와 쪽수를 표시합니다.\n- 학급 행사와 일반 수업을 교환할 때 교시 세부 정보와 자료 연결을 함께 이동합니다.",
-  "pub_date": "2026-11-26T05:48:37.866Z",
+  "version": "0.2.192",
+  "notes": "## ClassAiMate 교사 데스크 0.2.192\n\n- 과제의 운영 중·배포 중·기한 경과를 웹의 규칙과 일치시켰습니다. 모두 불러오기와 유형별 정본 조회를 추가했습니다.\n- 날짜만 등록된 이전 학급 행사에 교시 범위를 정하고 시간표에서 이동할 수 있습니다. 학교 및 학년 전담 시간표를 조회할 수 있습니다.\n- 학부모 과제 공유를 일괄 요청하고 예약을 승인·재시도·취소할 수 있습니다.\n- 팀 허브에서 업무 마감을 묶어 보고 Markdown 본문, 반별 제출 시각과 댓글을 확인할 수 있습니다.\n- 평가 목록에 필터와 관리 동선을 추가하고 단계·임의평어·평가 제외, 평가 운영 정보와 나이스 전달값 미리보기를 연결했습니다.",
+  "pub_date": "2026-11-26T07:54:28.699Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYTZnVG16bHZPUWpaWG9kWHJkT3RJaVNySnViV1JpZDBSaE9aOXJ4OVV6T3RRVXc4ZmcrOFEzL2Y1VXNHSlhJOFdnVzBOY2NMaDgxRjBkWnZGYm1FQlFZPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NjcyMDk0CWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMTkxCjFqUW9OS3pVbkRDaTZtMklMaitubG4yNW1yWURGRS9qdzRhSFc3MTE3STJ2cTAwamdlZDRYSThTS3JtT2dBMzVMWHFQbU93N3FCazc3NnNOeHpuMUR3PT0K",
-      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.191/OnlineClass-v4-Windows-Setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYTVJY1gzUTNwR3oxL1VOVHVvOVFzOUVXOVl0Rm4wS3lmT012NHFCSzMyZDRzbUN6VjdHNDNQejNlQzlCbzJHZWppSFRPVEtMLzRydkdjZW93THBkVHdJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1Njc5NjMxCWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMTkyCnh0d0lEWnkyTHRxRHFaMEVsNnBObUFiUDRJbFdJd2hLbnNrN0M3bXRMNVZXUCt6K2h6eWdqNzcyNkdBZzlUM2tRdmlNL1dSK1lnQUpEc3RHbTI4OEJRPT0K",
+      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.192/OnlineClass-v4-Windows-Setup.exe"
     }
   }
 }
