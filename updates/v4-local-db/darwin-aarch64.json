@@ -1,11 +1,11 @@
 {
-  "version": "0.2.190",
-  "notes": "## 교사 데스크 0.2.190\n\n- 학교 학사일정·휴업일·특별실과 학년 행사·교육과정 초안을 시간표에서 열고 저장합니다.\n- 내 작업공간에서 승인된 학급을 확인하고 전환합니다. 다음 학년도 학급을 추가로 연결해도 현재 학급을 유지합니다.\n- 학부모 코드 일괄 발급과 명단·QR 안내장 인쇄를 추가했습니다.\n- 교우관계 조사에서 관계 행렬과 학생 결과지 인쇄를 제공합니다.\n- 설문 관리에서 학생 참여 링크를 복사하고 응답을 엑셀로 저장합니다.\n- 제출 사진을 원래 비율로 창에 맞춰 확대하고, 단축키로 입력한 판정을 저장한 뒤 결과를 확인합니다.\n\n학교·학년 전체 공개와 계정별 개인 자료 관리는 기존 교사 화면에서 엽니다.",
-  "pub_date": "2026-11-26T05:14:06.580Z",
+  "version": "0.2.191",
+  "notes": "## 교사 데스크 0.2.191\n\n- 시간표에서 학급 행사 교시를 끌어 옮깁니다. 주간 칸에 행사 수업 주제와 쪽수를 표시합니다.\n- 학급 행사와 일반 수업을 교환할 때 교시 세부 정보와 자료 연결을 함께 이동합니다.",
+  "pub_date": "2026-11-26T05:48:37.866Z",
   "platforms": {
     "darwin-aarch64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYTNTRVRpeW9aMnRSbGFNOC9maDhaZHBXL2JtVkxwaFI3MHV0VUFTWW9GdnpFUDczRmRrYmdhbUhWYllaRkhtMFovZVBmdkpzekZ1MkRaYUdSQmRVQXdRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NjcwMDE0CWZpbGU6T25saW5lQ2xhc3MtdjQtTG9jYWwtU2Vuc2l0aXZlLVN0b3JlLWFybTY0LmFwcC50YXIuZ3oJdmVyc2lvbjowLjIuMTkwClJ1UkJoTzhPOENkR0dsa255OEl1VkFtL0gybk8vU0R4aW5uM0hpQzdqaTNENGk1S3I4b01UWkh2ek1rR0R4VkxZNGFwbUJYVXlpLytONVJLRXQ4akNRPT0K",
-      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-macos-v0.2.190/OnlineClass-v4-Local-Sensitive-Store-arm64.app.tar.gz"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYTg2dEpzd3JSSU5ncS9rb1RDNEFmcGpzSXYvZEw2eEs5WUwzU2diR1NRcnZmdTNuc0ZDRHpSUEhvTWRBUktxL1JvZm1yNUtvaGx1MFpCdSs4ZHNjNUFrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NjcyMDk0CWZpbGU6T25saW5lQ2xhc3MtdjQtTG9jYWwtU2Vuc2l0aXZlLVN0b3JlLWFybTY0LmFwcC50YXIuZ3oJdmVyc2lvbjowLjIuMTkxClpnREV4bElzNWdTd01PZWtOeklIVU1nOWJKTGU5bjlOODE5NkFDbC9iMEE1dlh3WThZRDhEV3FrcE9FM21UdUZLdUFpK29VRzhGSnAydjZFODV3WURRPT0K",
+      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-macos-v0.2.191/OnlineClass-v4-Local-Sensitive-Store-arm64.app.tar.gz"
     }
   }
 }
