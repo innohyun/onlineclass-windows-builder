@@ -1,11 +1,11 @@
 {
-  "version": "0.2.197",
-  "notes": "## 교사 데스크 0.2.197\n\n- 이미 선택된 운영 중 학급의 저장 상태가 `opened`여도 설정에서 Codex 로컬 MCP 등록 명령을 생성합니다. 등록된 기기, 교사 계정, 앱의 최초 연결 확인을 계속 사용합니다.\n- 성적 처리 요청 목록에 조회 대상 학생 수와 검토할 문안 수를 표시합니다.\n- 학급 전체의 관찰·상담·출결과 평가 근거를 모을 때 학생 별칭 처리 규칙을 재사용해 대량 조회의 반복 작업을 줄였습니다.\n\nWindows x64와 Apple Silicon Mac의 기존 앱에서 업데이트를 확인할 수 있습니다.",
-  "pub_date": "2026-11-26T20:01:06.094Z",
+  "version": "0.2.198",
+  "notes": "교사 데스크 0.2.198\n\n- 종합기록 작업 현황의 **성적 처리 준비**에서 현재 학생, 선택한 여러 학생, 학급 전체를 골라 AI 요청문을 복사할 수 있습니다.\n- 로컬 MCP에서 관찰·상담 요약·출결 상태·종합기록을 여러 학생 또는 학급 전체 범위로 요청하고, 교사 데스크에서 대상과 자료를 확인한 뒤 조회를 승인합니다.\n- 설정의 로컬 MCP에서 Codex·Claude 등록 설정을 복사합니다. **ChatGPT 터널**에 OpenAI Secure MCP Tunnel ID를 붙여넣으면 실행 명령을 복사할 수 있습니다.",
+  "pub_date": "2026-11-26T23:24:07.524Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYTJtdWJLTFozQW1LL1lYTkVVYlZHNmRYUmoyQW9qWVVzWlB5ZDFZYlkrSFBQMGl0WTR6MitDL2tPQ1pzOThuZVNIRVZSaU5KYStUdytOYVRMeUJtWmcwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NzIzMTM3CWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMTk3ClM1NDFGSGJ4VnV0SytNRlhGa0hwWFRMenBkaEZhNndUaGVqMDZKOGxqQkoyY1BMTFVZUmdzTmFvemhDdmFZdFBPajN4WXZWdFphcG9VZGt5SU1GN0FRPT0K",
-      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.197/OnlineClass-v4-Windows-Setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYTl6ZDRDdEZyRnhscUswckZUNGRwMUlvL1Y2aEtMZmtWVk0vbVlSekNuSXloMmp2aWpiNyt1cXN2U1RmbFUwWnh6Ri8vdFUzOGt2dTR6YjlENStXeEEwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NzM1MTcxCWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMTk4ClVJclEvSW1wb0l2dHVXS0ZuVG53bUZWUlZiakdRTm1QdjJkaTQyQ281ejVUeGpOMUs1TEhiSW9UYkNHM0lFTW9UTStOY3dPTUc5bmxLak9JT3FsdkRRPT0K",
+      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.198/OnlineClass-v4-Windows-Setup.exe"
     }
   }
 }
