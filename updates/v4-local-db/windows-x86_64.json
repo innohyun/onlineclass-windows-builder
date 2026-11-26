@@ -1,11 +1,11 @@
 {
-  "version": "0.2.192",
-  "notes": "## ClassAiMate 교사 데스크 0.2.192\n\n- 과제의 운영 중·배포 중·기한 경과를 웹의 규칙과 일치시켰습니다. 모두 불러오기와 유형별 정본 조회를 추가했습니다.\n- 날짜만 등록된 이전 학급 행사에 교시 범위를 정하고 시간표에서 이동할 수 있습니다. 학교 및 학년 전담 시간표를 조회할 수 있습니다.\n- 학부모 과제 공유를 일괄 요청하고 예약을 승인·재시도·취소할 수 있습니다.\n- 팀 허브에서 업무 마감을 묶어 보고 Markdown 본문, 반별 제출 시각과 댓글을 확인할 수 있습니다.\n- 평가 목록에 필터와 관리 동선을 추가하고 단계·임의평어·평가 제외, 평가 운영 정보와 나이스 전달값 미리보기를 연결했습니다.",
-  "pub_date": "2026-11-26T07:54:28.699Z",
+  "version": "0.2.193",
+  "notes": "## ClassAiMate 교사 데스크 0.2.193\n\n- 과제 운영은 배포 중인 과제를 최근 7일로 먼저 표시합니다. 상태·기간·검색 조건이 바로 적용되고 이 PC에서 교사와 학급별로 마지막 선택을 기억합니다.\n- 과제 상세의 학생 카드를 누르면 제출물과 판정을 같은 창에서 확인할 수 있습니다. 저장한 뒤 명단과 집계를 갱신합니다.\n- 수업자료 편집에서는 문서 제목과 도구를 위에 두고 그 아래에 수업 정보를 간결하게 표시합니다. 왼쪽 목록은 날짜와 교시를 쉽게 구분하도록 정리했습니다.",
+  "pub_date": "2026-11-26T08:55:46.379Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYTVJY1gzUTNwR3oxL1VOVHVvOVFzOUVXOVl0Rm4wS3lmT012NHFCSzMyZDRzbUN6VjdHNDNQejNlQzlCbzJHZWppSFRPVEtMLzRydkdjZW93THBkVHdJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1Njc5NjMxCWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMTkyCnh0d0lEWnkyTHRxRHFaMEVsNnBObUFiUDRJbFdJd2hLbnNrN0M3bXRMNVZXUCt6K2h6eWdqNzcyNkdBZzlUM2tRdmlNL1dSK1lnQUpEc3RHbTI4OEJRPT0K",
-      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.192/OnlineClass-v4-Windows-Setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYThnb0I1a3VRNkc4RzJGeFEyMUhSamVEVEZrWUpERHhrK0g3a1lKcmliVE1xdkEwdjlvUVFkRWpNMEcyTnM1QnI1VDVlS0d0SExYVXlMR2xtSUpEL1FNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NjgzMjQwCWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMTkzClFWNVVRSFkwWWF6K0JIVVN5YUlvbHorMUdvUzBnbms2S3FQZERKWmdrcnFCbzQ1eFNsSkVlT0l6cHM5RStGQUwzcjhLZituTEhNTVlvZWJ1T1pNTUJnPT0K",
+      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.193/OnlineClass-v4-Windows-Setup.exe"
     }
   }
 }
