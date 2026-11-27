@@ -1,11 +1,11 @@
 {
-  "version": "0.2.199",
-  "notes": "## 교사 데스크 0.2.199\n\n- **설정 → AI 연결**에서 Codex, Claude Desktop, Claude Code, Gemini CLI, Grok Build의 로컬 연결 설정을 버튼으로 등록합니다.\n- 첫 접속, 교사 승인, 사용 가능, 연결 시험 상태를 화면에서 확인합니다. Windows에서는 첫 접속 신호와 도구 요청이 겹쳐도 교사 승인까지 이어집니다.\n- ChatGPT 웹은 최초 터널 설정을 한 번 입력합니다. 이후 교사 데스크에서 공식 터널을 실행하고 **다시 연결**할 수 있습니다.\n- 성적 처리 준비에서 AI 연결 설정으로 이동할 수 있습니다.\n- **성적 처리 문안 검토**에서 반영할 수 있는 문안을 전체 선택한 뒤 일괄 승인해 저장할 수 있습니다.",
-  "pub_date": "2026-11-27T02:26:39.124Z",
+  "version": "0.2.200",
+  "notes": "## 교사 데스크 0.2.200\n\n- Windows에서 AI가 MCP 실행 파일을 사용 중이면 설치가 기존 버전을 보존하고 다시 시도 또는 취소를 안내합니다. 앱 내 업데이트 전에 교사 데스크가 관리하는 ChatGPT 터널을 종료합니다.\n- 업무 노트에서 **새 노트**를 누르면 오른쪽 편집기가 바로 열립니다. 제목과 본문을 작성하고 같은 화면에서 저장할 수 있습니다.\n- Windows x64 설치본과 Apple Silicon Mac 설치본 및 서명된 앱 내 업데이트를 함께 제공합니다.",
+  "pub_date": "2026-11-27T05:06:53.450Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYTVTOU1ETzRVNHJiOUk4NzBJNzRmRGdjQ0RDVUx4VnhVYTBXb3cvMktPbXE0ZWIzdXhJQ3ZBcFNIZVRxNG5QUUl4OThtelNZaVB0dDVMMk1NS0hia3dzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NzQ1MzI0CWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMTk5ClZoNC85VUNkQ0owQStZSVV1dmlIM2RoaTRDL1MwRHlPd3k4bGdCWTZvMDQ0emxOU2VqS1dUa3RWWENkdHZwK0FsMGI4MGU4enZRUndLNnovbWljOUNnPT0K",
-      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.199/OnlineClass-v4-Windows-Setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYTlSdDFiWllIcXhGQ1FHeFYyOEtLb2IxVDF0c0Z5UVAwUkNKNzVNYU9mWEU2MXFhVXBBODNKbWM3WlNlbncvblFRMjJaQkUzaEdTUG9SK0lKa1JHZ0EwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NzU1Njk0CWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMjAwCk5DQkNHVUJVd3hWUmN4NjhDY2tqV2FoOGhWdVA0Zk9qbnlCL3NjZy85UFFIU05NNVg0UW00TXV3WGU5NEplQU9mZm9wSXZ0RExrd0cxaTNSSi9ZUkRRPT0K",
+      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.200/OnlineClass-v4-Windows-Setup.exe"
     }
   }
 }
