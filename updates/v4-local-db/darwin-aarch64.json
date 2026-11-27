@@ -1,11 +1,11 @@
 {
-  "version": "0.2.200",
-  "notes": "## 교사 데스크 0.2.200\n\n- Windows에서 AI가 MCP 실행 파일을 사용 중이면 설치가 기존 버전을 보존하고 다시 시도 또는 취소를 안내합니다. 앱 내 업데이트 전에 교사 데스크가 관리하는 ChatGPT 터널을 종료합니다.\n- 업무 노트에서 **새 노트**를 누르면 오른쪽 편집기가 바로 열립니다. 제목과 본문을 작성하고 같은 화면에서 저장할 수 있습니다.\n- Windows x64 설치본과 Apple Silicon Mac 설치본 및 서명된 앱 내 업데이트를 함께 제공합니다.",
-  "pub_date": "2026-11-27T05:06:53.450Z",
+  "version": "0.2.201",
+  "notes": "## 교사 데스크 0.2.201\n\n- 성적 처리 준비를 열 때 한국 날짜를 새로 확인합니다. 근거 검토에 더 이른 종료일이 저장돼 있으면 적용 날짜와 이유를 보여줍니다. 유효하지 않은 날짜에는 AI 요청문 복사를 막습니다.\n- AI 연결 화면과 첫 연결 승인창에서 상단 학급 선택기와 같은 학급 이름을 표시합니다. 동작은 해당 학급의 등록 및 기기 연결을 확인한 뒤 가능합니다.\n- Windows x64 설치본과 Apple Silicon Mac 설치본 및 서명된 앱 내 업데이트를 함께 제공합니다.",
+  "pub_date": "2026-11-27T07:01:21.763Z",
   "platforms": {
     "darwin-aarch64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYSt1WFpVYnhObmE5NVRLcUhvT2dKeTRJUVFNcCs3UGFDOGM0TG1yTlhqbGtPWm9CaHZpbk5iR3hUZmovYXNuc05hU2psWENrRDYrRkF1QjR6Vms3eVF3PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NzU1OTk1CWZpbGU6T25saW5lQ2xhc3MtdjQtTG9jYWwtU2Vuc2l0aXZlLVN0b3JlLWFybTY0LmFwcC50YXIuZ3oJdmVyc2lvbjowLjIuMjAwClNrb3lNYnRPRlVCWXB1QmM0eU0rUUNoL2IrNWM3WVJWUjV1TFFBcnZyVjdQRlhuLzdsOUIwNm4zSSs5b1VUKzJiL2FhS01relZZTWh6QTZxZ25KU0RRPT0K",
-      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-macos-v0.2.200/OnlineClass-v4-Local-Sensitive-Store-arm64.app.tar.gz"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYTk1TFhMUXU5SUhaOTIrNm5oQUlVUVNka0VpMUdVVWxVUjMxZTd2UG00U3pmQ2gwcS9rSHM2dTVRbjlOZ2xJcGV4Zmh5TXpFMmpjVC9TRWRWZlc1WlE4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NzYxOTA0CWZpbGU6T25saW5lQ2xhc3MtdjQtTG9jYWwtU2Vuc2l0aXZlLVN0b3JlLWFybTY0LmFwcC50YXIuZ3oJdmVyc2lvbjowLjIuMjAxCkc2bWdMZVJFYUwvaVRiYmUwWVpCRFpGOUpKQXlUV2h0WG5pRUNsUk1temhBMWJHc2oyQVRlNU5ROGJzWnhGU2dvenp1QVhnd2ppOVN4ek1Na2c2VERnPT0K",
+      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-macos-v0.2.201/OnlineClass-v4-Local-Sensitive-Store-arm64.app.tar.gz"
     }
   }
 }

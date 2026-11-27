@@ -1,11 +1,11 @@
 {
-  "version": "0.2.200",
-  "notes": "## 교사 데스크 0.2.200\n\n- Windows에서 AI가 MCP 실행 파일을 사용 중이면 설치가 기존 버전을 보존하고 다시 시도 또는 취소를 안내합니다. 앱 내 업데이트 전에 교사 데스크가 관리하는 ChatGPT 터널을 종료합니다.\n- 업무 노트에서 **새 노트**를 누르면 오른쪽 편집기가 바로 열립니다. 제목과 본문을 작성하고 같은 화면에서 저장할 수 있습니다.\n- Windows x64 설치본과 Apple Silicon Mac 설치본 및 서명된 앱 내 업데이트를 함께 제공합니다.",
-  "pub_date": "2026-11-27T05:06:53.450Z",
+  "version": "0.2.201",
+  "notes": "## 교사 데스크 0.2.201\n\n- 성적 처리 준비를 열 때 한국 날짜를 새로 확인합니다. 근거 검토에 더 이른 종료일이 저장돼 있으면 적용 날짜와 이유를 보여줍니다. 유효하지 않은 날짜에는 AI 요청문 복사를 막습니다.\n- AI 연결 화면과 첫 연결 승인창에서 상단 학급 선택기와 같은 학급 이름을 표시합니다. 동작은 해당 학급의 등록 및 기기 연결을 확인한 뒤 가능합니다.\n- Windows x64 설치본과 Apple Silicon Mac 설치본 및 서명된 앱 내 업데이트를 함께 제공합니다.",
+  "pub_date": "2026-11-27T07:01:21.763Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYTlSdDFiWllIcXhGQ1FHeFYyOEtLb2IxVDF0c0Z5UVAwUkNKNzVNYU9mWEU2MXFhVXBBODNKbWM3WlNlbncvblFRMjJaQkUzaEdTUG9SK0lKa1JHZ0EwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NzU1Njk0CWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMjAwCk5DQkNHVUJVd3hWUmN4NjhDY2tqV2FoOGhWdVA0Zk9qbnlCL3NjZy85UFFIU05NNVg0UW00TXV3WGU5NEplQU9mZm9wSXZ0RExrd0cxaTNSSi9ZUkRRPT0K",
-      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.200/OnlineClass-v4-Windows-Setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYTZwSDdHUitaSWJ2dGxxM2l5L2ZsaktoTUN6OUMzSS9JeTNBMjF1WWl4L3cvcnJ3UElUem5uVEVFUEd4czBWaDg4QmhZNVhPV3NqbWFZejZEdzBMTEE0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NzYyNTM5CWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMjAxClNiUU9LdHJIZTgwNktHQk9WMEpHU25BSjN1bC91Y2tJUUFEOHBZbitOVVNES25INUFDQmZvREtDMzhJVGc1SUNuZlF3YXZoY0lxYjRNellZTGgzYURRPT0K",
+      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.201/OnlineClass-v4-Windows-Setup.exe"
     }
   }
 }
