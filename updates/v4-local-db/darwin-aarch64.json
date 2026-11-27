@@ -1,11 +1,11 @@
 {
-  "version": "0.2.206",
-  "notes": "- 업무 노트 목록에서 문서를 열면 제목과 본문을 바로 편집합니다. 입력을 멈추거나 문서를 바꾸면 이 PC에 자동 저장합니다.\n- 문단 손잡이 메뉴에서 색을 지정하거나 이동할 수 있습니다. 문단을 좌우 가장자리로 끌면 두 단으로 배치할 수 있습니다.\n- 편집 화면에서 첨부, 연결 문서, 수정 이력을 열 수 있습니다.\n- 교사 데스크의 전용 ChatGPT 연결에서 학급과 기기를 고르고, 기록 조회와 저장은 앱에서 각각 승인합니다.",
-  "pub_date": "2026-11-27T15:23:00.402Z",
+  "version": "0.2.207",
+  "notes": "교과·창체·행발 작성에 공통 원칙과 영역별 기본 프롬프트를 적용합니다. 교과와 창체는 영역별 2문장, 행발은 5문장과 200~249자로 시작합니다. 검토창에서 적용한 프롬프트와 편집 중인 문안의 글자 수를 확인할 수 있습니다.\n\n관찰 기록에서 학생별 행발 키워드와 메모를 입력할 수 있습니다. ChatGPT 교사 데스크 연결에서 2학기 또는 학년 전체를 요청하고 교사가 조회를 승인하면, 선택한 범위의 관찰과 평가 근거 및 작성 조건을 함께 읽습니다. 교사가 확인한 키워드는 관찰과 구분해 표시합니다. 저장할 문안과 근거는 교사 데스크에서 검토하고 반영합니다.",
+  "pub_date": "2026-11-27T16:42:45.876Z",
   "platforms": {
     "darwin-aarch64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYSt6cGlLbVZPcHhWcEVSTmVBdnpYSDZJTFFJZUEvMTlyL1NRWmFCYmRlMjd1L3Z4UkpkZGc5TGJaeDc5SlQ2UGpxRDc1SGV2Y0JJZ2NkNGlZdFFvaFFzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NzkyNjU2CWZpbGU6T25saW5lQ2xhc3MtdjQtTG9jYWwtU2Vuc2l0aXZlLVN0b3JlLWFybTY0LmFwcC50YXIuZ3oJdmVyc2lvbjowLjIuMjA2CjFjKzdNVmFjL0dZdXdwOUdpd2R0cFFpTmhtaGVIemd4Z3lwSEZlSktYYytOUHMrcjV1a2xiUFo5aURoTFVDQTFyMVdLK0NrdWp3emNDVzJrQjZMVkRRPT0K",
-      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-macos-v0.2.206/OnlineClass-v4-Local-Sensitive-Store-arm64.app.tar.gz"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYXh2dVkzcDJYcjl1b3I4a2pkcWZPaGRyWSttSVNmeW12V0xlK2JXWnZ4dDM5VTZwUXM3eUZoOW9haTExbFhuNXlZZUhFQUJsSEFzSkFKUU40VlJjTUE4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1Nzk3NzQyCWZpbGU6T25saW5lQ2xhc3MtdjQtTG9jYWwtU2Vuc2l0aXZlLVN0b3JlLWFybTY0LmFwcC50YXIuZ3oJdmVyc2lvbjowLjIuMjA3CmxwV2NBQTA5ZURXeTRrTXVuQ1lpajFSdmJWeGhDNkR4ZWFwQktrUHFKYWhoaUh3bHJ0YXNyQnE0S0RHRWFpaDRPK1BqR0V0UVJCUXNrbmJjalVtQUJ3PT0K",
+      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-macos-v0.2.207/OnlineClass-v4-Local-Sensitive-Store-arm64.app.tar.gz"
     }
   }
 }
