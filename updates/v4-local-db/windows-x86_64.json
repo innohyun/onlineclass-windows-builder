@@ -1,11 +1,11 @@
 {
-  "version": "0.2.201",
-  "notes": "## 교사 데스크 0.2.201\n\n- 성적 처리 준비를 열 때 한국 날짜를 새로 확인합니다. 근거 검토에 더 이른 종료일이 저장돼 있으면 적용 날짜와 이유를 보여줍니다. 유효하지 않은 날짜에는 AI 요청문 복사를 막습니다.\n- AI 연결 화면과 첫 연결 승인창에서 상단 학급 선택기와 같은 학급 이름을 표시합니다. 동작은 해당 학급의 등록 및 기기 연결을 확인한 뒤 가능합니다.\n- Windows x64 설치본과 Apple Silicon Mac 설치본 및 서명된 앱 내 업데이트를 함께 제공합니다.",
-  "pub_date": "2026-11-27T07:01:21.763Z",
+  "version": "0.2.202",
+  "notes": "# ClassAiMate 교사 데스크 0.2.202\n\n- 합성 시험 학급에서 ClassAiMate 교사 도우미 V4와 교사 로그인으로 성적 처리 근거를 요청하고 문안을 검토할 수 있습니다.\n- 학생 기록에서는 ChatGPT 문안을 가져와 검토하고, 선택한 문안을 초안으로 저장하거나 근거와 함께 반영할 수 있습니다.\n- ChatGPT 웹 연결 카드에서 터널을 중지하고 다시 연결할 수 있습니다. Windows 앱 내 업데이트를 시작하면 교사 데스크가 시작한 터널은 자동으로 중지됩니다.\n\n설치 파일은 Windows x64와 Apple Silicon Mac용입니다.",
+  "pub_date": "2026-11-27T09:22:43.803Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYTZwSDdHUitaSWJ2dGxxM2l5L2ZsaktoTUN6OUMzSS9JeTNBMjF1WWl4L3cvcnJ3UElUem5uVEVFUEd4czBWaDg4QmhZNVhPV3NqbWFZejZEdzBMTEE0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NzYyNTM5CWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMjAxClNiUU9LdHJIZTgwNktHQk9WMEpHU25BSjN1bC91Y2tJUUFEOHBZbitOVVNES25INUFDQmZvREtDMzhJVGc1SUNuZlF3YXZoY0lxYjRNellZTGgzYURRPT0K",
-      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.201/OnlineClass-v4-Windows-Setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYS9aMlFOMGRKQlozQTJuV3hxbDlmSFNmR2gxekdUakNUSGEyaXc5UDJnMXh5NDBDSmdobHlyOU81UnRVQnlqbjQrekEwYkRvS0tyOUI4cXZnSXRQZFE0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NzcwNzU0CWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMjAyCmhoYnpHd3A3aEhweVNUR0dGKytkOEtvVlgvQVlKOGs5SXhickt6ZTJoZ2xwMjI2elVzMkxsMXZQd2o5V0dZUjlXOC9NNk9SZ2hYY2pXZitZYlQyb0N3PT0K",
+      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.202/OnlineClass-v4-Windows-Setup.exe"
     }
   }
 }
