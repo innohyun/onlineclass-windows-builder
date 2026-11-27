@@ -1,11 +1,11 @@
 {
-  "version": "0.2.204",
-  "notes": "교사 데스크 0.2.204\n\n- 수업자료에서 교시를 누르면 선택한 수업이 바로 표시됩니다. 최근에 본 교시로 돌아갈 때 연결 확인을 재사용하며, 교시를 연속으로 눌러도 마지막으로 선택한 수업을 엽니다.\n- 과제 운영은 일반 과제와 제출 수를 먼저 보여 줍니다. 팀 허브는 업무 목록을 먼저 표시하며, 오늘 화면의 시간표와 일정 달력은 각자 준비되는 대로 표시합니다.\n- 0.2.203의 업무 노트 문서 트리, 본문·첨부·연결 문서 탭과 같은 화면에서 편집하는 기능을 함께 제공합니다.\n\nWindows x64는 설치 프로그램을, Apple Silicon Mac은 DMG를 사용하세요. 기존 설치에서는 앱 내 업데이트를 사용할 수 있습니다.",
-  "pub_date": "2026-11-27T12:01:20.288Z",
+  "version": "0.2.205",
+  "notes": "# ClassAiMate 교사 데스크 0.2.205\n\n- 설정 → AI 연결에서 승인된 학급의 ChatGPT 성적 처리 동선을 안내합니다. ChatGPT에서 교사 계정으로 연결하고 자료가 있는 Mac 또는 Windows PC를 선택하면 됩니다.\n- 수영초등학교 5학년 1반은 OpenAI 터널 설정 없이 교사 로그인으로 성적 처리에 연결할 수 있습니다. 근거 조회와 문안 저장은 교사 데스크에서 따로 승인합니다.\n\nWindows x64와 Apple Silicon Mac 설치 및 앱 내 업데이트를 지원합니다.",
+  "pub_date": "2026-11-27T13:09:18.011Z",
   "platforms": {
     "darwin-aarch64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYTB3YVVCWndmdHVpYVRZdEJjNWxscVBnMk9HMldPUmMwL3pTQVpzRStoZ3RibmJGOTlFMXMxUkl2bURHckxTUFpKalduckVhc01mbkZkUGZKYVM2dFFRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NzgwMTg2CWZpbGU6T25saW5lQ2xhc3MtdjQtTG9jYWwtU2Vuc2l0aXZlLVN0b3JlLWFybTY0LmFwcC50YXIuZ3oJdmVyc2lvbjowLjIuMjA0ClEzaklQMlhKWTl4emJ1TXY1cVF4NTk5cmltbzZ4Y1B2WjlOT21PcEROck5GWVZrTWtORWJNQWY5QXdyVVUyVXZtTGg5emZWeHk1RkpJUTRGdUR2Y0FnPT0K",
-      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-macos-v0.2.204/OnlineClass-v4-Local-Sensitive-Store-arm64.app.tar.gz"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYStHbkhTTks1Sndvd2RkMEE2by92T2NUN1dZblJnbTVHTWdFUkk1ZnZCZldQd2Z1bk9jNFEyb1Z0bjh1UCtLaHBiTWlFbzRlL3FxUkFCNVpLNk4zcXdBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1Nzg0OTMyCWZpbGU6T25saW5lQ2xhc3MtdjQtTG9jYWwtU2Vuc2l0aXZlLVN0b3JlLWFybTY0LmFwcC50YXIuZ3oJdmVyc2lvbjowLjIuMjA1CjBSNzUrc1BNK2ZqVWJBSGZMVmRKV25ZeDR4b3JBZXJtaTZsR3o0SEpQbkZmbmpUL1k0QjN3V2d6QzhaZ1JFTmgvV2N2c0RTa3VxTEhWYWwyd3hOT0F3PT0K",
+      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-macos-v0.2.205/OnlineClass-v4-Local-Sensitive-Store-arm64.app.tar.gz"
     }
   }
 }

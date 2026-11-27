@@ -1,11 +1,11 @@
 {
-  "version": "0.2.204",
-  "notes": "교사 데스크 0.2.204\n\n- 수업자료에서 교시를 누르면 선택한 수업이 바로 표시됩니다. 최근에 본 교시로 돌아갈 때 연결 확인을 재사용하며, 교시를 연속으로 눌러도 마지막으로 선택한 수업을 엽니다.\n- 과제 운영은 일반 과제와 제출 수를 먼저 보여 줍니다. 팀 허브는 업무 목록을 먼저 표시하며, 오늘 화면의 시간표와 일정 달력은 각자 준비되는 대로 표시합니다.\n- 0.2.203의 업무 노트 문서 트리, 본문·첨부·연결 문서 탭과 같은 화면에서 편집하는 기능을 함께 제공합니다.\n\nWindows x64는 설치 프로그램을, Apple Silicon Mac은 DMG를 사용하세요. 기존 설치에서는 앱 내 업데이트를 사용할 수 있습니다.",
-  "pub_date": "2026-11-27T12:01:20.288Z",
+  "version": "0.2.205",
+  "notes": "# ClassAiMate 교사 데스크 0.2.205\n\n- 설정 → AI 연결에서 승인된 학급의 ChatGPT 성적 처리 동선을 안내합니다. ChatGPT에서 교사 계정으로 연결하고 자료가 있는 Mac 또는 Windows PC를 선택하면 됩니다.\n- 수영초등학교 5학년 1반은 OpenAI 터널 설정 없이 교사 로그인으로 성적 처리에 연결할 수 있습니다. 근거 조회와 문안 저장은 교사 데스크에서 따로 승인합니다.\n\nWindows x64와 Apple Silicon Mac 설치 및 앱 내 업데이트를 지원합니다.",
+  "pub_date": "2026-11-27T13:09:18.011Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYTFrdVBkZzJ2STRYemJDU1lOL2UrYmlpQTBwcnlVVFRhRzk1ME96SjFTUDEzUWRiZ0t4dTZJYWVYSk1YQ1orcjcvUlk1SUswMndxOE5ZeDJlSC80ZFFzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1Nzc5NzgzCWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMjA0Cis3TkhZaUs1dzhOcjJxK1c4VUhwNFE5QzNWMTFaK0pHWWxteHQxY0tEODhuZGFrL2VwV0FpeDBNMXVNZkxJRk1JYXFuSlIxa1BqdGYyQ25aL0VUUUNnPT0K",
-      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.204/OnlineClass-v4-Windows-Setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYXpuUTdHZFVub08wZU5JT3h5Q2pNdW1qYjUrbjZQa05QUXp5OUpBSTh5WjhLbEhDbHlaVEFWN3NSQWw5aHhFVW42U2hkTGZFMnErUGdhOEdUS05BK0FVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1Nzg0MzEyCWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMjA1CkUrOHNmekFGQnRMRlE2RHlvVXF2ZlFIMERHOWh6Q20vcGlHbWdCZlRDaFhGbWNYUXFwUDhON2VwaEVLMjc4bDR0MFNVSUMvNlpYOE4xMmhuaitjWkJ3PT0K",
+      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.205/OnlineClass-v4-Windows-Setup.exe"
     }
   }
 }
