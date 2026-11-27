@@ -1,11 +1,11 @@
 {
-  "version": "0.2.198",
-  "notes": "교사 데스크 0.2.198\n\n- 종합기록 작업 현황의 **성적 처리 준비**에서 현재 학생, 선택한 여러 학생, 학급 전체를 골라 AI 요청문을 복사할 수 있습니다.\n- 로컬 MCP에서 관찰·상담 요약·출결 상태·종합기록을 여러 학생 또는 학급 전체 범위로 요청하고, 교사 데스크에서 대상과 자료를 확인한 뒤 조회를 승인합니다.\n- 설정의 로컬 MCP에서 Codex·Claude 등록 설정을 복사합니다. **ChatGPT 터널**에 OpenAI Secure MCP Tunnel ID를 붙여넣으면 실행 명령을 복사할 수 있습니다.",
-  "pub_date": "2026-11-26T23:24:07.524Z",
+  "version": "0.2.199",
+  "notes": "## 교사 데스크 0.2.199\n\n- **설정 → AI 연결**에서 Codex, Claude Desktop, Claude Code, Gemini CLI, Grok Build의 로컬 연결 설정을 버튼으로 등록합니다.\n- 첫 접속, 교사 승인, 사용 가능, 연결 시험 상태를 화면에서 확인합니다. Windows에서는 첫 접속 신호와 도구 요청이 겹쳐도 교사 승인까지 이어집니다.\n- ChatGPT 웹은 최초 터널 설정을 한 번 입력합니다. 이후 교사 데스크에서 공식 터널을 실행하고 **다시 연결**할 수 있습니다.\n- 성적 처리 준비에서 AI 연결 설정으로 이동할 수 있습니다.\n- **성적 처리 문안 검토**에서 반영할 수 있는 문안을 전체 선택한 뒤 일괄 승인해 저장할 수 있습니다.",
+  "pub_date": "2026-11-27T02:26:39.124Z",
   "platforms": {
     "darwin-aarch64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYTY1c0FOdUtUY2hHN0I3cUkrNG9SVVdOcGtuSExWZU9FVkFuSWdOTUNBU1JUTy8reFh0ZFhSZUxYem9OcjRFTWVKWm5QbEhmUUdlampBNTFMTXdyNVFvPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NzM1NDIxCWZpbGU6T25saW5lQ2xhc3MtdjQtTG9jYWwtU2Vuc2l0aXZlLVN0b3JlLWFybTY0LmFwcC50YXIuZ3oJdmVyc2lvbjowLjIuMTk4CmU1VHgrS1drYVBINU5OUXpialBiRGJ2SFJlRkxtc2E4QmlRWFRJK1lXN1RUMzEyZEFMckQ2Y0hSU2lpcFVNUTU0cklqM2dBL0dwTkpiaEVocVVRY0NBPT0K",
-      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-macos-v0.2.198/OnlineClass-v4-Local-Sensitive-Store-arm64.app.tar.gz"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYTJkRzRaSmpobzMwWk9Ea0R4OEI2K0M3TW9RNHJTY2gyaDNmNHJLL0xNRjdTUTRWK2RRTHkwTFQwUVZUWnNmQjRTRlFjMEROcGxPYUtUb0x6VUs5TWd3PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NzQ1NDMyCWZpbGU6T25saW5lQ2xhc3MtdjQtTG9jYWwtU2Vuc2l0aXZlLVN0b3JlLWFybTY0LmFwcC50YXIuZ3oJdmVyc2lvbjowLjIuMTk5CnYwSEF2ck11MDc0VFJPODl2b2pDcGl3RkdEcGlyeUpZZVR5cklYdnpJT0Vlc1JYdnR1anJTUkVoMnZtYm5YYXZtYmdoOEF6MWNtcnRiQk5ZTU41SUN3PT0K",
+      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-macos-v0.2.199/OnlineClass-v4-Local-Sensitive-Store-arm64.app.tar.gz"
     }
   }
 }
