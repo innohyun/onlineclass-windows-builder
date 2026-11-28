@@ -1,11 +1,11 @@
 {
-  "version": "0.2.209",
-  "notes": "교사 데스크 성적 처리와 로컬 기록 MCP 오류를 수정했습니다.\n\n- 학생 기록 조회 후 같은 대화에서 받은 수정 범위와 기록 참조를 그대로 사용할 수 있습니다.\n- 문장당 근거 12개와 보류 사유 300자 한도를 교사 데스크와 서버에 동일하게 적용합니다.\n- 101건 이상을 분할 제출한 뒤 하나의 검토 요청으로 승인할 수 있습니다. 같은 요청을 다시 보내도 검토나 저장이 중복되지 않습니다.\n- 이번 버전은 Mac Apple Silicon과 Windows x64의 설치 및 앱 내 업데이트를 지원합니다.",
-  "pub_date": "2026-11-28T03:24:31.698Z",
+  "version": "0.2.210",
+  "notes": "업무 노트에서 모든 일반 페이지에 본문을 쓰고 하위 페이지를 만들거나 옮길 수 있습니다.\n\n- 기존에 직접 만든 폴더와 내용이 있는 폴더는 본문·첨부·하위 페이지를 유지한 채 일반 페이지로 전환합니다.\n- 이전 버전에서 자동으로 생성한 빈 폴더는 원래 노트와 하위 페이지를 보존하면서 정리합니다.\n- Windows x64와 Apple Silicon Mac에서 신규 설치와 앱 내 업데이트를 지원합니다.",
+  "pub_date": "2026-11-28T04:04:12.697Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYTdnMnZETmYydGgzUllWYTVObVZkdTlUR3BxOHh3ZDJ1bGhWR2hXY0M0N2VLUjhMdGJyeC90MFFkM0haMzBSNE9GRXlaemlmZ3A4VnVpTm5FSmc2WkFNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1ODM1NTUxCWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMjA5Clc0MzV4Ry9SSUFWdjlpM1hZTEpMdEE3YXhPSGtTN1ZXZXhnRXJ2Uk9sVndab3VkN0EvV0lRR0Jud1FsaEZkUmJoMDVkQnh2bDF4cDVVcXYxTFFMWEJBPT0K",
-      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.209/OnlineClass-v4-Windows-Setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTb0N3TmJNT2gxYS9rRmJmNERzaUMybXhnSEwzMWRyWW9iYmFYU2wxc2pvaFRpQ2lLZ3g1ekdUVm44ZXJOc1VGTHBjWXFtZFFiaS9FTGxxT0VSWUlENkZ1UlpzbFJBRHdjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1ODM4MjI0CWZpbGU6T25saW5lQ2xhc3MtdjQtV2luZG93cy1TZXR1cC5leGUJdmVyc2lvbjowLjIuMjEwCmNhNm9OeG5uV3k2Q3YzamRtTnFCenRDc09XOHNraURVRVEvdHlTQTZhdnIxVFFoa2pRdnRTWTlCcmhVZTBnQ01zMVk4UXBDMEVIamhDOVBVdzJKc0FBPT0K",
+      "url": "https://github.com/innohyun/onlineclass-windows-builder/releases/download/v4-local-sensitive-store-v0.2.210/OnlineClass-v4-Windows-Setup.exe"
     }
   }
 }
